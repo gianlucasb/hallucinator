@@ -255,8 +255,9 @@ def clean_title(title):
     title = re.sub(r'(\w)-\s+(\w)', r'\1\2', title)
 
     # Key insight: ". In", ", In", or "? In" usually marks where title ends and venue begins
+    # Also catches ". In 2003" (year after In)
     # Cut off at these patterns (include ? for question titles)
-    in_venue_match = re.search(r'[.,?]\s*[Ii]n\s+[A-Z]', title)
+    in_venue_match = re.search(r'[.,?]\s*[Ii]n\s+(?:[A-Z]|[12]\d{3}\s)', title)
     if in_venue_match:
         # Keep the question mark if present, remove period/comma
         end_pos = in_venue_match.start()
