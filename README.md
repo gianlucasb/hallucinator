@@ -42,6 +42,9 @@ python check_hallucinated_references.py --no-color <path_to_pdf>
 # Adjust delay between API requests (default: 1 second)
 python check_hallucinated_references.py --sleep=0.5 <path_to_pdf>
 
+# Use OpenAlex API (queries OpenAlex first, then DBLP, arXiv, CrossRef on failure)
+python check_hallucinated_references.py --openalex-key=YOUR_API_KEY <path_to_pdf>
+
 # Combine options
 python check_hallucinated_references.py --no-color --sleep=0.1 <path_to_pdf>
 ```
@@ -52,6 +55,7 @@ python check_hallucinated_references.py --no-color --sleep=0.1 <path_to_pdf>
 |--------|-------------|
 | `--no-color` | Disable colored output (useful for piping or logging) |
 | `--sleep=SECONDS` | Set delay between API requests (default: 1.0 second) |
+| `--openalex-key=KEY` | OpenAlex API key. If provided, queries OpenAlex first before other databases. Get a free key at https://openalex.org/settings/api |
 
 ## Example Output
 
