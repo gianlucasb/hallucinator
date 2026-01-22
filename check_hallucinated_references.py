@@ -37,7 +37,7 @@ class Colors:
         cls.RESET = ''
 
 
-def print_hallucinated_reference(title, error_type, source=None, ref_authors=None, found_authors=None):
+def print_hallucinated_reference(title, error_type, source=None, ref_authors=None, found_authors=None, searched_openalex=False):
     """Print formatted output for a hallucinated or mismatched reference."""
     print()
     print(f"{Colors.RED}{Colors.BOLD}{'='*60}{Colors.RESET}")
@@ -50,7 +50,10 @@ def print_hallucinated_reference(title, error_type, source=None, ref_authors=Non
 
     if error_type == "not_found":
         print(f"{Colors.RED}Status:{Colors.RESET} Reference not found in any database")
-        print(f"{Colors.DIM}Searched: DBLP, arXiv, CrossRef{Colors.RESET}")
+        if searched_openalex:
+            print(f"{Colors.DIM}Searched: OpenAlex, DBLP, arXiv, CrossRef{Colors.RESET}")
+        else:
+            print(f"{Colors.DIM}Searched: DBLP, arXiv, CrossRef{Colors.RESET}")
     elif error_type == "author_mismatch":
         print(f"{Colors.YELLOW}Status:{Colors.RESET} Title found on {source} but authors don't match")
         print()
@@ -559,6 +562,32 @@ def query_crossref(title):
         print(f"[Error] CrossRef search failed: {e}")
     return None, []
 
+def query_openalex(title, api_key):
+    """Query OpenAlex API for paper information."""
+    words = get_query_words(title, 6)
+    query = ' '.join(words)
+    url = f"https://api.openalex.org/works?filter=title.search:{urllib.parse.quote(query)}&api_key={api_key}"
+    try:
+        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"})
+        if response.status_code != 200:
+            return None, []
+        results = response.json().get("results", [])
+        for item in results[:5]:  # Check top 5 results
+            found_title = item.get("title", "")
+            if found_title and fuzz.ratio(normalize_title(title), normalize_title(found_title)) >= 95:
+                # Extract author names from authorships
+                authorships = item.get("authorships", [])
+                authors = []
+                for authorship in authorships:
+                    author_info = authorship.get("author", {})
+                    display_name = author_info.get("display_name", "")
+                    if display_name:
+                        authors.append(display_name)
+                return found_title, authors
+    except Exception as e:
+        print(f"[Error] OpenAlex search failed: {e}")
+    return None, []
+
 def query_neurips(title):
     try:
         years = [2023, 2022, 2021, 2020, 2019, 2018]
@@ -611,7 +640,7 @@ def validate_authors(ref_authors, found_authors):
     found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
-def main(pdf_path, sleep_time=1.0):
+def main(pdf_path, sleep_time=1.0, openalex_key=None):
     refs = extract_references_with_titles_and_authors(pdf_path)
 #    print(f"Found {len(refs)} references.")
     print("Analyzing paper %s"%(pdf_path.split("/")[-1]))
@@ -621,6 +650,21 @@ def main(pdf_path, sleep_time=1.0):
     mismatched = 0
 
     for i, (title, ref_authors) in enumerate(refs):
+        # If OpenAlex API key provided, query OpenAlex first
+        if openalex_key:
+            found_title, found_authors = query_openalex(title, openalex_key)
+            if found_title:
+                if validate_authors(ref_authors, found_authors):
+                    found += 1
+                else:
+                    print_hallucinated_reference(
+                        title, "author_mismatch", source="OpenAlex",
+                        ref_authors=ref_authors, found_authors=found_authors
+                    )
+                    mismatched += 1
+                continue
+
+        # Sleep before DBLP query to avoid rate limiting
         time.sleep(sleep_time)
         found_title, found_authors = query_dblp(title)
         if found_title:
@@ -658,7 +702,7 @@ def main(pdf_path, sleep_time=1.0):
                 mismatched += 1
             continue
 
-        print_hallucinated_reference(title, "not_found")
+        print_hallucinated_reference(title, "not_found", searched_openalex=bool(openalex_key))
         failed += 1
 
     # Print summary
@@ -695,8 +739,21 @@ if __name__ == "__main__":
             sys.argv.remove(arg)
             break
 
+    # Check for --openalex-key flag
+    openalex_key = None
+    for i, arg in enumerate(sys.argv[:]):  # Use copy to safely modify
+        if arg.startswith('--openalex-key='):
+            openalex_key = arg.split('=', 1)[1]
+            sys.argv.remove(arg)
+            break
+        elif arg == '--openalex-key' and i + 1 < len(sys.argv):
+            openalex_key = sys.argv[i + 1]
+            sys.argv.remove(sys.argv[i + 1])
+            sys.argv.remove(arg)
+            break
+
     if len(sys.argv) < 2:
-        print("Usage: check_hallucinated_references.py [--no-color] [--sleep=SECONDS] <path_to_pdf>")
+        print("Usage: check_hallucinated_references.py [--no-color] [--sleep=SECONDS] [--openalex-key=KEY] <path_to_pdf>")
         sys.exit(1)
 
     pdf_path = sys.argv[1]
@@ -704,5 +761,5 @@ if __name__ == "__main__":
         print(f"Error: File '{pdf_path}' not found")
         sys.exit(1)
 
-    main(pdf_path, sleep_time=sleep_time)
+    main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key)
 
