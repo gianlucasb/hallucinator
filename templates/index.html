@@ -129,6 +129,12 @@
         .stat-verified .stat-value { color: #16a34a; }
         .stat-mismatch .stat-value { color: #ca8a04; }
         .stat-notfound .stat-value { color: #dc2626; }
+        .stat-skipped .stat-value { color: #6b7280; }
+        .skipped-details {
+            color: #6b7280;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+        }
         .hallucinations {
             background: white;
             border-radius: 8px;
@@ -208,11 +214,33 @@
             text-align: center;
             color: #16a34a;
         }
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .logo {
+            width: 100px;
+            height: 100px;
+            object-fit: contain;
+        }
+        .header-text h1 {
+            margin: 0 0 0.25rem 0;
+        }
+        .header-text .subtitle {
+            margin: 0;
+        }
     </style>
 </head>
 <body>
-    <h1>Hallucinated Reference Checker</h1>
-    <p class="subtitle">Upload a PDF to check for potentially hallucinated or incorrect references</p>
+    <div class="header">
+        <img src="/static/logo.png" alt="Logo" class="logo">
+        <div class="header-text">
+            <h1>Hallucinated Reference Checker</h1>
+            <p class="subtitle">Upload a PDF to check for potentially hallucinated or incorrect references</p>
+        </div>
+    </div>
     <p class="subtitle">Inspired by Madison Akles' <a href="https://madisonakles.github.io/checker.html">in-browser hallucination checker</a></p>
 
     <div class="upload-form">
@@ -243,7 +271,7 @@
             <div class="stats">
                 <div class="stat">
                     <div class="stat-value" id="totalCount">0</div>
-                    <div class="stat-label">Total References</div>
+                    <div class="stat-label">Analyzed</div>
                 </div>
                 <div class="stat stat-verified">
                     <div class="stat-value" id="verifiedCount">0</div>
@@ -257,7 +285,12 @@
                     <div class="stat-value" id="notfoundCount">0</div>
                     <div class="stat-label">Not Found</div>
                 </div>
+                <div class="stat stat-skipped">
+                    <div class="stat-value" id="skippedCount">0</div>
+                    <div class="stat-label">Skipped</div>
+                </div>
             </div>
+            <div class="skipped-details" id="skippedDetails"></div>
         </div>
 
         <div class="hallucinations" id="hallucinations">
@@ -349,6 +382,19 @@
                 document.getElementById('verifiedCount').textContent = data.summary.verified;
                 document.getElementById('mismatchCount').textContent = data.summary.mismatched;
                 document.getElementById('notfoundCount').textContent = data.summary.not_found;
+                document.getElementById('skippedCount').textContent = data.summary.skipped;
+
+                // Update skipped details
+                const skippedDetails = document.getElementById('skippedDetails');
+                if (data.summary.skipped > 0) {
+                    const parts = [];
+                    if (data.summary.skipped_url > 0) parts.push(`${data.summary.skipped_url} non-academic URLs`);
+                    if (data.summary.skipped_short_title > 0) parts.push(`${data.summary.skipped_short_title} short titles`);
+                    if (data.summary.skipped_no_authors > 0) parts.push(`${data.summary.skipped_no_authors} missing authors`);
+                    skippedDetails.textContent = `Skipped: ${parts.join(', ')}`;
+                } else {
+                    skippedDetails.textContent = '';
+                }
 
                 // Render hallucinations
                 const list = document.getElementById('hallucinationList');

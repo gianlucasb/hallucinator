@@ -19,7 +19,7 @@ app = Flask(__name__)
 def analyze_pdf(pdf_path, openalex_key=None):
     """Analyze PDF and return structured results.
 
-    Returns list of dicts with keys:
+    Returns (results, skip_stats) where results is a list of dicts with keys:
         - title: reference title
         - status: 'verified' | 'not_found' | 'author_mismatch'
         - error_type: None | 'not_found' | 'author_mismatch'
@@ -27,7 +27,7 @@ def analyze_pdf(pdf_path, openalex_key=None):
         - ref_authors: authors from the PDF
         - found_authors: authors from the database (if found)
     """
-    refs = extract_references_with_titles_and_authors(pdf_path)
+    refs, skip_stats = extract_references_with_titles_and_authors(pdf_path, return_stats=True)
     results = []
 
     for title, ref_authors in refs:
@@ -116,7 +116,7 @@ def analyze_pdf(pdf_path, openalex_key=None):
         result['error_type'] = 'not_found'
         results.append(result)
 
-    return results
+    return results, skip_stats
 
 
 @app.route('/')
@@ -144,20 +144,26 @@ def analyze():
         os.close(fd)
         pdf_file.save(temp_path)
 
-        results = analyze_pdf(temp_path, openalex_key=openalex_key)
+        results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key)
 
         # Calculate summary stats
         verified = sum(1 for r in results if r['status'] == 'verified')
         not_found = sum(1 for r in results if r['status'] == 'not_found')
         mismatched = sum(1 for r in results if r['status'] == 'author_mismatch')
+        total_skipped = skip_stats['skipped_url'] + skip_stats['skipped_short_title'] + skip_stats['skipped_no_authors']
 
         return jsonify({
             'success': True,
             'summary': {
+                'total_raw': skip_stats['total_raw'],
                 'total': len(results),
                 'verified': verified,
                 'not_found': not_found,
                 'mismatched': mismatched,
+                'skipped': total_skipped,
+                'skipped_url': skip_stats['skipped_url'],
+                'skipped_short_title': skip_stats['skipped_short_title'],
+                'skipped_no_authors': skip_stats['skipped_no_authors'],
             },
             'results': results,
         })
@@ -170,4 +176,4 @@ def analyze():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5001)

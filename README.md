@@ -1,6 +1,6 @@
 # Hallucinated Reference Detector
 
-A tool to detect potentially hallucinated or fabricated references in academic PDF papers. It extracts references from PDFs and validates them against academic databases (CrossRef, arXiv, DBLP, and optionally OpenAlex).
+A tool to detect potentially hallucinated or fabricated references in academic PDF papers. It extracts references from PDFs and validates them against academic databases (CrossRef, arXiv, DBLP, OpenReview, and optionally OpenAlex). Available as both a command-line tool and a web interface.
 
 Created by Gianluca Stringhini with the help of Claude Code and ChatGPT
 
@@ -16,9 +16,12 @@ Created by Gianluca Stringhini with the help of Claude Code and ChatGPT
   - CrossRef
   - arXiv
   - DBLP
+  - OpenReview
 - Author matching to detect title matches with wrong authors
 - Colored terminal output for easy identification of issues
 - Handles em-dash citations (same authors as previous reference)
+- Web interface for easy PDF upload and analysis
+- Google Scholar links for manual verification of flagged references
 
 ## Installation
 
@@ -62,6 +65,35 @@ python check_hallucinated_references.py --no-color --sleep=0.1 <path_to_pdf>
 | `--sleep=SECONDS` | Set delay before DBLP requests to avoid rate limiting (default: 1.0 second). Only applies when a reference isn't found in earlier databases. |
 | `--openalex-key=KEY` | OpenAlex API key. If provided, queries OpenAlex first before other databases. Get a free key at https://openalex.org/settings/api |
 
+## Web Interface
+
+The tool also includes a web interface for easier use.
+
+### Starting the Web Server
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Start the Flask server
+python app.py
+```
+
+The server will start at `http://localhost:5001`.
+
+### Using the Web Interface
+
+1. Open `http://localhost:5001` in your browser
+2. Upload a PDF file using the file picker
+3. (Optional) Enter your OpenAlex API key for improved coverage
+4. Click "Analyze References"
+5. View results showing:
+   - Summary statistics (verified, author mismatches, not found)
+   - List of potentially hallucinated references
+   - Google Scholar links for manual verification
+
+The web interface displays the same information as the command-line tool but provides clickable Google Scholar links to quickly verify flagged references.
+
 ## Example Output
 
 ```
@@ -75,7 +107,7 @@ Title:
   Some Fabricated Paper Title That Does Not Exist
 
 Status: Reference not found in any database
-Searched: CrossRef, arXiv, DBLP
+Searched: CrossRef, arXiv, DBLP, OpenReview
 
 ------------------------------------------------------------
 
@@ -97,8 +129,19 @@ SUMMARY
    - OpenAlex (if API key provided) - most generous rate limits
    - CrossRef - good coverage, generous limits
    - arXiv - moderate limits
-   - DBLP - most restrictive, queried last with configurable delay
+   - DBLP - more restrictive, queried with configurable delay
+   - OpenReview - conference papers (ICLR, NeurIPS, etc.)
 6. **Author Matching**: Confirms that found titles have matching authors
+
+## Skipped References
+
+Some references are skipped during analysis and not checked against databases. The tool reports how many references were skipped and why:
+
+- **Non-academic URLs**: References pointing to websites, GitHub repositories, documentation pages, or other non-academic sources are skipped. These cannot be verified in academic databases. URLs to academic publishers (ACM, IEEE, USENIX, arXiv, DOI) are still processed.
+
+- **Short titles**: References with titles shorter than 5 words are skipped. Very short titles are often not academic papers (e.g., software names, dataset titles) and are prone to false matches.
+
+- **Missing authors**: References where author names could not be extracted are skipped, as author verification is not possible.
 
 ## Limitations
 
@@ -114,6 +157,7 @@ SUMMARY
 - `rapidfuzz` - Fuzzy string matching for title comparison
 - `feedparser` - arXiv API response parsing
 - `PyMuPDF` - PDF text extraction
+- `flask` - Web interface
 
 ## License
 

@@ -552,20 +552,35 @@ def extract_title_from_reference(ref_text):
     return "", False
 
 
-def extract_references_with_titles_and_authors(pdf_path):
-    """Extract references from PDF using pure Python (PyMuPDF)."""
+def extract_references_with_titles_and_authors(pdf_path, return_stats=False):
+    """Extract references from PDF using pure Python (PyMuPDF).
+
+    If return_stats=True, returns (references, stats_dict) where stats_dict contains:
+        - total_raw: total raw references found
+        - skipped_url: count skipped due to non-academic URLs
+        - skipped_short_title: count skipped due to short/missing title
+        - skipped_no_authors: count skipped due to missing authors
+    """
+    stats = {
+        'total_raw': 0,
+        'skipped_url': 0,
+        'skipped_short_title': 0,
+        'skipped_no_authors': 0,
+    }
+
     try:
         text = extract_text_from_pdf(pdf_path)
     except Exception as e:
         print(f"[Error] Failed to extract text from PDF: {e}")
-        return []
+        return ([], stats) if return_stats else []
 
     ref_section = find_references_section(text)
     if not ref_section:
         print("[Error] Could not locate references section")
-        return []
+        return ([], stats) if return_stats else []
 
     raw_refs = segment_references(ref_section)
+    stats['total_raw'] = len(raw_refs)
 
     references = []
     previous_authors = []
@@ -578,11 +593,13 @@ def extract_references_with_titles_and_authors(pdf_path):
         # Also catch broken URLs with spaces like "https: //" or "ht tps://"
         if re.search(r'https?\s*:\s*//', ref_text) or re.search(r'ht\s*tps?\s*:\s*//', ref_text):
             if not re.search(r'(acm\.org|ieee\.org|usenix\.org|arxiv\.org|doi\.org)', ref_text, re.IGNORECASE):
+                stats['skipped_url'] += 1
                 continue
 
         title, from_quotes = extract_title_from_reference(ref_text)
         title = clean_title(title, from_quotes=from_quotes)
         if not title or len(title.split()) < 5:
+            stats['skipped_short_title'] += 1
             continue
 
         authors = extract_authors_from_reference(ref_text)
@@ -592,9 +609,11 @@ def extract_references_with_titles_and_authors(pdf_path):
             if previous_authors:
                 authors = previous_authors
             else:
+                stats['skipped_no_authors'] += 1
                 continue  # No previous authors to use
 
         if not authors:
+            stats['skipped_no_authors'] += 1
             continue
 
         # Update previous_authors for potential next em-dash reference
@@ -602,7 +621,7 @@ def extract_references_with_titles_and_authors(pdf_path):
 
         references.append((title, authors))
 
-    return references
+    return (references, stats) if return_stats else references
 
 # Common words to skip when building search queries
 STOP_WORDS = {'a', 'an', 'the', 'of', 'and', 'or', 'for', 'to', 'in', 'on', 'with', 'by'}
@@ -795,8 +814,7 @@ def validate_authors(ref_authors, found_authors):
     return bool(ref_set & found_set)
 
 def main(pdf_path, sleep_time=1.0, openalex_key=None):
-    refs = extract_references_with_titles_and_authors(pdf_path)
-#    print(f"Found {len(refs)} references.")
+    refs, skip_stats = extract_references_with_titles_and_authors(pdf_path, return_stats=True)
     print("Analyzing paper %s"%(pdf_path.split("/")[-1]))
 
     found = 0
@@ -885,7 +903,12 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None):
     print(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
     print(f"{Colors.BOLD}SUMMARY{Colors.RESET}")
     print(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
-    print(f"  Total references analyzed: {len(refs)}")
+    total_skipped = skip_stats['skipped_url'] + skip_stats['skipped_short_title'] + skip_stats['skipped_no_authors']
+    print(f"  Total references found: {skip_stats['total_raw']}")
+    print(f"  References analyzed: {len(refs)}")
+    if total_skipped > 0:
+        print(f"  {Colors.DIM}Skipped: {total_skipped} (URLs: {skip_stats['skipped_url']}, short titles: {skip_stats['skipped_short_title']}, no authors: {skip_stats['skipped_no_authors']}){Colors.RESET}")
+    print()
     print(f"  {Colors.GREEN}Verified:{Colors.RESET} {found}")
     if mismatched > 0:
         print(f"  {Colors.YELLOW}Author mismatches:{Colors.RESET} {mismatched}")
