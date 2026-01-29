@@ -1,10 +1,15 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies first for better layer caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv for fast dependency management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Copy dependency files first for better layer caching
+COPY pyproject.toml uv.lock ./
+
+# Install dependencies
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application files
 COPY check_hallucinated_references.py .
@@ -14,4 +19,4 @@ COPY static/ static/
 
 EXPOSE 5001
 
-CMD ["python", "app.py"]
+CMD ["uv", "run", "python", "app.py"]

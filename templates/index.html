@@ -214,6 +214,99 @@
             text-align: center;
             color: #16a34a;
         }
+        /* Multi-file archive styles */
+        .file-section {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }
+        .file-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem 1.5rem;
+            background: #f9fafb;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            user-select: none;
+        }
+        .file-header:hover {
+            background: #f3f4f6;
+        }
+        .file-header-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .file-name {
+            font-weight: 600;
+            word-break: break-word;
+        }
+        .file-status-badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        .file-status-ok {
+            background: #dcfce7;
+            color: #16a34a;
+        }
+        .file-status-issues {
+            background: #fef2f2;
+            color: #dc2626;
+        }
+        .file-status-error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        .file-toggle {
+            font-size: 1.2rem;
+            transition: transform 0.2s ease;
+            color: #6b7280;
+        }
+        .file-toggle.expanded {
+            transform: rotate(180deg);
+        }
+        .file-content {
+            display: none;
+            padding: 1.5rem;
+            border-top: 1px solid #eee;
+        }
+        .file-content.visible {
+            display: block;
+        }
+        .file-error {
+            color: #dc2626;
+            background: #fef2f2;
+            padding: 1rem;
+            border-radius: 4px;
+        }
+        .file-summary {
+            margin-bottom: 1rem;
+        }
+        .file-summary .stats {
+            gap: 1.5rem;
+        }
+        .file-summary .stat-value {
+            font-size: 1.5rem;
+        }
+        .multi-file-header {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+        }
+        .multi-file-header h2 {
+            margin: 0 0 0.5rem 0;
+        }
+        .multi-file-header .file-count {
+            color: #666;
+        }
         .header {
             display: flex;
             align-items: center;
@@ -246,8 +339,8 @@
     <div class="upload-form">
         <form id="analyzeForm">
             <div class="form-group">
-                <label for="pdfFile">PDF File</label>
-                <input type="file" id="pdfFile" name="pdf" accept=".pdf" required>
+                <label for="pdfFile">PDF File or Archive (.zip, .tar.gz)</label>
+                <input type="file" id="pdfFile" name="pdf" accept=".pdf,.zip,.tar.gz,.tgz" required>
             </div>
             <div class="form-group">
                 <label for="openalexKey">
@@ -361,6 +454,175 @@
             return div.innerHTML;
         }
 
+        function renderSingleFileResults(data) {
+            // Update summary
+            document.getElementById('totalCount').textContent = data.summary.total;
+            document.getElementById('verifiedCount').textContent = data.summary.verified;
+            document.getElementById('mismatchCount').textContent = data.summary.mismatched;
+            document.getElementById('notfoundCount').textContent = data.summary.not_found;
+            document.getElementById('skippedCount').textContent = data.summary.skipped;
+
+            // Update skipped details
+            const skippedDetails = document.getElementById('skippedDetails');
+            const detailParts = [];
+            if (data.summary.skipped > 0) {
+                const skipParts = [];
+                if (data.summary.skipped_url > 0) skipParts.push(`${data.summary.skipped_url} non-academic URLs`);
+                if (data.summary.skipped_short_title > 0) skipParts.push(`${data.summary.skipped_short_title} short titles`);
+                detailParts.push(`Skipped: ${skipParts.join(', ')}`);
+            }
+            if (data.summary.title_only > 0) {
+                detailParts.push(`Title-only (no authors extracted): ${data.summary.title_only}`);
+            }
+            skippedDetails.textContent = detailParts.join(' | ');
+
+            // Show standard summary and hallucinations sections
+            document.querySelector('.summary').style.display = 'block';
+            document.getElementById('hallucinations').style.display = 'block';
+
+            // Render hallucinations
+            const list = document.getElementById('hallucinationList');
+            list.innerHTML = '';
+
+            const hallucinations = data.results.filter(r => r.status !== 'verified');
+
+            if (hallucinations.length === 0) {
+                list.innerHTML = '<div class="no-hallucinations">All references verified!</div>';
+            } else {
+                hallucinations.forEach(ref => {
+                    list.appendChild(renderHallucination(ref));
+                });
+            }
+        }
+
+        function renderMultiFileResults(data) {
+            // Hide standard single-file sections
+            document.querySelector('.summary').style.display = 'none';
+            document.getElementById('hallucinations').style.display = 'none';
+
+            const container = document.getElementById('hallucinationList');
+            container.innerHTML = '';
+
+            // Add aggregate header
+            const header = document.createElement('div');
+            header.className = 'multi-file-header';
+            header.innerHTML = `
+                <h2>Archive Results</h2>
+                <div class="file-count">${data.file_count} PDF files processed</div>
+                <div class="stats" style="margin-top: 1rem;">
+                    <div class="stat">
+                        <div class="stat-value">${data.summary.total}</div>
+                        <div class="stat-label">Total Analyzed</div>
+                    </div>
+                    <div class="stat stat-verified">
+                        <div class="stat-value">${data.summary.verified}</div>
+                        <div class="stat-label">Verified</div>
+                    </div>
+                    <div class="stat stat-mismatch">
+                        <div class="stat-value">${data.summary.mismatched}</div>
+                        <div class="stat-label">Mismatches</div>
+                    </div>
+                    <div class="stat stat-notfound">
+                        <div class="stat-value">${data.summary.not_found}</div>
+                        <div class="stat-label">Not Found</div>
+                    </div>
+                </div>
+            `;
+            container.appendChild(header);
+
+            // Render each file as collapsible section
+            data.files.forEach((file, index) => {
+                const section = document.createElement('div');
+                section.className = 'file-section';
+
+                const hasIssues = file.success && file.results.some(r => r.status !== 'verified');
+                const hasError = !file.success;
+
+                let statusBadge = '';
+                if (hasError) {
+                    statusBadge = '<span class="file-status-badge file-status-error">Error</span>';
+                } else if (hasIssues) {
+                    const issueCount = file.results.filter(r => r.status !== 'verified').length;
+                    statusBadge = `<span class="file-status-badge file-status-issues">${issueCount} issue${issueCount > 1 ? 's' : ''}</span>`;
+                } else {
+                    statusBadge = '<span class="file-status-badge file-status-ok">All verified</span>';
+                }
+
+                // Auto-expand files with issues or errors
+                const autoExpand = hasIssues || hasError;
+
+                section.innerHTML = `
+                    <div class="file-header" data-index="${index}">
+                        <div class="file-header-left">
+                            <span class="file-name">${escapeHtml(file.filename)}</span>
+                            ${statusBadge}
+                        </div>
+                        <span class="file-toggle ${autoExpand ? 'expanded' : ''}">&#9660;</span>
+                    </div>
+                    <div class="file-content ${autoExpand ? 'visible' : ''}" id="file-content-${index}">
+                        ${renderFileContent(file)}
+                    </div>
+                `;
+
+                // Add click handler for toggle
+                section.querySelector('.file-header').addEventListener('click', () => {
+                    const content = section.querySelector('.file-content');
+                    const toggle = section.querySelector('.file-toggle');
+                    content.classList.toggle('visible');
+                    toggle.classList.toggle('expanded');
+                });
+
+                container.appendChild(section);
+            });
+
+            // Show the hallucinations container (we're using it for multi-file display)
+            document.getElementById('hallucinations').style.display = 'block';
+            document.getElementById('hallucinations').querySelector('h2').style.display = 'none';
+        }
+
+        function renderFileContent(file) {
+            if (!file.success) {
+                return `<div class="file-error">Error: ${escapeHtml(file.error)}</div>`;
+            }
+
+            const hallucinations = file.results.filter(r => r.status !== 'verified');
+
+            let html = `
+                <div class="file-summary">
+                    <div class="stats">
+                        <div class="stat">
+                            <div class="stat-value">${file.summary.total}</div>
+                            <div class="stat-label">Analyzed</div>
+                        </div>
+                        <div class="stat stat-verified">
+                            <div class="stat-value">${file.summary.verified}</div>
+                            <div class="stat-label">Verified</div>
+                        </div>
+                        <div class="stat stat-mismatch">
+                            <div class="stat-value">${file.summary.mismatched}</div>
+                            <div class="stat-label">Mismatches</div>
+                        </div>
+                        <div class="stat stat-notfound">
+                            <div class="stat-value">${file.summary.not_found}</div>
+                            <div class="stat-label">Not Found</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            if (hallucinations.length === 0) {
+                html += '<div class="no-hallucinations">All references verified!</div>';
+            } else {
+                hallucinations.forEach(ref => {
+                    const div = document.createElement('div');
+                    div.appendChild(renderHallucination(ref));
+                    html += div.innerHTML;
+                });
+            }
+
+            return html;
+        }
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -392,39 +654,14 @@
                     throw new Error(data.error || 'Analysis failed');
                 }
 
-                // Update summary
-                document.getElementById('totalCount').textContent = data.summary.total;
-                document.getElementById('verifiedCount').textContent = data.summary.verified;
-                document.getElementById('mismatchCount').textContent = data.summary.mismatched;
-                document.getElementById('notfoundCount').textContent = data.summary.not_found;
-                document.getElementById('skippedCount').textContent = data.summary.skipped;
+                // Reset the hallucinations header visibility
+                document.getElementById('hallucinations').querySelector('h2').style.display = 'block';
 
-                // Update skipped details
-                const skippedDetails = document.getElementById('skippedDetails');
-                const detailParts = [];
-                if (data.summary.skipped > 0) {
-                    const skipParts = [];
-                    if (data.summary.skipped_url > 0) skipParts.push(`${data.summary.skipped_url} non-academic URLs`);
-                    if (data.summary.skipped_short_title > 0) skipParts.push(`${data.summary.skipped_short_title} short titles`);
-                    detailParts.push(`Skipped: ${skipParts.join(', ')}`);
-                }
-                if (data.summary.title_only > 0) {
-                    detailParts.push(`Title-only (no authors extracted): ${data.summary.title_only}`);
-                }
-                skippedDetails.textContent = detailParts.join(' | ');
-
-                // Render hallucinations
-                const list = document.getElementById('hallucinationList');
-                list.innerHTML = '';
-
-                const hallucinations = data.results.filter(r => r.status !== 'verified');
-
-                if (hallucinations.length === 0) {
-                    list.innerHTML = '<div class="no-hallucinations">All references verified!</div>';
+                // Check if this is a multi-file result
+                if (data.files && data.file_count > 0) {
+                    renderMultiFileResults(data);
                 } else {
-                    hallucinations.forEach(ref => {
-                        list.appendChild(renderHallucination(ref));
-                    });
+                    renderSingleFileResults(data);
                 }
 
                 results.classList.add('visible');
