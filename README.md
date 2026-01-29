@@ -1,8 +1,10 @@
 # Hallucinated Reference Detector
 
-A tool to detect potentially hallucinated or fabricated references in academic PDF papers. It extracts references from PDFs and validates them against academic databases (CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar, and optionally OpenAlex). Available as both a command-line tool and a web interface.
+A tool to detect potentially hallucinated or fabricated references in academic PDF papers. It extracts references from PDFs and validates them against academic databases (CrossRef, arXiv, DBLP, Semantic Scholar, ACL Anthology, NeurIPS, and optionally OpenAlex). Available as both a command-line tool and a web interface.
 
 Created by Gianluca Stringhini with the help of Claude Code and ChatGPT
+
+> **⚠️ OpenReview Disabled:** On November 27, 2025, bad actors [exploited an API vulnerability](https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/) to deanonymize 45% of ICLR 2026 submissions (~10,000 papers), exposing the identities of anonymous reviewers, authors, and area chairs. The leaked data was then used to harass reviewers, offer bribes, and coordinate collusion between authors and reviewers—a direct attack on the integrity of peer review. This happened while the ML community was already struggling with a flood of LLM-generated slop submissions and fake reviews. The OpenReview API is currently unreachable. This incident is exactly why tools like this need to exist. Papers from OpenReview venues may still be found via CrossRef or Semantic Scholar.
 
 ## Features
 
@@ -17,7 +19,7 @@ Created by Gianluca Stringhini with the help of Claude Code and ChatGPT
   - CrossRef
   - arXiv
   - DBLP
-  - OpenReview
+  - ~~OpenReview~~ (currently disabled - see warning above)
   - Semantic Scholar (aggregates Academia.edu, SSRN, PubMed, and more)
   - ACL Anthology
   - NeurIPS
@@ -148,7 +150,7 @@ Title:
   Some Fabricated Paper Title That Does Not Exist
 
 Status: Reference not found in any database
-Searched: CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar
+Searched: CrossRef, arXiv, DBLP, Semantic Scholar, ACL, NeurIPS
 
 ------------------------------------------------------------
 
