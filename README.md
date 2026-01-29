@@ -26,6 +26,8 @@ Created by Gianluca Stringhini with the help of Claude Code and ChatGPT
 
 ## Installation
 
+### pip
+
 ```bash
 # Create a virtual environment (recommended)
 python3 -m venv venv
@@ -34,6 +36,28 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 ```
+
+### Docker
+
+Run the web interface in a container:
+
+```bash
+# Build the image
+docker build -t hallucinator .
+
+# Run the container
+docker run -p 5001:5001 hallucinator
+```
+
+Then open `http://localhost:5001` in your browser.
+
+To enable debug mode:
+
+```bash
+docker run -p 5001:5001 -e FLASK_DEBUG=1 hallucinator
+```
+
+
 
 ## Usage
 
@@ -94,6 +118,8 @@ The server will start at `http://localhost:5001`.
    - Google Scholar links for manual verification
 
 The web interface displays the same information as the command-line tool but provides clickable Google Scholar links to quickly verify flagged references.
+
+
 
 ## Example Output
 

@@ -27,6 +27,12 @@ python check_hallucinated_references.py --output log.txt <pdf>
 python app.py  # Starts on http://localhost:5001
 ```
 
+### Docker
+```bash
+docker build -t hallucinator .
+docker run -p 5001:5001 hallucinator
+```
+
 ## Architecture
 
 ### Processing Pipeline
