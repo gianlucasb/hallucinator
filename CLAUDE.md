@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Hallucinated Reference Detector** - Detects potentially fabricated references in academic PDF papers by validating against multiple academic databases (CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar, and optionally OpenAlex).
+**Hallucinated Reference Detector** - Detects potentially fabricated references in academic PDF papers by validating against multiple academic databases (CrossRef, arXiv, DBLP, Semantic Scholar, ACL Anthology, NeurIPS, and optionally OpenAlex).
+
+**Read [MANIFESTO.md](MANIFESTO.md)** for the mission statement and context on why this tool exists, including documentation of the November 2025 OpenReview incident and a note on human-AI collaboration written by Claude during development.
 
 ## Commands
 
@@ -18,7 +20,7 @@ pip install -r requirements.txt
 ### CLI Usage
 ```bash
 python check_hallucinated_references.py <path_to_pdf>
-python check_hallucinated_references.py --no-color --openalex-key=KEY <pdf>
+python check_hallucinated_references.py --no-color --openalex-key=KEY --s2-api-key=KEY <pdf>
 python check_hallucinated_references.py --output log.txt <pdf>
 ```
 
@@ -48,7 +50,7 @@ docker run -p 5001:5001 hallucinator
 - **4 references checked in parallel** (configurable via `max_concurrent_refs`)
 - **8 databases queried concurrently** per reference (all at once)
 - **Early exit** - Returns immediately when verified match found
-- **Request timeouts** - 10s default (`DB_TIMEOUT`), 5s for OpenReview (`DB_TIMEOUT_SHORT`)
+- **Request timeouts** - 10s default (`DB_TIMEOUT`), 5s short timeout (`DB_TIMEOUT_SHORT`)
 - **Configurable timeouts** - Set `DB_TIMEOUT` and `DB_TIMEOUT_SHORT` env vars for testing
 
 ### Database Sources
@@ -56,7 +58,7 @@ docker run -p 5001:5001 hallucinator
 - CrossRef
 - arXiv
 - DBLP
-- OpenReview
+- ~~OpenReview~~ (disabled - API unreachable after Nov 2025 incident; see [MANIFESTO.md](MANIFESTO.md) for details)
 - Semantic Scholar
 - ACL Anthology
 - NeurIPS

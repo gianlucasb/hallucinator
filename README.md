@@ -1,209 +1,176 @@
 # Hallucinated Reference Detector
 
-A tool to detect potentially hallucinated or fabricated references in academic PDF papers. It extracts references from PDFs and validates them against academic databases (CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar, and optionally OpenAlex). Available as both a command-line tool and a web interface.
+**Detect fake citations in academic papers.** This tool extracts references from PDFs and validates them against academic databases. If a reference doesn't exist anywhere, it's probably hallucinated by an LLM.
 
-Created by Gianluca Stringhini with the help of Claude Code and ChatGPT
+Created by Gianluca Stringhini with Claude Code and ChatGPT.
 
-## Features
+> **Why this exists:** Academia is under attack from AI-generated slop—fake citations, fabricated papers, LLM-written reviews. The [November 2025 OpenReview incident](https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/) exposed how deep the rot goes: 21% of ICLR reviews were AI-generated, 199 papers were pure slop. This tool is one line of defense. It's not perfect—that's the point. We use AI to fight misuse of AI, openly and honestly. **[Read the full manifesto.](MANIFESTO.md)**
+>
+> (See those em dashes? They're a known tell of AI-generated text. This README was written with Claude. We're not hiding it—we're proving a point. **[Read why this matters, even if you're an AI absolutist.](MANIFESTO.md#why-ai-should-care)**)
 
-- Pure Python PDF reference extraction using PyMuPDF (no external services required)
-- Supports multiple citation formats:
-  - IEEE (quoted titles)
-  - ACM (year before title)
-  - USENIX (author-title-venue format)
-  - AAAI/ACM author-year format
-- Validates references against multiple academic databases:
-  - OpenAlex (optional, with API key)
-  - CrossRef
-  - arXiv
-  - DBLP
-  - OpenReview
-  - Semantic Scholar (aggregates Academia.edu, SSRN, PubMed, and more)
-  - ACL Anthology
-  - NeurIPS
-- **Fast concurrent processing**:
-  - 4 references checked in parallel
-  - All 8 databases queried simultaneously per reference
-  - Early exit when match found
-  - Configurable timeouts via `DB_TIMEOUT` env var
-- **Real-time progress streaming** in web interface via Server-Sent Events
-- **Automatic retry** for failed/timed out database queries
-- Author matching to detect title matches with wrong authors
-- Colored terminal output for easy identification of issues
-- Handles em-dash citations (same authors as previous reference)
-- Web interface for easy PDF upload and analysis
-- **Archive support** - Upload ZIP or tar.gz files with multiple PDFs
-- Clickable source links to verified papers (DOI, arXiv, etc.)
-- Google Scholar links for manual verification of flagged references
+---
 
-## Installation
-
-### pip
+## Quick Start
 
 ```bash
-# Create a virtual environment (recommended)
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
+# 1. Clone and setup
+git clone https://github.com/idramalab/hallucinator.git
+cd hallucinator
+python -m venv venv
+venv\Scripts\activate      # Windows
+source venv/bin/activate   # Linux/Mac
 pip install -r requirements.txt
+
+# 2. Run it
+python check_hallucinated_references.py your_paper.pdf
 ```
 
-### Docker
+That's it. You'll see which references check out and which don't exist in any database.
 
-Run the web interface in a container:
+---
+
+## What It Checks
+
+The tool queries these databases simultaneously:
+
+| Database | What it covers |
+|----------|----------------|
+| **CrossRef** | DOIs, journal articles, conference papers |
+| **arXiv** | Preprints (CS, physics, math, etc.) |
+| **DBLP** | Computer science bibliography |
+| **Semantic Scholar** | Aggregates Academia.edu, SSRN, PubMed, and more |
+| **ACL Anthology** | Computational linguistics papers |
+| **NeurIPS** | NeurIPS conference proceedings |
+| **OpenAlex** | 250M+ works (optional, needs free API key) |
+
+~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
+
+---
+
+## Command Line Usage
 
 ```bash
-# Build the image
-docker build -t hallucinator .
+# Basic - just check a PDF
+python check_hallucinated_references.py paper.pdf
 
-# Run the container
-docker run -p 5001:5001 hallucinator
-```
-
-Then open `http://localhost:5001` in your browser.
-
-To enable debug mode:
-
-```bash
-docker run -p 5001:5001 -e FLASK_DEBUG=1 hallucinator
-```
-
-
-
-## Usage
-
-```bash
-# Basic usage
-python check_hallucinated_references.py <path_to_pdf>
-
-# Without colored output (for piping or non-color terminals)
-python check_hallucinated_references.py --no-color <path_to_pdf>
+# With API keys (recommended - better coverage, fewer rate limits)
+python check_hallucinated_references.py --openalex-key=YOUR_KEY --s2-api-key=YOUR_KEY paper.pdf
 
 # Save output to file
-python check_hallucinated_references.py --output log.txt <path_to_pdf>
+python check_hallucinated_references.py --output results.txt paper.pdf
 
-# Use OpenAlex API for improved coverage
-python check_hallucinated_references.py --openalex-key=YOUR_API_KEY <path_to_pdf>
-
-# Combine options
-python check_hallucinated_references.py --no-color --output results.txt --openalex-key=KEY <path_to_pdf>
+# No colors (for logs/piping)
+python check_hallucinated_references.py --no-color paper.pdf
 ```
 
-### Options
+### Command Line Options
 
-| Option | Description |
-|--------|-------------|
-| `--no-color` | Disable colored output (useful for piping or logging) |
-| `--output=FILE` | Save output to a file |
-| `--openalex-key=KEY` | OpenAlex API key for improved coverage. Get a free key at https://openalex.org/settings/api |
+| Option | What it does |
+|--------|--------------|
+| `--openalex-key=KEY` | OpenAlex API key. Get one free: https://openalex.org/settings/api |
+| `--s2-api-key=KEY` | Semantic Scholar API key. Request here: https://www.semanticscholar.org/product/api |
+| `--output=FILE` | Write output to a file instead of terminal |
+| `--no-color` | Disable colored output |
+
+---
 
 ## Web Interface
 
-The tool also includes a web interface for easier use.
+```bash
+python app.py
+# Open http://localhost:5001
+```
 
-### Starting the Web Server
+Upload a PDF (or ZIP/tar.gz of multiple PDFs), optionally enter API keys, click Analyze. Watch results stream in real-time.
+
+### Docker
 
 ```bash
-# Activate virtual environment
-source venv/bin/activate
-
-# Start the Flask server
-python app.py
+docker build -t hallucinator .
+docker run -p 5001:5001 hallucinator
+# Open http://localhost:5001
 ```
 
-The server will start at `http://localhost:5001`.
+---
 
-### Using the Web Interface
+## Getting API Keys
 
-1. Open `http://localhost:5001` in your browser
-2. Upload a PDF file or archive (ZIP/tar.gz with multiple PDFs)
-3. (Optional) Enter your OpenAlex API key for improved coverage
-4. Click "Analyze References"
-5. Watch real-time progress:
-   - Progress bar and current reference being checked
-   - Live results streaming in as each reference is verified
-   - Retry pass for any timed-out queries
-6. View final results showing:
-   - Summary statistics (verified, author mismatches, not found)
-   - Timeout warnings showing which databases failed
-   - List of potentially hallucinated references with Google Scholar links
-   - Per-reference timeout info (which DBs timed out for each "not found" reference)
-   - Collapsible list of verified references with clickable source links
+API keys are optional but recommended. They improve coverage and reduce rate limiting.
 
-The web interface uses Server-Sent Events (SSE) for real-time streaming progress, so you can watch each reference being checked rather than waiting for the entire analysis to complete.
+### OpenAlex (free, instant)
+1. Go to https://openalex.org/settings/api
+2. Sign in with your email
+3. Copy your API key
 
+### Semantic Scholar (free, requires approval)
+1. Go to https://www.semanticscholar.org/product/api
+2. Click "Request API Key"
+3. Fill out the form (academic use)
+4. Wait for email (usually same day)
 
+---
 
-## Example Output
+## Understanding Results
 
-```
-Analyzing paper example.pdf
+### Verified
+The reference was found in at least one database with matching authors. It exists.
 
-============================================================
-POTENTIAL HALLUCINATION DETECTED
-============================================================
+### Author Mismatch
+The title was found but with different authors. Could be:
+- A citation error in the paper
+- Authors listed differently in the database
+- A real problem worth investigating
 
-Title:
-  Some Fabricated Paper Title That Does Not Exist
+### Not Found (Potential Hallucination)
+The reference wasn't found in any database. This could mean:
+- **Hallucinated** - LLM made it up
+- **Too new** - Not indexed yet
+- **Not indexed** - Technical reports, books, websites
+- **Database timeout** - Check if timeouts were reported
 
-Status: Reference not found in any database
-Searched: CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar
+The tool tells you which databases timed out so you can assess confidence.
 
-------------------------------------------------------------
+---
 
-============================================================
-SUMMARY
-============================================================
-  Total references analyzed: 35
-  Verified: 34
-  Not found (potential hallucinations): 1
-```
+## What Gets Skipped
 
-## How It Works
+Some references are intentionally not checked:
 
-1. **PDF Text Extraction**: Uses PyMuPDF to extract text from the PDF
-2. **Reference Section Detection**: Locates the "References" or "Bibliography" section
-3. **Reference Segmentation**: Splits references by numbered patterns ([1], [2], etc.)
-4. **Title & Author Extraction**: Parses each reference to extract title and authors
-5. **Concurrent Database Validation**:
-   - Checks 4 references in parallel
-   - For each reference, queries all 8 databases simultaneously
-   - Returns immediately when a verified match is found (early exit)
-   - Databases: OpenAlex, CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar, ACL Anthology, NeurIPS
-6. **Author Matching**: Confirms that found titles have matching authors
-7. **Retry Pass**: References marked "not found" due to timeouts are retried at the end
+- **URLs** - Links to GitHub, docs, websites (not in academic DBs)
+- **Short titles** - Less than 5 words (too generic, false matches)
 
-## Skipped References
+The output tells you how many were skipped and why.
 
-Some references are skipped during analysis and not checked against databases. The tool reports how many references were skipped and why:
-
-- **Non-academic URLs**: References pointing to websites, GitHub repositories, documentation pages, or other non-academic sources are skipped. These cannot be verified in academic databases. URLs to academic publishers (ACM, IEEE, USENIX, arXiv, DOI) are still processed.
-
-- **Short titles**: References with titles shorter than 5 words are skipped. Very short titles are often not academic papers (e.g., software names, dataset titles) and are prone to false matches.
-
-## Title-Only Verification
-
-References where author names could not be extracted are still checked against databases, but only by title. These are reported as "title-only" in the summary. If the title is found in a database, it counts as verified (without author confirmation).
+---
 
 ## Limitations
 
-- References to non-indexed sources (technical reports, websites, books) may be flagged as "not found"
-- Very recent papers may not yet be indexed in databases
-- Some legitimate papers in niche journals may not be found
-- PDF extraction quality depends on the PDF structure
+We're not perfect. Neither is anyone else. Here's what can go wrong:
 
-## Dependencies
+1. **Database coverage** - Some legitimate papers aren't indexed anywhere
+2. **Very recent papers** - Takes time to appear in databases
+3. **Books and technical reports** - Often not in these databases
+4. **PDF extraction** - Bad PDF formatting can mangle references
+5. **Rate limits** - Heavy use may hit API limits (use API keys)
 
-- `requests` - HTTP requests for API queries
-- `beautifulsoup4` - HTML parsing
-- `rapidfuzz` - Fuzzy string matching for title comparison
-- `feedparser` - arXiv API response parsing
-- `PyMuPDF` - PDF text extraction
-- `flask` - Web interface
+If something is flagged as "not found," verify manually with Google Scholar before accusing anyone of anything.
+
+---
+
+## How It Works
+
+1. **Extract text** from PDF using PyMuPDF
+2. **Find references section** (looks for "References" or "Bibliography")
+3. **Parse each reference** - extracts title and authors
+4. **Query all databases in parallel** - 4 references at a time, all DBs simultaneously
+5. **Early exit** - stops querying once a match is found
+6. **Retry failed queries** - timeouts get a second chance at the end
+7. **Report results** - verified, mismatched, or not found
+
+---
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE).
 
-See the [LICENSE](LICENSE) file for details.
+If you use this to catch fake papers, we'd love to hear about it.

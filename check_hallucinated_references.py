@@ -17,8 +17,16 @@ logger = logging.getLogger(__name__)
 
 # Request timeout in seconds - can override with DB_TIMEOUT env var for testing
 # Set to a low value (e.g., 0.001) to force timeouts for testing warnings
-DB_TIMEOUT = float(os.environ.get('DB_TIMEOUT', '10'))
-DB_TIMEOUT_SHORT = float(os.environ.get('DB_TIMEOUT_SHORT', '5'))  # For OpenReview
+DB_TIMEOUT = float(os.environ.get('DB_TIMEOUT', '10'))  # 10s default for fast DBs
+DB_TIMEOUT_RETRY = float(os.environ.get('DB_TIMEOUT_RETRY', '45'))  # 45s for retry pass (OpenReview is slow)
+
+# Thread-local storage for current timeout (allows retry pass to use longer timeout)
+import threading
+_timeout_local = threading.local()
+
+def get_timeout():
+    """Get current timeout, respecting retry pass longer timeout."""
+    return getattr(_timeout_local, 'timeout', DB_TIMEOUT)
 
 # ANSI color codes for terminal output
 class Colors:
@@ -62,9 +70,9 @@ def print_hallucinated_reference(title, error_type, source=None, ref_authors=Non
     if error_type == "not_found":
         print(f"{Colors.RED}Status:{Colors.RESET} Reference not found in any database")
         if searched_openalex:
-            print(f"{Colors.DIM}Searched: OpenAlex, CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar{Colors.RESET}")
+            print(f"{Colors.DIM}Searched: OpenAlex, CrossRef, arXiv, DBLP, Semantic Scholar, ACL, NeurIPS{Colors.RESET}")
         else:
-            print(f"{Colors.DIM}Searched: CrossRef, arXiv, DBLP, OpenReview, Semantic Scholar{Colors.RESET}")
+            print(f"{Colors.DIM}Searched: CrossRef, arXiv, DBLP, Semantic Scholar, ACL, NeurIPS{Colors.RESET}")
     elif error_type == "author_mismatch":
         print(f"{Colors.YELLOW}Status:{Colors.RESET} Title found on {source} but authors don't match")
         print()
@@ -721,9 +729,11 @@ def query_dblp(title):
     query = ' '.join(words)
     url = f"https://dblp.org/search/publ/api?q={urllib.parse.quote(query)}&format=json"
     try:
-        response = requests.get(url, timeout=DB_TIMEOUT)
+        response = requests.get(url, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception(f"Rate limited (429)")
         if response.status_code != 200:
-            return None, [], None
+            raise Exception(f"HTTP {response.status_code}")
         result = response.json()
         hits = result.get("result", {}).get("hits", {}).get("hit", [])
         for hit in hits:
@@ -749,7 +759,7 @@ def query_arxiv(title):
     url = f"http://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query)}&start=0&max_results=5"
     try:
         # feedparser doesn't support timeout directly, so we fetch with requests first
-        response = requests.get(url, timeout=DB_TIMEOUT)
+        response = requests.get(url, timeout=get_timeout())
         feed = feedparser.parse(response.content)
         for entry in feed.entries:
             entry_title = entry.title
@@ -768,9 +778,11 @@ def query_crossref(title):
     query = ' '.join(words)
     url = f"https://api.crossref.org/works?query.title={urllib.parse.quote(query)}&rows=5"
     try:
-        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"}, timeout=DB_TIMEOUT)
+        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"}, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception(f"Rate limited (429)")
         if response.status_code != 200:
-            return None, [], None
+            raise Exception(f"HTTP {response.status_code}")
         results = response.json().get("message", {}).get("items", [])
         for item in results:
             found_title = item.get("title", [""])[0]
@@ -790,9 +802,11 @@ def query_openalex(title, api_key):
     query = ' '.join(words)
     url = f"https://api.openalex.org/works?filter=title.search:{urllib.parse.quote(query)}&api_key={api_key}"
     try:
-        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"}, timeout=DB_TIMEOUT)
+        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"}, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception(f"Rate limited (429)")
         if response.status_code != 200:
-            return None, [], None
+            raise Exception(f"HTTP {response.status_code}")
         results = response.json().get("results", [])
         for item in results[:5]:  # Check top 5 results
             found_title = item.get("title", "")
@@ -820,7 +834,7 @@ def query_neurips(title):
         years = [2023, 2022, 2021, 2020, 2019, 2018]
         for year in years:
             search_url = f"https://papers.nips.cc/paper_files/paper/{year}/hash/index.html"
-            response = requests.get(search_url, timeout=DB_TIMEOUT)
+            response = requests.get(search_url, timeout=get_timeout())
             if response.status_code != 200:
                 continue
 
@@ -828,7 +842,7 @@ def query_neurips(title):
             for a in soup.find_all("a"):
                 if fuzz.ratio(normalize_title(title), normalize_title(a.text)) >= 95:
                     paper_url = "https://papers.nips.cc" + a['href']
-                    paper_response = requests.get(paper_url, timeout=DB_TIMEOUT)
+                    paper_response = requests.get(paper_url, timeout=get_timeout())
                     if paper_response.status_code != 200:
                         return a.text.strip(), [], paper_url
                     author_soup = BeautifulSoup(paper_response.content, "html.parser")
@@ -844,9 +858,11 @@ def query_acl(title):
     try:
         query = urllib.parse.quote(title)
         url = f"https://aclanthology.org/search/?q={query}"
-        response = requests.get(url, timeout=DB_TIMEOUT)
+        response = requests.get(url, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception(f"Rate limited (429)")
         if response.status_code != 200:
-            return None, [], None
+            raise Exception(f"HTTP {response.status_code}")
         soup = BeautifulSoup(response.text, 'html.parser')
         for entry in soup.select(".d-sm-flex.align-items-stretch.p-2"):
             entry_title_tag = entry.select_one("h5")
@@ -868,9 +884,11 @@ def query_openreview(title):
     query = ' '.join(words)
     url = f"https://api2.openreview.net/notes/search?query={urllib.parse.quote(query)}&limit=20"
     try:
-        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"}, timeout=DB_TIMEOUT_SHORT)
+        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"}, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception(f"Rate limited (429)")
         if response.status_code != 200:
-            return None, [], None
+            raise Exception(f"HTTP {response.status_code}")
         results = response.json().get("notes", [])
         for item in results:
             content = item.get("content", {})
@@ -894,19 +912,28 @@ def query_openreview(title):
         raise  # Re-raise so failed_dbs gets tracked
     return None, [], None
 
-def query_semantic_scholar(title):
+def query_semantic_scholar(title, api_key=None):
     """Query Semantic Scholar API for paper information.
 
     Semantic Scholar aggregates papers from many sources including
     Academia.edu, SSRN, PubMed, and institutional repositories.
+
+    Args:
+        title: Paper title to search for
+        api_key: Optional Semantic Scholar API key for higher rate limits
     """
     words = get_query_words(title, 6)
     query = ' '.join(words)
     url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={urllib.parse.quote(query)}&limit=10&fields=title,authors,url"
+    headers = {"User-Agent": "Academic Reference Parser"}
+    if api_key:
+        headers["x-api-key"] = api_key
     try:
-        response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"}, timeout=DB_TIMEOUT)
+        response = requests.get(url, headers=headers, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception(f"Rate limited (429)")
         if response.status_code != 200:
-            return None, [], None
+            raise Exception(f"HTTP {response.status_code}")
         results = response.json().get("data", [])
         for item in results:
             found_title = item.get("title", "")
@@ -919,14 +946,16 @@ def query_semantic_scholar(title):
         raise  # Re-raise so failed_dbs gets tracked
     return None, [], None
 
-def query_all_databases_concurrent(title, ref_authors, openalex_key=None, longer_timeout=False):
+def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None):
     """Query all databases concurrently for a single reference.
 
     Args:
         title: Paper title to search for
         ref_authors: Authors from the reference
         openalex_key: Optional OpenAlex API key
+        s2_api_key: Optional Semantic Scholar API key for higher rate limits
         longer_timeout: If True, use longer timeouts (for retries)
+        only_dbs: If provided, only query these specific databases (for targeted retry)
 
     Returns a dict with:
         - status: 'verified' | 'not_found' | 'author_mismatch'
@@ -936,21 +965,31 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, longer
         - error_type: None | 'not_found' | 'author_mismatch'
         - failed_dbs: list of database names that failed/timed out
     """
+    # Set timeout for this call (longer for retries)
+    _timeout_local.timeout = DB_TIMEOUT_RETRY if longer_timeout else DB_TIMEOUT
+
     # Define the databases to query
     # Each entry is (name, query_func)
-    databases = [
+    # NOTE: OpenReview disabled due to API being unreachable after Nov 2025 security incident
+    all_databases = [
         ('CrossRef', lambda: query_crossref(title)),
         ('arXiv', lambda: query_arxiv(title)),
         ('DBLP', lambda: query_dblp(title)),
-        ('OpenReview', lambda: query_openreview(title)),
-        ('Semantic Scholar', lambda: query_semantic_scholar(title)),
+        # ('OpenReview', lambda: query_openreview(title)),  # Disabled - API unreachable
+        ('Semantic Scholar', lambda: query_semantic_scholar(title, s2_api_key)),
         ('ACL Anthology', lambda: query_acl(title)),
         ('NeurIPS', lambda: query_neurips(title)),
     ]
 
     # Add OpenAlex if API key is provided
     if openalex_key:
-        databases.insert(0, ('OpenAlex', lambda: query_openalex(title, openalex_key)))
+        all_databases.insert(0, ('OpenAlex', lambda: query_openalex(title, openalex_key)))
+
+    # Filter to only requested DBs if specified
+    if only_dbs:
+        databases = [(name, func) for name, func in all_databases if name in only_dbs]
+    else:
+        databases = all_databases
 
     result = {
         'status': 'not_found',
@@ -1071,13 +1110,14 @@ def validate_authors(ref_authors, found_authors):
         found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
-def check_references(refs, sleep_time=1.0, openalex_key=None, on_progress=None, max_concurrent_refs=4):
+def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4):
     """Check references against databases with concurrent queries.
 
     Args:
         refs: List of (title, authors) tuples
         sleep_time: (unused, kept for API compatibility)
         openalex_key: Optional OpenAlex API key
+        s2_api_key: Optional Semantic Scholar API key for higher rate limits
         on_progress: Optional callback function(event_type, data)
             event_type can be: 'checking', 'result', 'warning', 'retry_pass'
             data varies by event type
@@ -1113,7 +1153,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, on_progress=None, 
         # Query all databases concurrently
         result = query_all_databases_concurrent(
             title, ref_authors,
-            openalex_key=openalex_key
+            openalex_key=openalex_key,
+            s2_api_key=s2_api_key
         )
 
         # Build full result record
@@ -1190,23 +1231,26 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, on_progress=None, 
                 'count': len(retry_candidates),
             })
 
-        for retry_num, (idx, failed_dbs) in enumerate(retry_candidates, 1):
+        for retry_num, (idx, failed_dbs_for_ref) in enumerate(retry_candidates, 1):
             title = results[idx]['title']
             ref_authors = results[idx]['ref_authors']
             short_title = title[:50] + '...' if len(title) > 50 else title
-            logger.info(f"[RETRY {retry_num}/{len(retry_candidates)}] {short_title}")
+            logger.info(f"[RETRY {retry_num}/{len(retry_candidates)}] {short_title} (retrying: {', '.join(failed_dbs_for_ref)})")
 
             if on_progress:
                 on_progress('checking', {
                     'index': idx,
                     'total': len(refs),
-                    'title': f"[RETRY] {title}",
+                    'title': f"[RETRY: {', '.join(failed_dbs_for_ref)}] {title}",
                 })
 
-            # Retry with all DBs
+            # Retry only the DBs that failed, with longer timeout
             result = query_all_databases_concurrent(
                 title, ref_authors,
-                openalex_key=openalex_key
+                openalex_key=openalex_key,
+                s2_api_key=s2_api_key,
+                longer_timeout=True,
+                only_dbs=failed_dbs_for_ref
             )
 
             # Only update if we found something better
@@ -1240,7 +1284,19 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, on_progress=None, 
     return results, check_stats
 
 
-def main(pdf_path, sleep_time=1.0, openalex_key=None):
+def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None):
+    # Print OpenReview warning
+    print(f"{Colors.YELLOW}OpenReview Disabled: On Nov 27, 2025, an OpenReview API vulnerability was exploited")
+    print(f"to deanonymize ~10k ICLR 2026 papers, leaking reviewer/author/AC identities.")
+    print(f"The leaked data was used for harassment, bribery, and author-reviewer collusion.")
+    print(f"Analysis found 21% of reviews were fully AI-generated; 199 papers were pure AI slop.")
+    print(f"This is why tools like this need to exist. The API remains unreachable.")
+    print(f"")
+    print(f"Sources:")
+    print(f"  - ICLR Official: https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/")
+    print(f"  - Science/AAAS: https://www.science.org/content/article/hack-reveals-reviewer-identities-huge-ai-conference{Colors.RESET}")
+    print()
+
     # Extract references
     print(f"Extracting references from {pdf_path.split('/')[-1]}...")
     refs, skip_stats = extract_references_with_titles_and_authors(pdf_path, return_stats=True)
@@ -1276,7 +1332,7 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None):
             print(f"[{idx}/{total}] {Colors.YELLOW}WARNING:{Colors.RESET} {message}")
 
     # Check all references with progress
-    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, on_progress=cli_progress)
+    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress)
 
     # Count results
     found = sum(1 for r in results if r['status'] == 'verified')
@@ -1365,8 +1421,21 @@ if __name__ == "__main__":
             sys.argv.remove(arg)
             break
 
+    # Check for --s2-api-key flag (Semantic Scholar)
+    s2_api_key = None
+    for i, arg in enumerate(sys.argv[:]):  # Use copy to safely modify
+        if arg.startswith('--s2-api-key='):
+            s2_api_key = arg.split('=', 1)[1]
+            sys.argv.remove(arg)
+            break
+        elif arg == '--s2-api-key' and i + 1 < len(sys.argv):
+            s2_api_key = sys.argv[i + 1]
+            sys.argv.remove(sys.argv[i + 1])
+            sys.argv.remove(arg)
+            break
+
     if len(sys.argv) < 2:
-        print("Usage: check_hallucinated_references.py [--no-color] [--sleep=SECONDS] [--openalex-key=KEY] [--output=FILE|-o FILE] <path_to_pdf>")
+        print("Usage: check_hallucinated_references.py [--no-color] [--sleep=SECONDS] [--openalex-key=KEY] [--s2-api-key=KEY] [--output=FILE|-o FILE] <path_to_pdf>")
         sys.exit(1)
 
     pdf_path = sys.argv[1]
@@ -1379,6 +1448,6 @@ if __name__ == "__main__":
         with open(output_path, "w", encoding="utf-8") as f, \
              contextlib.redirect_stdout(f), \
              contextlib.redirect_stderr(f):
-            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key)
+            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key)
     else:
-        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key)
+        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key)

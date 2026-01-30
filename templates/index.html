@@ -457,6 +457,10 @@
     </div>
     <p class="subtitle">Inspired by Madison Akles' <a href="https://madisonakles.github.io/checker.html">in-browser hallucination checker</a> | <a href="https://github.com/gianlucasb/hallucinator">Project GitHub</a></p>
 
+    <div style="margin-bottom: 1rem; padding: 0.75rem 1rem; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 0.375rem; color: #92400e; font-size: 0.9rem;">
+        <strong>OpenReview Disabled:</strong> On Nov 27, 2025, bad actors <a href="https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/" style="color: #92400e;">exploited an API vulnerability</a> to deanonymize 45% of ICLR 2026 submissions (~10,000 papers), exposing reviewers, authors, and area chairs. The leaked data was used to harass reviewers, offer bribes, and coordinate collusion between authors and reviewers—a direct attack on the integrity of peer review. This happened while the ML community was already dealing with a flood of LLM-generated slop submissions. The OpenReview API is currently unreachable. This incident is exactly why tools like this need to exist.
+    </div>
+
     <div class="upload-form">
         <form id="analyzeForm">
             <div class="form-group">
@@ -469,6 +473,13 @@
                     <span class="label-hint">(optional, improves coverage)</span>
                 </label>
                 <input type="text" id="openalexKey" name="openalex_key" placeholder="Enter your OpenAlex API key">
+            </div>
+            <div class="form-group">
+                <label for="s2ApiKey">
+                    Semantic Scholar API Key
+                    <span class="label-hint">(optional, avoids rate limiting)</span>
+                </label>
+                <input type="text" id="s2ApiKey" name="s2_api_key" placeholder="Enter your Semantic Scholar API key">
             </div>
             <button type="submit" id="submitBtn">Analyze References</button>
         </form>
@@ -534,11 +545,16 @@
         const errorMessage = document.getElementById('errorMessage');
         const results = document.getElementById('results');
         const openalexKeyInput = document.getElementById('openalexKey');
+        const s2ApiKeyInput = document.getElementById('s2ApiKey');
 
-        // Load saved OpenAlex API key from localStorage
-        const savedKey = localStorage.getItem('openalexKey');
-        if (savedKey) {
-            openalexKeyInput.value = savedKey;
+        // Load saved API keys from localStorage
+        const savedOpenalexKey = localStorage.getItem('openalexKey');
+        if (savedOpenalexKey) {
+            openalexKeyInput.value = savedOpenalexKey;
+        }
+        const savedS2Key = localStorage.getItem('s2ApiKey');
+        if (savedS2Key) {
+            s2ApiKeyInput.value = savedS2Key;
         }
 
         // Track live results during streaming
@@ -934,12 +950,18 @@
                 return;
             }
 
-            // Save OpenAlex API key to localStorage
-            const keyValue = openalexKeyInput.value.trim();
-            if (keyValue) {
-                localStorage.setItem('openalexKey', keyValue);
+            // Save API keys to localStorage
+            const openalexKeyValue = openalexKeyInput.value.trim();
+            if (openalexKeyValue) {
+                localStorage.setItem('openalexKey', openalexKeyValue);
             } else {
                 localStorage.removeItem('openalexKey');
+            }
+            const s2KeyValue = s2ApiKeyInput.value.trim();
+            if (s2KeyValue) {
+                localStorage.setItem('s2ApiKey', s2KeyValue);
+            } else {
+                localStorage.removeItem('s2ApiKey');
             }
 
             // Reset UI
