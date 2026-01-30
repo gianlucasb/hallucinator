@@ -22,11 +22,14 @@ pip install -r requirements.txt
 python check_hallucinated_references.py <path_to_pdf>
 python check_hallucinated_references.py --no-color --openalex-key=KEY --s2-api-key=KEY <pdf>
 python check_hallucinated_references.py --output log.txt <pdf>
+python check_hallucinated_references.py --dblp-offline=dblp.db <pdf>  # Use offline DBLP
+python check_hallucinated_references.py --update-dblp=dblp.db         # Download & build offline DB
 ```
 
 ### Web Server
 ```bash
 python app.py  # Starts on http://localhost:5001
+DBLP_OFFLINE_PATH=dblp.db python app.py  # With offline DBLP
 ```
 
 ### Docker
@@ -57,16 +60,25 @@ docker run -p 5001:5001 hallucinator
 - OpenAlex (optional, needs API key)
 - CrossRef
 - arXiv
-- DBLP
+- DBLP (online API or offline SQLite database)
 - ~~OpenReview~~ (disabled - API unreachable after Nov 2025 incident; see [MANIFESTO.md](MANIFESTO.md) for details)
 - Semantic Scholar
 - ACL Anthology
 - NeurIPS
 
+### Offline DBLP Database
+- Downloads from https://dblp.org/rdf/dblp.nt.gz (~4.6GB compressed)
+- Parses RDF N-Triples format to extract publications, authors, URLs
+- Builds SQLite database with FTS5 full-text search index
+- Staleness warning after 30 days (configurable via `STALENESS_THRESHOLD_DAYS`)
+- CLI: `--dblp-offline=PATH` to use, `--update-dblp=PATH` to build/refresh
+- Web: `DBLP_OFFLINE_PATH` environment variable
+
 ### Key Files
 - `check_hallucinated_references.py` - Core validation logic, CLI interface
 - `app.py` - Flask web application (shares validation logic with CLI)
 - `templates/index.html` - Web UI with embedded JS/CSS
+- `dblp_offline.py` - Offline DBLP database builder and query module
 
 ### Validation Result Types
 - **Verified** - Found in database with matching authors

@@ -39,6 +39,23 @@ app = Flask(__name__)
 MAX_FILES_IN_ARCHIVE = 50
 MAX_EXTRACTED_SIZE_MB = 500
 
+# Offline DBLP database path (optional)
+DBLP_OFFLINE_PATH = os.environ.get('DBLP_OFFLINE_PATH')
+if DBLP_OFFLINE_PATH:
+    if os.path.exists(DBLP_OFFLINE_PATH):
+        from dblp_offline import get_db_metadata, check_staleness
+        meta = get_db_metadata(DBLP_OFFLINE_PATH)
+        if meta:
+            logger.info(f"Using offline DBLP database: {DBLP_OFFLINE_PATH} ({meta.get('publication_count', '?')} publications)")
+            staleness = check_staleness(DBLP_OFFLINE_PATH)
+            if staleness:
+                logger.warning(staleness)
+        else:
+            logger.warning(f"Could not read DBLP database metadata: {DBLP_OFFLINE_PATH}")
+    else:
+        logger.warning(f"DBLP_OFFLINE_PATH set but file not found: {DBLP_OFFLINE_PATH}")
+        DBLP_OFFLINE_PATH = None
+
 
 def get_file_type(filename):
     """Detect file type from extension."""
@@ -184,7 +201,7 @@ def extract_pdfs_from_archive(archive_path, file_type, extract_dir):
     return pdf_files
 
 
-def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None):
+def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, dblp_offline_path=None):
     """Analyze PDF and return structured results.
 
     Args:
@@ -193,6 +210,7 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None):
         s2_api_key: Optional Semantic Scholar API key
         on_progress: Optional callback function(event_type, data)
             event_type can be: 'extraction_complete', 'checking', 'result', 'warning'
+        dblp_offline_path: Optional path to offline DBLP SQLite database
 
     Returns (results, skip_stats) where results is a list of dicts with keys:
         - title: reference title
@@ -234,7 +252,8 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None):
         sleep_time=1.0,
         openalex_key=openalex_key,
         s2_api_key=s2_api_key,
-        on_progress=progress_wrapper
+        on_progress=progress_wrapper,
+        dblp_offline_path=dblp_offline_path
     )
 
     verified = sum(1 for r in results if r['status'] == 'verified')
@@ -255,11 +274,11 @@ def index():
     return render_template('index.html')
 
 
-def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None):
+def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None, dblp_offline_path=None):
     """Analyze a single PDF and return a file result dict."""
     logger.info(f"--- Processing: {filename} ---")
     try:
-        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key)
+        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path)
 
         verified = sum(1 for r in results if r['status'] == 'verified')
         not_found = sum(1 for r in results if r['status'] == 'not_found')
@@ -326,7 +345,7 @@ def analyze():
             uploaded_file.save(temp_path)
             logger.info(f"Processing single PDF: {uploaded_file.filename}")
 
-            results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key, s2_api_key=s2_api_key)
+            results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH)
 
             verified = sum(1 for r in results if r['status'] == 'verified')
             not_found = sum(1 for r in results if r['status'] == 'not_found')
@@ -373,7 +392,7 @@ def analyze():
             file_results = []
             for idx, (filename, pdf_path) in enumerate(pdf_files, 1):
                 logger.info(f"=== File {idx}/{len(pdf_files)}: {filename} ===")
-                file_result = analyze_single_pdf(pdf_path, filename, openalex_key, s2_api_key)
+                file_result = analyze_single_pdf(pdf_path, filename, openalex_key, s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH)
                 file_results.append(file_result)
 
             # Aggregate summary across all files
@@ -506,7 +525,7 @@ def analyze_stream():
                     }))
 
                     try:
-                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress)
+                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress, dblp_offline_path=DBLP_OFFLINE_PATH)
                         current_skip_stats[0] = skip_stats
                         current_file_results.extend(results)
 

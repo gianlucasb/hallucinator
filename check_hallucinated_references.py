@@ -948,7 +948,7 @@ def query_semantic_scholar(title, api_key=None):
         raise  # Re-raise so failed_dbs gets tracked
     return None, [], None
 
-def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None):
+def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None):
     """Query all databases concurrently for a single reference.
 
     Args:
@@ -958,6 +958,7 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
         s2_api_key: Optional Semantic Scholar API key for higher rate limits
         longer_timeout: If True, use longer timeouts (for retries)
         only_dbs: If provided, only query these specific databases (for targeted retry)
+        dblp_offline_path: Optional path to offline DBLP SQLite database
 
     Returns a dict with:
         - status: 'verified' | 'not_found' | 'author_mismatch'
@@ -973,10 +974,18 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
     # Define the databases to query
     # Each entry is (name, query_func)
     # NOTE: OpenReview disabled due to API being unreachable after Nov 2025 security incident
+
+    # Use offline DBLP if path provided, otherwise use API
+    if dblp_offline_path:
+        from dblp_offline import query_offline as query_dblp_offline
+        dblp_query = ('DBLP (offline)', lambda: query_dblp_offline(title, dblp_offline_path))
+    else:
+        dblp_query = ('DBLP', lambda: query_dblp(title))
+
     all_databases = [
         ('CrossRef', lambda: query_crossref(title)),
         ('arXiv', lambda: query_arxiv(title)),
-        ('DBLP', lambda: query_dblp(title)),
+        dblp_query,
         # ('OpenReview', lambda: query_openreview(title)),  # Disabled - API unreachable
         ('Semantic Scholar', lambda: query_semantic_scholar(title, s2_api_key)),
         ('ACL Anthology', lambda: query_acl(title)),
@@ -1112,7 +1121,7 @@ def validate_authors(ref_authors, found_authors):
         found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
-def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4):
+def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None):
     """Check references against databases with concurrent queries.
 
     Args:
@@ -1124,6 +1133,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             event_type can be: 'checking', 'result', 'warning', 'retry_pass'
             data varies by event type
         max_concurrent_refs: Max number of references to check in parallel (default 4)
+        dblp_offline_path: Optional path to offline DBLP SQLite database
 
     Returns:
         Tuple of (results, check_stats) where:
@@ -1156,7 +1166,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
         result = query_all_databases_concurrent(
             title, ref_authors,
             openalex_key=openalex_key,
-            s2_api_key=s2_api_key
+            s2_api_key=s2_api_key,
+            dblp_offline_path=dblp_offline_path
         )
 
         # Build full result record
@@ -1252,7 +1263,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
                 openalex_key=openalex_key,
                 s2_api_key=s2_api_key,
                 longer_timeout=True,
-                only_dbs=failed_dbs_for_ref
+                only_dbs=failed_dbs_for_ref,
+                dblp_offline_path=dblp_offline_path
             )
 
             # Only update if we found something better
@@ -1286,7 +1298,24 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     return results, check_stats
 
 
-def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None):
+def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offline_path=None):
+    # Print DBLP offline status / staleness warning
+    if dblp_offline_path:
+        from dblp_offline import check_staleness, get_db_metadata
+        import os
+        if not os.path.exists(dblp_offline_path):
+            print(f"{Colors.RED}Error: DBLP offline database not found: {dblp_offline_path}{Colors.RESET}")
+            print(f"Run with --update-dblp={dblp_offline_path} to download and build the database.")
+            sys.exit(1)
+        meta = get_db_metadata(dblp_offline_path)
+        if meta:
+            pub_count = meta.get('publication_count', 'unknown')
+            print(f"{Colors.CYAN}Using offline DBLP database ({pub_count} publications){Colors.RESET}")
+        staleness_warning = check_staleness(dblp_offline_path)
+        if staleness_warning:
+            print(f"{Colors.YELLOW}Warning: {staleness_warning}{Colors.RESET}")
+        print()
+
     # Print OpenReview warning
     print(f"{Colors.YELLOW}OpenReview Disabled: On Nov 27, 2025, an OpenReview API vulnerability was exploited")
     print(f"to deanonymize ~10k ICLR 2026 papers, leaking reviewer/author/AC identities.")
@@ -1334,7 +1363,7 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None):
             print(f"[{idx}/{total}] {Colors.YELLOW}WARNING:{Colors.RESET} {message}")
 
     # Check all references with progress
-    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress)
+    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress, dblp_offline_path=dblp_offline_path)
 
     # Count results
     found = sum(1 for r in results if r['status'] == 'verified')
@@ -1436,8 +1465,58 @@ if __name__ == "__main__":
             sys.argv.remove(arg)
             break
 
+    # Check for --dblp-offline flag (offline DBLP database)
+    dblp_offline_path = None
+    for i, arg in enumerate(sys.argv[:]):
+        if arg.startswith('--dblp-offline='):
+            dblp_offline_path = arg.split('=', 1)[1]
+            sys.argv.remove(arg)
+            break
+        elif arg == '--dblp-offline' and i + 1 < len(sys.argv):
+            dblp_offline_path = sys.argv[i + 1]
+            sys.argv.remove(sys.argv[i + 1])
+            sys.argv.remove(arg)
+            break
+
+    # Check for --update-dblp flag (download and build offline DBLP database)
+    update_dblp_path = None
+    for i, arg in enumerate(sys.argv[:]):
+        if arg.startswith('--update-dblp='):
+            update_dblp_path = arg.split('=', 1)[1]
+            sys.argv.remove(arg)
+            break
+        elif arg == '--update-dblp' and i + 1 < len(sys.argv):
+            update_dblp_path = sys.argv[i + 1]
+            sys.argv.remove(sys.argv[i + 1])
+            sys.argv.remove(arg)
+            break
+
+    # Handle --update-dblp: download and build database, then exit
+    if update_dblp_path:
+        from dblp_offline import update_dblp_db
+        print(f"Downloading and building DBLP offline database at: {update_dblp_path}")
+        print("This will download ~4.6GB and may take 20-30 minutes total.")
+        print()
+        try:
+            update_dblp_db(update_dblp_path)
+            print()
+            print(f"Done! Use --dblp-offline={update_dblp_path} to use the offline database.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
     if len(sys.argv) < 2:
-        print("Usage: check_hallucinated_references.py [--no-color] [--sleep=SECONDS] [--openalex-key=KEY] [--s2-api-key=KEY] [--output=FILE|-o FILE] <path_to_pdf>")
+        print("Usage: check_hallucinated_references.py [OPTIONS] <path_to_pdf>")
+        print()
+        print("Options:")
+        print("  --no-color              Disable colored output")
+        print("  --output=FILE, -o FILE  Write output to file")
+        print("  --sleep=SECONDS         Delay between checks (default: 1.0)")
+        print("  --openalex-key=KEY      OpenAlex API key")
+        print("  --s2-api-key=KEY        Semantic Scholar API key")
+        print("  --dblp-offline=PATH     Use offline DBLP database (SQLite)")
+        print("  --update-dblp=PATH      Download DBLP dump and build offline database")
         sys.exit(1)
 
     pdf_path = sys.argv[1]
@@ -1450,6 +1529,6 @@ if __name__ == "__main__":
         with open(output_path, "w", encoding="utf-8") as f, \
              contextlib.redirect_stdout(f), \
              contextlib.redirect_stderr(f):
-            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key)
+            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path)
     else:
-        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key)
+        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path)

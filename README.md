@@ -61,6 +61,9 @@ python check_hallucinated_references.py --output results.txt paper.pdf
 
 # No colors (for logs/piping)
 python check_hallucinated_references.py --no-color paper.pdf
+
+# Use offline DBLP database (avoids rate limits)
+python check_hallucinated_references.py --dblp-offline=dblp.db paper.pdf
 ```
 
 ### Command Line Options
@@ -71,6 +74,8 @@ python check_hallucinated_references.py --no-color paper.pdf
 | `--s2-api-key=KEY` | Semantic Scholar API key. Request here: https://www.semanticscholar.org/product/api |
 | `--output=FILE` | Write output to a file instead of terminal |
 | `--no-color` | Disable colored output |
+| `--dblp-offline=PATH` | Use offline DBLP database instead of API |
+| `--update-dblp=PATH` | Download DBLP dump and build offline database |
 
 ---
 
@@ -107,6 +112,40 @@ API keys are optional but recommended. They improve coverage and reduce rate lim
 2. Click "Request API Key"
 3. Fill out the form (academic use)
 4. Wait for email (usually same day)
+
+---
+
+## Offline DBLP Database
+
+DBLP aggressively rate-limits API requests. For heavy usage, you can download their full database (~4.6GB) and query it locally.
+
+### Setup (one-time, takes 20-30 minutes)
+
+```bash
+python check_hallucinated_references.py --update-dblp=dblp.db
+```
+
+This downloads the latest [DBLP N-Triples dump](https://dblp.org/rdf/) and builds a SQLite database with ~6M publications.
+
+### Usage
+
+```bash
+# CLI
+python check_hallucinated_references.py --dblp-offline=dblp.db paper.pdf
+
+# Web app (set environment variable)
+DBLP_OFFLINE_PATH=dblp.db python app.py
+```
+
+### Keeping it fresh
+
+The database is a snapshot. If it's more than 30 days old, you'll see a warning:
+
+```
+Warning: Your DBLP database is 47 days old. Run with --update-dblp to refresh.
+```
+
+Re-run `--update-dblp` to download the latest dump. DBLP publishes daily updates but there's no incremental download—you'll need to re-download the full 4.6GB each time.
 
 ---
 
