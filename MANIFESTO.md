@@ -32,7 +32,9 @@ Sources:
 - [Science/AAAS Coverage](https://www.science.org/content/article/hack-reveals-reviewer-identities-huge-ai-conference)
 - [Hacker News Discussion](https://news.ycombinator.com/item?id=42082370)
 - [Medium Analysis](https://medium.com/@billxu_atoms/the-day-anonymity-died-inside-the-openreview-iclr-2026-leak-ee687e7a8041)
-- [Pangram Labs Analysis on AI-Generated Reviews](https://zoonop.com/articles/openreview-api-flaw-exposes-reviewer-identities-across-major-ai-conferences-revealing-21-of-iclr-reviews-potentially-ai-generated)
+- [Pangram Labs Analysis on AI-Generated Reviews](https://www.pangram.com/blog/pangram-predicts-21-of-iclr-reviews-are-ai-generated)
+
+
 
 This is why we build tools like this.
 
