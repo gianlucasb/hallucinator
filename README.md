@@ -45,7 +45,7 @@ The tool queries these databases simultaneously:
 
 ~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
 
-We **strongly recommend** to download the latest **DPLP database** and query it locally, due to their aggressive rate limiting of online queries (see dblp_offline.py later).
+We **strongly recommend** to download the latest **DBLP database** and query it locally, due to their aggressive rate limiting of online queries (see the "Offline DBLP database" section below).
 
 ---
 
