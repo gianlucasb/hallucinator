@@ -7,8 +7,7 @@
 ## The Crisis
 
 Academia is under attack. LLMs generate plausible-sounding citations that don't exist. Bad actors submit AI-generated papers with fabricated references. Peer review is being gamed.
-
-On **November 27, 2025**, this became undeniable.
+We witnessed several hallucinated citations among ACSAC submissions in the Summer of 2025, but on **November 27, 2025** the scale of the problem became apparent.
 
 ---
 
@@ -42,6 +41,9 @@ This is why we build tools like this.
 ## Scope and Limitations
 
 **This tool detects hallucinated citations.** It does not detect AI-generated reviews—that's a separate problem, and a serious one. Reviewers submitting LLM slop instead of actual evaluation is a direct attack on the integrity of peer review. We don't solve that here, but it needs solving.
+
+Hallucinated citations are a symptom of a bigger problem, but they are a symptom that we can detect with some level of confidence.
+This is why we decided to focus on them.
 
 We're not perfect. Neither is anyone else. If something is flagged as "not found," verify manually with Google Scholar before accusing anyone of anything.
 
