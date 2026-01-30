@@ -297,6 +297,28 @@
             background: #16a34a;
             color: white;
         }
+        .retry-btn {
+            background: none;
+            border: 1px solid #f59e0b;
+            color: #92400e;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            margin-left: 0.5rem;
+            transition: all 0.2s;
+        }
+        .retry-btn:hover {
+            background: #f59e0b;
+            color: white;
+        }
+        .retry-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .retry-btn.retrying {
+            background: #fef3c7;
+        }
         .error-message {
             background: #fef2f2;
             color: #dc2626;
@@ -644,9 +666,17 @@
             // Show which databases timed out
             let timeoutHtml = '';
             if (ref.failed_dbs && ref.failed_dbs.length > 0) {
+                const failedDbsJson = JSON.stringify(ref.failed_dbs).replace(/"/g, '&quot;');
+                const refAuthorsJson = JSON.stringify(ref.ref_authors || []).replace(/"/g, '&quot;');
                 timeoutHtml = `
                     <div class="timeout-info" style="margin-top: 0.5rem; padding: 0.375rem 0.75rem; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 0.25rem; color: #92400e; font-size: 0.85rem;">
-                        ⚠️ Timed out: ${ref.failed_dbs.map(db => escapeHtml(db)).join(', ')}
+                        <span class="timeout-text">⚠️ Timed out: ${ref.failed_dbs.map(db => escapeHtml(db)).join(', ')}</span>
+                        <button class="retry-btn" onclick="retryReference(this)"
+                                data-title="${escapeHtml(ref.title).replace(/"/g, '&quot;')}"
+                                data-failed-dbs="${failedDbsJson}"
+                                data-ref-authors="${refAuthorsJson}">
+                            ↻ Retry
+                        </button>
                     </div>
                 `;
             }
@@ -826,6 +856,215 @@
                 } else {
                     problematicPercent.textContent = `${percent}% of references are problematic...`;
                     problematicPercent.className = 'problematic-percent';
+                }
+            }
+        }
+
+        async function retryReference(button) {
+            const title = button.dataset.title;
+            const failedDbs = JSON.parse(button.dataset.failedDbs);
+            const refAuthors = JSON.parse(button.dataset.refAuthors);
+
+            // Get API keys from form
+            const openalexKey = document.getElementById('openalexKey')?.value?.trim() || null;
+            const s2ApiKey = document.getElementById('s2ApiKey')?.value?.trim() || null;
+            const checkOpenalexAuthors = document.getElementById('checkOpenalexAuthors')?.checked || false;
+
+            // Update button state
+            button.disabled = true;
+            button.classList.add('retrying');
+            const originalText = button.textContent;
+            button.textContent = 'Retrying...';
+
+            try {
+                const response = await fetch('/retry', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: title,
+                        ref_authors: refAuthors,
+                        failed_dbs: failedDbs,
+                        openalex_key: openalexKey,
+                        s2_api_key: s2ApiKey,
+                        check_openalex_authors: checkOpenalexAuthors,
+                    }),
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Retry failed');
+                }
+
+                const referenceDiv = button.closest('.reference');
+                const timeoutInfo = button.closest('.timeout-info');
+
+                if (result.status === 'verified') {
+                    // Move to verified section
+                    moveToVerified(referenceDiv, title, result.source, result.paper_url);
+                } else if (result.status === 'author_mismatch') {
+                    // Update to show author mismatch instead
+                    updateToAuthorMismatch(referenceDiv, title, result, refAuthors);
+                } else if (result.failed_dbs && result.failed_dbs.length > 0) {
+                    // Still have timeouts - update the timeout info
+                    const timeoutText = timeoutInfo.querySelector('.timeout-text');
+                    timeoutText.textContent = `⚠️ Timed out: ${result.failed_dbs.join(', ')}`;
+                    button.dataset.failedDbs = JSON.stringify(result.failed_dbs);
+                    button.disabled = false;
+                    button.classList.remove('retrying');
+                    button.textContent = originalText;
+                } else {
+                    // No more timeouts but still not found - remove timeout section
+                    timeoutInfo.remove();
+                }
+            } catch (error) {
+                console.error('Retry failed:', error);
+                button.textContent = 'Retry failed';
+                button.classList.remove('retrying');
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.disabled = false;
+                }, 2000);
+            }
+        }
+
+        function moveToVerified(referenceDiv, title, source, paperUrl) {
+            const fileSection = referenceDiv.closest('.file-section');
+            const isArchiveMode = fileSection !== null;
+            const container = isArchiveMode
+                ? fileSection.querySelector('.file-content')
+                : document.getElementById('hallucinationList');
+
+            // Find or create verified section
+            let verifiedSection = container.querySelector('.verified-section');
+            if (!verifiedSection) {
+                verifiedSection = document.createElement('div');
+                verifiedSection.className = 'verified-section';
+                verifiedSection.innerHTML = `
+                    <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                        <span class="verified-count-text">Verified References (0)</span>
+                        <span class="verified-toggle">▼</span>
+                    </div>
+                    <div class="verified-list"></div>
+                `;
+                container.appendChild(verifiedSection);
+            }
+
+            // Add to verified list
+            const verifiedList = verifiedSection.querySelector('.verified-list');
+            const item = document.createElement('div');
+            item.className = 'verified-item';
+            const sourceLink = paperUrl
+                ? `<a href="${escapeHtml(paperUrl)}" target="_blank" class="verified-source">${escapeHtml(source)} ↗</a>`
+                : `<span class="verified-source">${escapeHtml(source)}</span>`;
+            item.innerHTML = `
+                <span class="verified-title">${escapeHtml(title)}</span>
+                ${sourceLink}
+            `;
+            verifiedList.appendChild(item);
+
+            // Update verified count
+            const verifiedCount = verifiedList.querySelectorAll('.verified-item').length;
+            const countText = verifiedSection.querySelector('.verified-count-text');
+            if (countText) {
+                countText.textContent = `Verified References (${verifiedCount})`;
+            } else {
+                const header = verifiedSection.querySelector('.verified-header span:first-child');
+                if (header) header.textContent = `Verified References (${verifiedCount})`;
+            }
+
+            // Check if was mismatch or not_found
+            const statusEl = referenceDiv.querySelector('.reference-status');
+            const wasMismatch = statusEl && statusEl.classList.contains('status-mismatch');
+
+            // Remove reference
+            referenceDiv.remove();
+
+            // Update counts
+            if (isArchiveMode) {
+                const statsContainer = fileSection.querySelector('.file-summary .stats');
+                if (statsContainer) {
+                    const verifiedStat = statsContainer.querySelector('.stat-verified .stat-value');
+                    const mismatchStat = statsContainer.querySelector('.stat-mismatch .stat-value');
+                    const notfoundStat = statsContainer.querySelector('.stat-notfound .stat-value');
+                    if (verifiedStat) verifiedStat.textContent = parseInt(verifiedStat.textContent) + 1;
+                    if (wasMismatch && mismatchStat) mismatchStat.textContent = parseInt(mismatchStat.textContent) - 1;
+                    else if (notfoundStat) notfoundStat.textContent = parseInt(notfoundStat.textContent) - 1;
+                }
+                updateFileProblematicPercent(fileSection);
+            } else {
+                const verifiedCountEl = document.getElementById('verifiedCount');
+                const mismatchCountEl = document.getElementById('mismatchCount');
+                const notfoundCountEl = document.getElementById('notfoundCount');
+                if (verifiedCountEl) verifiedCountEl.textContent = parseInt(verifiedCountEl.textContent) + 1;
+                if (wasMismatch && mismatchCountEl) mismatchCountEl.textContent = parseInt(mismatchCountEl.textContent) - 1;
+                else if (notfoundCountEl) notfoundCountEl.textContent = parseInt(notfoundCountEl.textContent) - 1;
+                updateProblematicPercent();
+            }
+
+            // Check if all done
+            const remaining = container.querySelectorAll('.reference').length;
+            if (remaining === 0 && !container.querySelector('.no-hallucinations')) {
+                const noHallucinations = document.createElement('div');
+                noHallucinations.className = 'no-hallucinations';
+                noHallucinations.textContent = 'All references verified!';
+                container.insertBefore(noHallucinations, verifiedSection);
+            }
+        }
+
+        function updateToAuthorMismatch(referenceDiv, title, result, refAuthors) {
+            // Update status
+            const statusEl = referenceDiv.querySelector('.reference-status');
+            const wasNotFound = statusEl && statusEl.classList.contains('status-not-found');
+
+            statusEl.className = 'reference-status status-mismatch';
+            statusEl.textContent = `Author mismatch (found on ${result.source})`;
+
+            // Remove timeout info
+            const timeoutInfo = referenceDiv.querySelector('.timeout-info');
+            if (timeoutInfo) timeoutInfo.remove();
+
+            // Add author comparison if not already present
+            let authorComparison = referenceDiv.querySelector('.author-comparison');
+            if (!authorComparison) {
+                authorComparison = document.createElement('div');
+                authorComparison.className = 'author-comparison';
+                const actionsDiv = referenceDiv.querySelector('.reference-actions');
+                if (actionsDiv) {
+                    referenceDiv.insertBefore(authorComparison, actionsDiv);
+                } else {
+                    referenceDiv.appendChild(authorComparison);
+                }
+            }
+            authorComparison.innerHTML = `
+                <h4>Authors in PDF:</h4>
+                <ul class="author-list">
+                    ${refAuthors.map(a => `<li>${escapeHtml(a)}</li>`).join('')}
+                </ul>
+                <h4 style="margin-top: 0.75rem;">Authors in ${escapeHtml(result.source)}:</h4>
+                <ul class="author-list">
+                    ${result.found_authors.map(a => `<li>${escapeHtml(a)}</li>`).join('')}
+                </ul>
+            `;
+
+            // Update counts if status changed from not_found to mismatch
+            if (wasNotFound) {
+                const fileSection = referenceDiv.closest('.file-section');
+                const isArchiveMode = fileSection !== null;
+
+                if (isArchiveMode) {
+                    const statsContainer = fileSection.querySelector('.file-summary .stats');
+                    if (statsContainer) {
+                        const mismatchStat = statsContainer.querySelector('.stat-mismatch .stat-value');
+                        const notfoundStat = statsContainer.querySelector('.stat-notfound .stat-value');
+                        if (mismatchStat) mismatchStat.textContent = parseInt(mismatchStat.textContent) + 1;
+                        if (notfoundStat) notfoundStat.textContent = parseInt(notfoundStat.textContent) - 1;
+                    }
+                } else {
+                    const mismatchCountEl = document.getElementById('mismatchCount');
+                    const notfoundCountEl = document.getElementById('notfoundCount');
+                    if (mismatchCountEl) mismatchCountEl.textContent = parseInt(mismatchCountEl.textContent) + 1;
+                    if (notfoundCountEl) notfoundCountEl.textContent = parseInt(notfoundCountEl.textContent) - 1;
                 }
             }
         }

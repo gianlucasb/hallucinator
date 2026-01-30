@@ -312,6 +312,54 @@ def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None, d
         }
 
 
+@app.route('/retry', methods=['POST'])
+def retry_reference():
+    """Retry querying specific databases for a reference that timed out."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    title = data.get('title')
+    ref_authors = data.get('ref_authors', [])
+    failed_dbs = data.get('failed_dbs', [])
+    openalex_key = data.get('openalex_key')
+    s2_api_key = data.get('s2_api_key')
+    check_openalex_authors = data.get('check_openalex_authors', False)
+
+    if not title:
+        return jsonify({'error': 'Title is required'}), 400
+    if not failed_dbs:
+        return jsonify({'error': 'No databases to retry'}), 400
+
+    logger.info(f"Retry request for: {title[:50]}... (DBs: {', '.join(failed_dbs)})")
+
+    try:
+        result = query_all_databases_concurrent(
+            title, ref_authors,
+            openalex_key=openalex_key,
+            s2_api_key=s2_api_key,
+            longer_timeout=True,
+            only_dbs=failed_dbs,
+            dblp_offline_path=DBLP_OFFLINE_PATH,
+            check_openalex_authors=check_openalex_authors
+        )
+
+        logger.info(f"Retry result: {result['status']} ({result.get('source', 'none')})")
+
+        return jsonify({
+            'success': True,
+            'status': result['status'],
+            'source': result['source'],
+            'found_authors': result['found_authors'],
+            'paper_url': result.get('paper_url'),
+            'error_type': result['error_type'],
+            'failed_dbs': result.get('failed_dbs', []),
+        })
+    except Exception as e:
+        logger.error(f"Retry error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
     if 'pdf' not in request.files:
