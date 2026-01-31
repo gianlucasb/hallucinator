@@ -444,6 +444,10 @@ def clean_title(title, from_quotes=False):
         r'\s+CoRR\s+abs/.*$',  # "CoRR abs/1234.5678"
         r',?\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}.*$',  # "June 2024"
         r'[.,]\s*[Aa]ccessed\s+.*$',  # ", Accessed July 23, 2020" (URL access date)
+        r'\s*\(\d+[–\-]\d*\)\s*$',  # Trailing page numbers in parens: "(280–28)" or "(280-289)"
+        r'\s*\(pp\.?\s*\d+[–\-]\d*\)\s*$',  # "(pp. 280-289)" or "(pp 280–289)"
+        r',?\s+\d+[–\-]\d+\s*$',  # Trailing page range: ", 280-289" or " 280–289"
+        r'\.\s*[A-Z][a-zA-Z]+(?:\s+(?:in|of|on|and|for|the|a|an|&|[A-Z]?[a-zA-Z]+))+,\s*\d+\s*[,:]\s*\d+[–\-]?\d*.*$',  # ". Journal Name, vol: pages" like ". Computers in Human Behavior, 61: 280–28"
     ]
 
     for pattern in cutoff_patterns:
@@ -556,6 +560,7 @@ def extract_title_from_reference(ref_text):
                         r'[,\.]\s*(?:19|20)\d{2}',  # year
                         r'\s+(?:19|20)\d{2}\.',     # year at end
                         r'[.,]\s+[A-Z][a-z]+\s+\d+[,\s]',  # ". Word Number" journal format (". Science 344,")
+                        r'\.\s*[A-Z][a-zA-Z]+(?:\s+(?:in|of|on|and|for|the|a|an|&|[A-Za-z]+))+,\s*\d+\s*[,:]',  # ". Journal Name, vol:" like ". Computers in Human Behavior, 61:"
                     ]
                     subtitle_end = len(subtitle_text)
                     for ep in end_patterns:
