@@ -297,6 +297,22 @@
             background: #16a34a;
             color: white;
         }
+        .report-btn {
+            background: none;
+            border: 1px solid #6b7280;
+            color: #6b7280;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .report-btn:hover {
+            background: #6b7280;
+            color: white;
+        }
         .retry-btn {
             background: none;
             border: 1px solid #f59e0b;
@@ -709,6 +725,41 @@
             return `https://scholar.google.com/scholar?q=${encoded}`;
         }
 
+        function createReportUrl(ref) {
+            const repoUrl = 'https://github.com/gianlucasb/hallucinator';
+
+            let issueTitle = `False positive: ${ref.title.substring(0, 60)}${ref.title.length > 60 ? '...' : ''}`;
+
+            let issueBody = `## False Positive Report\n\n`;
+            issueBody += `**Extracted Title:** ${ref.title}\n\n`;
+
+            if (ref.ref_authors && ref.ref_authors.length > 0) {
+                issueBody += `**Extracted Authors:** ${ref.ref_authors.join(', ')}\n\n`;
+            }
+
+            issueBody += `**Error Type:** ${ref.error_type === 'not_found' ? 'Not found in any database' : 'Author mismatch'}\n\n`;
+
+            if (ref.error_type === 'author_mismatch' && ref.source) {
+                issueBody += `**Found on:** ${ref.source}\n`;
+                if (ref.found_authors && ref.found_authors.length > 0) {
+                    issueBody += `**Database Authors:** ${ref.found_authors.join(', ')}\n\n`;
+                }
+            }
+
+            issueBody += `---\n\n`;
+            issueBody += `### Additional context\n`;
+            issueBody += `<!-- Please add any additional information that might help, such as:\n`;
+            issueBody += `- Link to the actual paper (DOI, arXiv, etc.)\n`;
+            issueBody += `- The correct title if it was extracted incorrectly\n`;
+            issueBody += `- Why this is a false positive\n`;
+            issueBody += `-->\n\n`;
+
+            const encodedTitle = encodeURIComponent(issueTitle);
+            const encodedBody = encodeURIComponent(issueBody);
+
+            return `${repoUrl}/issues/new?title=${encodedTitle}&body=${encodedBody}&labels=false-positive`;
+        }
+
         function renderHallucination(ref) {
             const div = document.createElement('div');
             div.className = 'reference';
@@ -764,6 +815,9 @@
                     <button class="mark-safe-btn" onclick="markAsSafe(this, '${escapeHtml(ref.title).replace(/'/g, "\\'")}')">
                         ✓ Mark as safe
                     </button>
+                    <a href="${createReportUrl(ref)}" target="_blank" class="report-btn">
+                        ⚑ Report false positive
+                    </a>
                 </div>
             `;
 
