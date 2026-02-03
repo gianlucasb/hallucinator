@@ -106,22 +106,39 @@ def extract_doi(text):
     - 10.1234/example
     - doi:10.1234/example
     - https://doi.org/10.1234/example
+    - http://dx.doi.org/10.1234/example
     - DOI: 10.1234/example
 
     Also handles DOIs split across lines (common in PDFs).
 
     Returns the DOI string (e.g., "10.1234/example") or None if not found.
     """
-    # First, try to fix DOIs that are split across lines
+    # First, fix DOIs that are split across lines (apply to all text before pattern matching)
     # Pattern 1: DOI ending with a period followed by newline and digits
     # e.g., "10.1145/3442381.\n3450048" -> "10.1145/3442381.3450048"
+    # e.g., "10.48550/arXiv.2404.\n06011" -> "10.48550/arXiv.2404.06011"
     text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d+)', r'\1\2', text)
 
     # Pattern 2: DOI ending with a dash followed by newline and continuation
     # e.g., "10.2478/popets-\n2019-0037" -> "10.2478/popets-2019-0037"
     text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+-)\s*\n\s*(\S+)', r'\1\2', text_fixed)
 
-    # DOI pattern: 10.XXXX/suffix where suffix can contain various characters
+    # Pattern 3: URL split across lines - doi.org URL followed by newline and DOI continuation
+    # e.g., "https://doi.org/10.48550/arXiv.2404.\n06011"
+    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d+)', r'\1\2', text_fixed, flags=re.IGNORECASE)
+
+    # Priority 1: Extract from URL format (most reliable - clear boundaries)
+    # Matches https://doi.org/... or http://dx.doi.org/... or http://doi.org/...
+    url_pattern = r'https?://(?:dx\.)?doi\.org/(10\.\d{4,}/[^\s\]>)},]+)'
+    url_match = re.search(url_pattern, text_fixed, re.IGNORECASE)
+    if url_match:
+        doi = url_match.group(1)
+        # Clean trailing punctuation
+        doi = doi.rstrip('.,;:')
+        return doi
+
+    # Priority 2: DOI pattern without URL prefix
+    # 10.XXXX/suffix where suffix can contain various characters
     # The suffix ends at whitespace, or common punctuation at end of reference
     doi_pattern = r'10\.\d{4,}/[^\s\]>)}]+'
 
@@ -842,6 +859,38 @@ def segment_references(ref_text):
                 refs.append(ref_content)
         return refs
 
+    # Try Springer/Nature style: "Surname I, Surname I, ... (Year) Title"
+    # Authors use format: Surname Initial (no comma/period between surname and initial)
+    # e.g., "Abrahao S, Grundy J, Pezze M, et al (2025) Software Engineering..."
+    # Each reference starts on a new line with author name and has (year) within first ~100 chars
+    # Split by finding lines that look like reference starts
+    lines = ref_text.split('\n')
+    ref_starts = []
+    current_pos = 0
+
+    for i, line in enumerate(lines):
+        # Check if line looks like a reference start:
+        # - Starts with capital letter (author surname or organization)
+        # - Contains (YYYY) or (YYYYa) pattern within reasonable distance
+        # - Not just a page number
+        if (line and
+            re.match(r'^[A-Z]', line) and
+            not re.match(r'^\d+$', line.strip()) and
+            re.search(r'\(\d{4}[a-z]?\)', line)):
+            ref_starts.append(current_pos)
+        current_pos += len(line) + 1  # +1 for newline
+
+    if len(ref_starts) >= 5:
+        refs = []
+        for i, start in enumerate(ref_starts):
+            end = ref_starts[i + 1] if i + 1 < len(ref_starts) else len(ref_text)
+            ref_content = ref_text[start:end].strip()
+            # Remove trailing page number if present (standalone number at end)
+            ref_content = re.sub(r'\n+\d+\s*$', '', ref_content).strip()
+            if ref_content and len(ref_content) > 20:
+                refs.append(ref_content)
+        return refs
+
     # Fallback: split by double newlines
     paragraphs = re.split(r'\n\s*\n', ref_text)
     return [p.strip() for p in paragraphs if p.strip() and len(p.strip()) > 20]
@@ -872,6 +921,10 @@ def extract_authors_from_reference(ref_text):
     # IEEE format: authors end at quoted title
     quote_match = re.search(r'["\u201c\u201d]', ref_text)
 
+    # Springer/Nature format: authors end before "(Year)" pattern
+    # e.g., "Al Madi N (2023) How Readable..."
+    springer_year_match = re.search(r'\s+\((\d{4}[a-z]?)\)\s+', ref_text)
+
     # ACM format: authors end before ". Year." pattern
     acm_year_match = re.search(r'\.\s*((?:19|20)\d{2})\.\s*', ref_text)
 
@@ -896,6 +949,9 @@ def extract_authors_from_reference(ref_text):
     if quote_match:
         # IEEE format - quoted title
         author_end = quote_match.start()
+    elif springer_year_match:
+        # Springer/Nature format - "(Year)" after authors
+        author_end = springer_year_match.start()
     elif acm_year_match:
         # ACM format - period before year
         author_end = acm_year_match.start() + 1
@@ -1154,7 +1210,36 @@ def extract_title_from_reference(ref_text):
             if len(quoted_part.split()) >= 3:
                 return quoted_part, True
 
-    # === Format 2: ACM - "Authors. Year. Title. In Venue" ===
+    # === Format 2a: Springer/Nature - "Authors (Year) Title. Journal/Venue" ===
+    # Pattern: "Surname I, ... (YYYY) Title text. Journal Name Vol(Issue):Pages"
+    # Year is in parentheses, followed by title, then venue info
+    springer_year_match = re.search(r'\((\d{4}[a-z]?)\)\s+', ref_text)
+    if springer_year_match:
+        after_year = ref_text[springer_year_match.end():]
+        # Find where title ends - at journal/venue patterns
+        title_end_patterns = [
+            r'\.\s*[Ii]n:\s+',  # ". In: " (Springer uses colon)
+            r'\.\s*[Ii]n\s+[A-Z]',  # ". In Proceedings"
+            r'\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)',
+            r'\.\s*[A-Z][a-zA-Z\s]+\d+\s*\(\d+\)',  # ". Journal Name 34(5)" - journal with volume
+            r'\.\s*[A-Z][a-zA-Z\s&]+\d+:\d+',  # ". Journal Name 34:123" - journal with pages
+            r'\.\s*https?://',  # URL follows title
+            r'\.\s*URL\s+',  # URL follows title
+            r'\.\s*Tech\.\s*rep\.',  # Technical report
+            r'\.\s*pp?\.\s*\d+',  # Page numbers
+        ]
+        title_end = len(after_year)
+        for pattern in title_end_patterns:
+            m = re.search(pattern, after_year)
+            if m:
+                title_end = min(title_end, m.start())
+
+        title = after_year[:title_end].strip()
+        title = re.sub(r'\.\s*$', '', title)
+        if len(title.split()) >= 3:
+            return title, False  # from_quotes=False
+
+    # === Format 2b: ACM - "Authors. Year. Title. In Venue" ===
     # Pattern: ". YYYY. Title-text. In "
     # Use \s+ after year to avoid matching DOIs like "10.1109/CVPR.2022.001234"
     acm_match = re.search(r'\.\s*((?:19|20)\d{2})\.\s+', ref_text)
@@ -1664,6 +1749,161 @@ def query_ssrn(title):
     return None, [], None
 
 
+def titles_match(ref_title, found_title, threshold=95):
+    """Check if two titles match, handling subtitles and truncation.
+
+    Returns True if:
+    - Fuzzy match score >= threshold, OR
+    - One title is a prefix of the other (handles subtitles/truncation)
+    """
+    ref_norm = normalize_title(ref_title)
+    found_norm = normalize_title(found_title)
+
+    # Standard fuzzy match
+    if fuzz.ratio(ref_norm, found_norm) >= threshold:
+        return True
+
+    # Check if one is a prefix of the other (handles subtitles)
+    # Reference might be truncated, or database might have full title with subtitle
+    min_len = min(len(ref_norm), len(found_norm))
+    if min_len >= 30:  # Require reasonable length to avoid false positives
+        # Check if shorter is prefix of longer
+        shorter, longer = (ref_norm, found_norm) if len(ref_norm) <= len(found_norm) else (found_norm, ref_norm)
+        if longer.startswith(shorter):
+            return True
+
+    return False
+
+
+def query_europe_pmc(title):
+    """Query Europe PMC for paper information.
+
+    Europe PMC is a free database of life science literature with 42M+ abstracts.
+    It mirrors PubMed/PMC and includes preprints, theses, and agricultural publications.
+    Covers journals from SAGE, MDPI, Elsevier, Springer, and many others.
+    API docs: https://europepmc.org/RestfulWebService
+    """
+    url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+
+    # Clean title for search - remove special characters that might break query
+    clean_title = re.sub(r'["\'\[\](){}:;]', ' ', title)
+    clean_title = ' '.join(clean_title.split())  # Normalize whitespace
+
+    # Use free-text search with the title - Europe PMC's ranking will prioritize
+    # papers with matching titles, and we use fuzzy matching to verify
+    params = {
+        'query': clean_title[:100],  # Limit query length
+        'format': 'json',
+        'pageSize': 15,  # Get more results since free-text search is broader
+    }
+
+    try:
+        response = requests.get(url, params=params, headers={"User-Agent": "Academic Reference Parser"}, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception("Rate limited (429)")
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}")
+
+        data = response.json()
+        results = data.get("resultList", {}).get("result", [])
+
+        for item in results:
+            found_title = item.get("title", "")
+            if found_title and titles_match(title, found_title):
+                # Extract authors from authorString (format: "Smith J, Jones A, ...")
+                author_string = item.get("authorString", "")
+                authors = [a.strip() for a in author_string.split(",") if a.strip()] if author_string else []
+
+                # Get URL - prefer DOI, then PMCID, then PMID
+                doi = item.get("doi")
+                pmcid = item.get("pmcid")
+                pmid = item.get("pmid")
+                if doi:
+                    paper_url = f"https://doi.org/{doi}"
+                elif pmcid:
+                    paper_url = f"https://europepmc.org/article/PMC/{pmcid}"
+                elif pmid:
+                    paper_url = f"https://europepmc.org/article/MED/{pmid}"
+                else:
+                    paper_url = None
+
+                return found_title, authors, paper_url
+    except Exception as e:
+        print(f"[Error] Europe PMC search failed: {e}")
+        raise  # Re-raise so failed_dbs gets tracked
+    return None, [], None
+
+
+def query_pubmed(title):
+    """Query PubMed via NCBI E-utilities for paper information.
+
+    PubMed is the primary database for biomedical literature.
+    API docs: https://www.ncbi.nlm.nih.gov/books/NBK25500/
+    """
+    # Clean title for search
+    clean_title = re.sub(r'["\'\[\](){}:;]', ' ', title)
+    clean_title = ' '.join(clean_title.split())
+
+    # Step 1: Search for matching articles using title field search
+    search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+
+    # Use significant words in title field search
+    words = get_query_words(title, 6)
+    query = ' '.join(words)
+    search_params = {
+        'db': 'pubmed',
+        'term': f'{query}[Title]',
+        'retmode': 'json',
+        'retmax': 10,
+    }
+    try:
+        response = requests.get(search_url, params=search_params, headers={"User-Agent": "Academic Reference Parser"}, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception("Rate limited (429)")
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}")
+
+        data = response.json()
+        id_list = data.get("esearchresult", {}).get("idlist", [])
+
+        if not id_list:
+            return None, [], None
+
+        # Step 2: Fetch details for found articles
+        fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+        fetch_params = {
+            'db': 'pubmed',
+            'id': ','.join(id_list),
+            'retmode': 'json',
+        }
+        response = requests.get(fetch_url, params=fetch_params, headers={"User-Agent": "Academic Reference Parser"}, timeout=get_timeout())
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code} on fetch")
+
+        data = response.json()
+        results = data.get("result", {})
+
+        for pmid in id_list:
+            item = results.get(pmid, {})
+            found_title = item.get("title", "")
+            if found_title and titles_match(title, found_title):
+                # Extract authors
+                authors = []
+                for author in item.get("authors", []):
+                    name = author.get("name", "")
+                    if name:
+                        authors.append(name)
+
+                # Build URL
+                paper_url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+
+                return found_title, authors, paper_url
+    except Exception as e:
+        print(f"[Error] PubMed search failed: {e}")
+        raise  # Re-raise so failed_dbs gets tracked
+    return None, [], None
+
+
 def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None, check_openalex_authors=False):
     """Query all databases concurrently for a single reference.
 
@@ -1707,6 +1947,8 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
         ('SSRN', lambda: query_ssrn(title)),
         ('ACL Anthology', lambda: query_acl(title)),
         ('NeurIPS', lambda: query_neurips(title)),
+        ('Europe PMC', lambda: query_europe_pmc(title)),
+        ('PubMed', lambda: query_pubmed(title)),
     ]
 
     # Add OpenAlex if API key is provided
@@ -1801,6 +2043,22 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
 
 
 def validate_authors(ref_authors, found_authors):
+    # Common surname prefixes (case-insensitive)
+    SURNAME_PREFIXES = {'van', 'von', 'de', 'del', 'della', 'di', 'da', 'al', 'el', 'la', 'le', 'ben', 'ibn', 'mac', 'mc', 'o'}
+
+    def get_surname_from_parts(parts):
+        """Extract surname from name parts, handling multi-word surnames."""
+        if not parts:
+            return ""
+        # Check if second-to-last part is a surname prefix
+        # e.g., ['Jay', 'J.', 'Van', 'Bavel'] -> surname is 'Van Bavel'
+        if len(parts) >= 2 and parts[-2].lower().rstrip('.') in SURNAME_PREFIXES:
+            return ' '.join(parts[-2:])
+        # Check for three-part surnames like "De La Cruz"
+        if len(parts) >= 3 and parts[-3].lower().rstrip('.') in SURNAME_PREFIXES:
+            return ' '.join(parts[-3:])
+        return parts[-1]
+
     def normalize_author(name):
         # Handle AAAI "Surname, Initials" format (e.g., "Bail, C. A.")
         if ',' in name:
@@ -1810,11 +2068,23 @@ def validate_authors(ref_authors, found_authors):
             # Get first initial letter
             first_initial = initials[0] if initials else ""
             return f"{first_initial} {surname.lower()}"
-        # Standard format: "FirstName LastName"
+
         parts = name.split()
         if not parts:
             return ""
-        return f"{parts[0][0]} {parts[-1].lower()}"
+
+        # Handle Springer "Surname Initial" format (e.g., "Abrahao S", "Van Bavel JJ")
+        # Last part is initials if it's 1-2 uppercase letters (no periods)
+        if len(parts) >= 2 and len(parts[-1]) <= 2 and parts[-1].isupper():
+            surname = ' '.join(parts[:-1])  # Everything except last part
+            initial = parts[-1][0]  # First letter of initials
+            return f"{initial} {surname.lower()}"
+
+        # Standard format: "FirstName LastName" or "FirstName MiddleName LastName"
+        # Handle multi-word surnames like "Van Bavel", "Al Madi"
+        surname = get_surname_from_parts(parts)
+        first_initial = parts[0][0]
+        return f"{first_initial} {surname.lower()}"
 
     def get_last_name(name):
         # Handle AAAI "Surname, Initials" format (e.g., "Bail, C. A.")
