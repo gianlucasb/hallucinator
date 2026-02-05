@@ -202,7 +202,7 @@ def extract_pdfs_from_archive(archive_path, file_type, extract_dir):
     return pdf_files
 
 
-def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
+def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None):
     """Analyze PDF and return structured results.
 
     Args:
@@ -213,6 +213,7 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, 
             event_type can be: 'extraction_complete', 'checking', 'result', 'warning'
         dblp_offline_path: Optional path to offline DBLP SQLite database
         enabled_dbs: If provided, only query these databases (set of canonical names).
+        cancel_event: Optional threading.Event to signal cancellation.
 
     Returns (results, skip_stats) where results is a list of dicts with keys:
         - title: reference title
@@ -257,7 +258,8 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, 
         on_progress=progress_wrapper,
         dblp_offline_path=dblp_offline_path,
         check_openalex_authors=check_openalex_authors,
-        enabled_dbs=enabled_dbs
+        enabled_dbs=enabled_dbs,
+        cancel_event=cancel_event
     )
 
     verified = sum(1 for r in results if r['status'] == 'verified')
@@ -569,6 +571,7 @@ def analyze_stream():
 
     def generate():
         """Generator for SSE events."""
+        cancel_event = threading.Event()
         event_queue = queue.Queue()
         all_file_results = []  # List of per-file result dicts
         current_file_results = []
@@ -590,6 +593,8 @@ def analyze_stream():
                     event_queue.put(('archive_start', {'file_count': len(pdf_files)}))
 
                 for file_idx, (filename, pdf_path) in enumerate(pdf_files):
+                    if cancel_event.is_set():
+                        break
                     current_filename[0] = filename
                     current_file_results.clear()
 
@@ -601,7 +606,7 @@ def analyze_stream():
                     }))
 
                     try:
-                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, cancel_event=cancel_event)
                         current_skip_stats[0] = skip_stats
                         current_file_results.extend(results)
 
@@ -646,9 +651,15 @@ def analyze_stream():
                         all_file_results.append(file_result)
                         event_queue.put(('file_complete', file_result))
 
-                event_queue.put(('analysis_done', None))
+                if cancel_event.is_set():
+                    event_queue.put(('cancelled', None))
+                else:
+                    event_queue.put(('analysis_done', None))
             except Exception as e:
-                event_queue.put(('error', {'message': str(e)}))
+                if cancel_event.is_set():
+                    event_queue.put(('cancelled', None))
+                else:
+                    event_queue.put(('error', {'message': str(e)}))
             finally:
                 event_queue.put(('done', None))
 
@@ -667,6 +678,10 @@ def analyze_stream():
 
                 if event_type == 'done':
                     logger.debug("SSE: Done signal received")
+                    break
+                elif event_type == 'cancelled':
+                    logger.info("SSE: Analysis was cancelled")
+                    yield f"event: cancelled\ndata: {json.dumps({'message': 'Analysis cancelled'})}\n\n".encode('utf-8')
                     break
                 elif event_type == 'error':
                     logger.debug(f"SSE: Sending error event")
@@ -744,7 +759,9 @@ def analyze_stream():
                     yield f"event: complete\ndata: {json.dumps(complete_data)}\n\n".encode('utf-8')
 
         finally:
-            analysis_thread.join(timeout=1)
+            # Signal cancellation so the analysis thread stops promptly
+            cancel_event.set()
+            analysis_thread.join(timeout=5)
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     response = Response(

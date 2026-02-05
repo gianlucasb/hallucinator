@@ -344,6 +344,13 @@
             background: #9ca3af;
             cursor: not-allowed;
         }
+        .cancel-btn {
+            background: #dc2626;
+            margin-top: 0.75rem;
+        }
+        .cancel-btn:hover {
+            background: #b91c1c;
+        }
         .progress-section {
             display: none;
             margin-top: 1rem;
@@ -984,6 +991,7 @@
             <div class="progress-status" id="progressStatus">Extracting references...</div>
             <div class="progress-current" id="progressCurrent"></div>
             <div class="progress-results" id="progressResults"></div>
+            <button type="button" class="cancel-btn" id="cancelBtn">Cancel Analysis</button>
         </div>
         <div class="error-message" id="errorMessage"></div>
     </div>
@@ -1095,8 +1103,10 @@
     <script>
         const form = document.getElementById('analyzeForm');
         const submitBtn = document.getElementById('submitBtn');
+        const cancelBtn = document.getElementById('cancelBtn');
         const progressSection = document.getElementById('progressSection');
         const progressBar = document.getElementById('progressBar');
+        let currentAbortController = null;
         const progressStatus = document.getElementById('progressStatus');
         const progressCurrent = document.getElementById('progressCurrent');
         const progressResults = document.getElementById('progressResults');
@@ -3169,6 +3179,13 @@ https://github.com/idramalab/hallucinator
             progressResults.scrollTop = progressResults.scrollHeight;
         }
 
+        cancelBtn.addEventListener('click', () => {
+            if (currentAbortController) {
+                currentAbortController.abort();
+                currentAbortController = null;
+            }
+        });
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -3227,10 +3244,12 @@ https://github.com/idramalab/hallucinator
             results.classList.remove('visible');
 
             // Use SSE for all uploads (PDFs and archives)
+            currentAbortController = new AbortController();
             try {
                 const response = await fetch('/analyze/stream', {
                     method: 'POST',
                     body: formData,
+                    signal: currentAbortController.signal,
                 });
 
                 if (!response.ok) {
@@ -3364,6 +3383,11 @@ https://github.com/idramalab/hallucinator
                         }
 
                         results.classList.add('visible');
+                    } else if (eventType === 'cancelled') {
+                        progressSection.classList.remove('visible');
+                        errorMessage.textContent = 'Analysis cancelled.';
+                        errorMessage.classList.add('visible');
+                        return;
                     } else if (eventType === 'error') {
                         throw new Error(eventData.message || 'Analysis failed');
                     }
@@ -3388,9 +3412,14 @@ https://github.com/idramalab/hallucinator
 
             } catch (err) {
                 progressSection.classList.remove('visible');
-                errorMessage.textContent = err.message;
+                if (err.name === 'AbortError') {
+                    errorMessage.textContent = 'Analysis cancelled.';
+                } else {
+                    errorMessage.textContent = err.message;
+                }
                 errorMessage.classList.add('visible');
             } finally {
+                currentAbortController = null;
                 submitBtn.disabled = false;
             }
         });

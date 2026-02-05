@@ -2307,7 +2307,7 @@ def validate_authors(ref_authors, found_authors):
         found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
-def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
+def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None):
     """Check references against databases with concurrent queries.
 
     Args:
@@ -2348,6 +2348,10 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     def check_single_ref(i, title, ref_authors, doi=None, arxiv_id=None):
         """Check a single reference and return result."""
         nonlocal total_timeouts
+
+        # Check for cancellation before starting
+        if cancel_event and cancel_event.is_set():
+            return
 
         # Notify progress: starting to check this reference
         if on_progress:
@@ -2540,6 +2544,9 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     with ThreadPoolExecutor(max_workers=max_concurrent_refs) as executor:
         futures = []
         for i, ref in enumerate(refs):
+            # Check for cancellation before submitting more work
+            if cancel_event and cancel_event.is_set():
+                break
             # Handle (title, authors, doi, arxiv_id), (title, authors, doi), and legacy (title, authors) tuples
             if len(ref) >= 4:
                 title, ref_authors, doi, arxiv_id = ref[0], ref[1], ref[2], ref[3]
@@ -2553,9 +2560,17 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             future = executor.submit(check_single_ref, i, title, ref_authors, doi, arxiv_id)
             futures.append(future)
 
-        # Wait for all to complete
+        # Wait for all to complete (or cancel if requested)
         for future in futures:
-            future.result()  # This will raise any exceptions
+            if cancel_event and cancel_event.is_set():
+                future.cancel()
+            else:
+                future.result()  # This will raise any exceptions
+
+    # Skip retries if cancelled
+    if cancel_event and cancel_event.is_set():
+        results = [r for r in results if r is not None]
+        return results, {'total_timeouts': total_timeouts, 'retried_count': 0, 'retry_successes': 0}
 
     # Retry pass for "not found" references that had DB failures
     retry_successes = 0
@@ -2567,6 +2582,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             })
 
         for retry_num, (idx, failed_dbs_for_ref) in enumerate(retry_candidates, 1):
+            if cancel_event and cancel_event.is_set():
+                break
             title = results[idx]['title']
             ref_authors = results[idx]['ref_authors']
             short_title = title[:50] + '...' if len(title) > 50 else title
@@ -2616,7 +2633,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
 
     # DOI retry pass for rate-limited DOIs
     doi_retry_successes = 0
-    if doi_retry_candidates:
+    if doi_retry_candidates and not (cancel_event and cancel_event.is_set()):
         logger.info(f"=== DOI RETRY PASS: {len(doi_retry_candidates)} DOIs were rate limited ===")
         if on_progress:
             on_progress('doi_retry_pass', {
@@ -2671,7 +2688,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
 
     # arXiv retry pass for rate-limited arXiv IDs
     arxiv_retry_successes = 0
-    if arxiv_retry_candidates:
+    if arxiv_retry_candidates and not (cancel_event and cancel_event.is_set()):
         logger.info(f"=== arXiv RETRY PASS: {len(arxiv_retry_candidates)} arXiv IDs were rate limited ===")
         if on_progress:
             on_progress('arxiv_retry_pass', {
