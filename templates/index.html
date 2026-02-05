@@ -316,6 +316,11 @@
             width: auto;
             margin: 0;
         }
+        .db-toggles {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.4rem 1.5rem;
+        }
         input[type="text"][readonly] {
             background-color: var(--input-readonly-bg);
             color: var(--input-readonly-text);
@@ -948,6 +953,24 @@
                     <span class="label-hint">(off by default due to false positives)</span>
                 </label>
             </div>
+            <div class="form-group">
+                <label>
+                    Database Sources
+                    <span class="label-hint">(uncheck to skip — <a href="#" id="dbToggleAll">select/unselect all</a>)</span>
+                </label>
+                <div class="db-toggles">
+                    <label class="checkbox-label"><input type="checkbox" data-db="CrossRef" checked><span>CrossRef</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="arXiv" checked><span>arXiv</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="DBLP" checked><span>DBLP</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="Semantic Scholar" checked><span>Semantic Scholar</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="SSRN" checked><span>SSRN</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="ACL Anthology" checked><span>ACL Anthology</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="NeurIPS" checked><span>NeurIPS</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="Europe PMC" checked><span>Europe PMC</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="PubMed" checked><span>PubMed</span></label>
+                    <label class="checkbox-label"><input type="checkbox" data-db="OpenAlex" checked><span>OpenAlex</span></label>
+                </div>
+            </div>
             <button type="submit" id="submitBtn">Analyze References</button>
         </form>
         <div class="progress-section" id="progressSection">
@@ -1097,6 +1120,29 @@
         if (savedCheckOpenalexAuthors === 'true') {
             checkOpenalexAuthorsInput.checked = true;
         }
+
+        // Restore disabled databases from localStorage
+        const savedDisabledDbs = localStorage.getItem('disabledDbs');
+        if (savedDisabledDbs) {
+            try {
+                const disabledSet = new Set(JSON.parse(savedDisabledDbs));
+                document.querySelectorAll('[data-db]').forEach(cb => {
+                    if (disabledSet.has(cb.getAttribute('data-db'))) {
+                        cb.checked = false;
+                    }
+                });
+            } catch (e) {
+                localStorage.removeItem('disabledDbs');
+            }
+        }
+
+        // Select/unselect all database toggles
+        document.getElementById('dbToggleAll').addEventListener('click', (e) => {
+            e.preventDefault();
+            const boxes = document.querySelectorAll('[data-db]');
+            const allChecked = Array.from(boxes).every(cb => cb.checked);
+            boxes.forEach(cb => cb.checked = !allChecked);
+        });
 
         // Cookie helpers
         function getCookie(name) {
@@ -3157,6 +3203,20 @@ https://github.com/idramalab/hallucinator
                 localStorage.setItem('checkOpenalexAuthors', 'true');
             } else {
                 localStorage.removeItem('checkOpenalexAuthors');
+            }
+
+            // Collect disabled databases and save to localStorage + FormData
+            const disabledDbs = [];
+            document.querySelectorAll('[data-db]').forEach(cb => {
+                if (!cb.checked) {
+                    disabledDbs.push(cb.getAttribute('data-db'));
+                }
+            });
+            if (disabledDbs.length > 0) {
+                localStorage.setItem('disabledDbs', JSON.stringify(disabledDbs));
+                formData.append('disabled_dbs', JSON.stringify(disabledDbs));
+            } else {
+                localStorage.removeItem('disabledDbs');
             }
 
             // Reset UI

@@ -20,6 +20,27 @@ logger = logging.getLogger(__name__)
 DB_TIMEOUT = float(os.environ.get('DB_TIMEOUT', '10'))  # 10s default for fast DBs
 DB_TIMEOUT_RETRY = float(os.environ.get('DB_TIMEOUT_RETRY', '45'))  # 45s for retry pass (OpenReview is slow)
 
+# Canonical list of all supported database sources.
+#
+# This serves as the single source of truth for database identifiers used across
+# the CLI, web GUI, and core validation logic. Entry points (CLI arg parsing,
+# web form handling) are responsible for determining which databases are enabled
+# based on user configuration, then passing the filtered set downstream via the
+# `enabled_dbs` parameter. The core query function (`query_all_databases_concurrent`)
+# only constructs and executes queries for databases present in `enabled_dbs` —
+# it does not make policy decisions about what to run.
+#
+# This design intentionally separates configuration from execution, mirroring
+# how this would be modeled in a typed language (e.g., an enum Database with a
+# HashSet<Database> passed to the query layer). Python lacks native enum support
+# for this pattern, so we use a list of string constants. The goal is to eventually
+# port infrastructure like this to Rust for static compilation, eliminating the
+# need for a Python environment or Docker for end users.
+ALL_DATABASES = [
+    'CrossRef', 'arXiv', 'DBLP', 'Semantic Scholar',
+    'SSRN', 'ACL Anthology', 'NeurIPS', 'Europe PMC', 'PubMed', 'OpenAlex',
+]
+
 # Thread-local storage for current timeout (allows retry pass to use longer timeout)
 import threading
 _timeout_local = threading.local()
@@ -2023,7 +2044,7 @@ def query_pubmed(title):
     return None, [], None
 
 
-def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None, check_openalex_authors=False):
+def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
     """Query all databases concurrently for a single reference.
 
     Args:
@@ -2034,6 +2055,8 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
         longer_timeout: If True, use longer timeouts (for retries)
         only_dbs: If provided, only query these specific databases (for targeted retry)
         dblp_offline_path: Optional path to offline DBLP SQLite database
+        enabled_dbs: If provided, only include these databases (set of canonical names).
+                     None means all databases are enabled (backward compat).
 
     Returns a dict with:
         - status: 'verified' | 'not_found' | 'author_mismatch'
@@ -2046,35 +2069,37 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
     # Set timeout for this call (longer for retries)
     _timeout_local.timeout = DB_TIMEOUT_RETRY if longer_timeout else DB_TIMEOUT
 
-    # Define the databases to query
-    # Each entry is (name, query_func)
+    # Build the database list, only including databases in enabled_dbs.
+    # enabled_dbs=None means all enabled (backward compat).
     # NOTE: OpenReview disabled due to API being unreachable after Nov 2025 security incident
+    all_databases = []
 
-    # Use offline DBLP if path provided, otherwise use API
-    if dblp_offline_path:
-        from dblp_offline import query_offline as query_dblp_offline
-        dblp_query = ('DBLP (offline)', lambda: query_dblp_offline(title, dblp_offline_path))
-    else:
-        dblp_query = ('DBLP', lambda: query_dblp(title))
-
-    all_databases = [
-        ('CrossRef', lambda: query_crossref(title)),
-        ('arXiv', lambda: query_arxiv(title)),
-        dblp_query,
-        # ('OpenReview', lambda: query_openreview(title)),  # Disabled - API unreachable
-        ('Semantic Scholar', lambda: query_semantic_scholar(title, s2_api_key)),
-        ('SSRN', lambda: query_ssrn(title)),
-        ('ACL Anthology', lambda: query_acl(title)),
-        ('NeurIPS', lambda: query_neurips(title)),
-        ('Europe PMC', lambda: query_europe_pmc(title)),
-        ('PubMed', lambda: query_pubmed(title)),
-    ]
-
-    # Add OpenAlex if API key is provided
-    if openalex_key:
+    if enabled_dbs is None or 'CrossRef' in enabled_dbs:
+        all_databases.append(('CrossRef', lambda: query_crossref(title)))
+    if enabled_dbs is None or 'arXiv' in enabled_dbs:
+        all_databases.append(('arXiv', lambda: query_arxiv(title)))
+    if enabled_dbs is None or 'DBLP' in enabled_dbs:
+        if dblp_offline_path:
+            from dblp_offline import query_offline as query_dblp_offline
+            all_databases.append(('DBLP (offline)', lambda: query_dblp_offline(title, dblp_offline_path)))
+        else:
+            all_databases.append(('DBLP', lambda: query_dblp(title)))
+    if enabled_dbs is None or 'Semantic Scholar' in enabled_dbs:
+        all_databases.append(('Semantic Scholar', lambda: query_semantic_scholar(title, s2_api_key)))
+    if enabled_dbs is None or 'SSRN' in enabled_dbs:
+        all_databases.append(('SSRN', lambda: query_ssrn(title)))
+    if enabled_dbs is None or 'ACL Anthology' in enabled_dbs:
+        all_databases.append(('ACL Anthology', lambda: query_acl(title)))
+    if enabled_dbs is None or 'NeurIPS' in enabled_dbs:
+        all_databases.append(('NeurIPS', lambda: query_neurips(title)))
+    if enabled_dbs is None or 'Europe PMC' in enabled_dbs:
+        all_databases.append(('Europe PMC', lambda: query_europe_pmc(title)))
+    if enabled_dbs is None or 'PubMed' in enabled_dbs:
+        all_databases.append(('PubMed', lambda: query_pubmed(title)))
+    if (enabled_dbs is None or 'OpenAlex' in enabled_dbs) and openalex_key:
         all_databases.insert(0, ('OpenAlex', lambda: query_openalex(title, openalex_key)))
 
-    # Filter to only requested DBs if specified
+    # Filter to only requested DBs if specified (for targeted retry)
     if only_dbs:
         databases = [(name, func) for name, func in all_databases if name in only_dbs]
     else:
@@ -2282,7 +2307,7 @@ def validate_authors(ref_authors, found_authors):
         found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
-def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False):
+def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
     """Check references against databases with concurrent queries.
 
     Args:
@@ -2296,6 +2321,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             data varies by event type
         max_concurrent_refs: Max number of references to check in parallel (default 4)
         dblp_offline_path: Optional path to offline DBLP SQLite database
+        enabled_dbs: If provided, only query these databases (set of canonical names).
+                     None means all databases are enabled.
 
     Returns:
         Tuple of (results, check_stats) where:
@@ -2433,7 +2460,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             openalex_key=openalex_key,
             s2_api_key=s2_api_key,
             dblp_offline_path=dblp_offline_path,
-            check_openalex_authors=check_openalex_authors
+            check_openalex_authors=check_openalex_authors,
+            enabled_dbs=enabled_dbs
         )
 
         # Build full result record
@@ -2559,7 +2587,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
                 longer_timeout=True,
                 only_dbs=failed_dbs_for_ref,
                 dblp_offline_path=dblp_offline_path,
-                check_openalex_authors=check_openalex_authors
+                check_openalex_authors=check_openalex_authors,
+                enabled_dbs=enabled_dbs
             )
 
             # Only update if we found something better
@@ -2707,7 +2736,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     return results, check_stats
 
 
-def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False):
+def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
     # Print DBLP offline status / staleness warning
     if dblp_offline_path:
         from dblp_offline import check_staleness, get_db_metadata
@@ -2772,7 +2801,7 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
             print(f"[{idx}/{total}] {Colors.YELLOW}WARNING:{Colors.RESET} {message}")
 
     # Check all references with progress
-    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors)
+    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
 
     # Count results
     found = sum(1 for r in results if r['status'] == 'verified')
@@ -3028,6 +3057,30 @@ if __name__ == "__main__":
             sys.argv.remove(arg)
             break
 
+    # Check for --disable-dbs flag (comma-separated list of databases to skip)
+    disabled_dbs_raw = None
+    for i, arg in enumerate(sys.argv[:]):
+        if arg.startswith('--disable-dbs='):
+            disabled_dbs_raw = arg.split('=', 1)[1]
+            sys.argv.remove(arg)
+            break
+        elif arg == '--disable-dbs' and i + 1 < len(sys.argv):
+            disabled_dbs_raw = sys.argv[i + 1]
+            sys.argv.remove(sys.argv[i + 1])
+            sys.argv.remove(arg)
+            break
+
+    if disabled_dbs_raw:
+        disabled_list = [db.strip() for db in disabled_dbs_raw.split(',')]
+        invalid_dbs = [db for db in disabled_list if db not in ALL_DATABASES]
+        if invalid_dbs:
+            print(f"Error: Unknown database(s): {', '.join(invalid_dbs)}")
+            print(f"Valid databases: {', '.join(ALL_DATABASES)}")
+            sys.exit(1)
+        enabled_dbs = set(ALL_DATABASES) - set(disabled_list)
+    else:
+        enabled_dbs = None
+
     # Handle --update-dblp: download and build database, then exit
     if update_dblp_path:
         from dblp_offline import update_dblp_db
@@ -3055,6 +3108,8 @@ if __name__ == "__main__":
         print("  --dblp-offline=PATH     Use offline DBLP database (SQLite)")
         print("  --update-dblp=PATH      Download DBLP dump and build offline database")
         print("  --check-openalex-authors  Flag author mismatches from OpenAlex (off by default)")
+        print("  --disable-dbs=DB1,DB2   Disable specific databases (comma-separated)")
+        print(f"    Available: {', '.join(ALL_DATABASES)}")
         sys.exit(1)
 
     pdf_path = sys.argv[1]
@@ -3062,11 +3117,16 @@ if __name__ == "__main__":
         print(f"Error: File '{pdf_path}' not found")
         sys.exit(1)
 
+    if enabled_dbs is not None:
+        disabled = set(ALL_DATABASES) - enabled_dbs
+        print(f"{Colors.YELLOW}Disabled databases: {', '.join(sorted(disabled))}{Colors.RESET}")
+        print()
+
     if output_path:
         Colors.disable()
         with open(output_path, "w", encoding="utf-8") as f, \
              contextlib.redirect_stdout(f), \
              contextlib.redirect_stderr(f):
-            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors)
+            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
     else:
-        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors)
+        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)

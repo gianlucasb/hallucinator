@@ -22,6 +22,7 @@ from check_hallucinated_references import (
     validate_authors,
     check_references,
     query_all_databases_concurrent,
+    ALL_DATABASES,
 )
 
 # Configure logging
@@ -201,7 +202,7 @@ def extract_pdfs_from_archive(archive_path, file_type, extract_dir):
     return pdf_files
 
 
-def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, dblp_offline_path=None, check_openalex_authors=False):
+def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
     """Analyze PDF and return structured results.
 
     Args:
@@ -211,6 +212,7 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, 
         on_progress: Optional callback function(event_type, data)
             event_type can be: 'extraction_complete', 'checking', 'result', 'warning'
         dblp_offline_path: Optional path to offline DBLP SQLite database
+        enabled_dbs: If provided, only query these databases (set of canonical names).
 
     Returns (results, skip_stats) where results is a list of dicts with keys:
         - title: reference title
@@ -254,7 +256,8 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, 
         s2_api_key=s2_api_key,
         on_progress=progress_wrapper,
         dblp_offline_path=dblp_offline_path,
-        check_openalex_authors=check_openalex_authors
+        check_openalex_authors=check_openalex_authors,
+        enabled_dbs=enabled_dbs
     )
 
     verified = sum(1 for r in results if r['status'] == 'verified')
@@ -279,11 +282,11 @@ def index():
     )
 
 
-def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False):
+def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
     """Analyze a single PDF and return a file result dict."""
     logger.info(f"--- Processing: {filename} ---")
     try:
-        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors)
+        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
 
         verified = sum(1 for r in results if r['status'] == 'verified')
         not_found = sum(1 for r in results if r['status'] == 'not_found')
@@ -384,11 +387,20 @@ def analyze():
     s2_api_key = request.form.get('s2_api_key', '').strip() or None
     check_openalex_authors = request.form.get('check_openalex_authors') == 'true'
 
+    disabled_dbs_raw = request.form.get('disabled_dbs', '').strip()
+    if disabled_dbs_raw:
+        disabled_set = set(json.loads(disabled_dbs_raw))
+        enabled_dbs = set(ALL_DATABASES) - disabled_set
+    else:
+        enabled_dbs = None  # all enabled
+
     logger.info(f"=== New analysis request: {uploaded_file.filename} (type: {file_type}) ===")
     if openalex_key:
         logger.info("OpenAlex API key provided")
     if s2_api_key:
         logger.info("Semantic Scholar API key provided")
+    if enabled_dbs is not None:
+        logger.info(f"Enabled databases: {', '.join(sorted(enabled_dbs))}")
 
     # Create temp directory for all operations
     temp_dir = tempfile.mkdtemp()
@@ -399,7 +411,7 @@ def analyze():
             uploaded_file.save(temp_path)
             logger.info(f"Processing single PDF: {uploaded_file.filename}")
 
-            results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors)
+            results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
 
             verified = sum(1 for r in results if r['status'] == 'verified')
             not_found = sum(1 for r in results if r['status'] == 'not_found')
@@ -446,7 +458,7 @@ def analyze():
             file_results = []
             for idx, (filename, pdf_path) in enumerate(pdf_files, 1):
                 logger.info(f"=== File {idx}/{len(pdf_files)}: {filename} ===")
-                file_result = analyze_single_pdf(pdf_path, filename, openalex_key, s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH)
+                file_result = analyze_single_pdf(pdf_path, filename, openalex_key, s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH, enabled_dbs=enabled_dbs)
                 file_results.append(file_result)
 
             # Aggregate summary across all files
@@ -511,7 +523,16 @@ def analyze_stream():
     s2_api_key = request.form.get('s2_api_key', '').strip() or None
     check_openalex_authors = request.form.get('check_openalex_authors') == 'true'
 
+    disabled_dbs_raw = request.form.get('disabled_dbs', '').strip()
+    if disabled_dbs_raw:
+        disabled_set = set(json.loads(disabled_dbs_raw))
+        enabled_dbs = set(ALL_DATABASES) - disabled_set
+    else:
+        enabled_dbs = None  # all enabled
+
     logger.info(f"=== New streaming analysis request: {uploaded_file.filename} (type: {file_type}) ===")
+    if enabled_dbs is not None:
+        logger.info(f"Enabled databases: {', '.join(sorted(enabled_dbs))}")
 
     # Create temp directory and save file
     temp_dir = tempfile.mkdtemp()
@@ -580,7 +601,7 @@ def analyze_stream():
                     }))
 
                     try:
-                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors)
+                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
                         current_skip_stats[0] = skip_stats
                         current_file_results.extend(results)
 
