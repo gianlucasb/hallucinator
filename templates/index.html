@@ -3141,6 +3141,49 @@ https://github.com/idramalab/hallucinator
             return html;
         }
 
+        function renderCancelledResults() {
+            progressSection.classList.remove('visible');
+
+            if (liveResults.length === 0) {
+                errorMessage.textContent = 'Analysis cancelled.';
+                errorMessage.classList.add('visible');
+                return;
+            }
+
+            // Build summary from partial results
+            const verified = liveResults.filter(r => r.status === 'verified').length;
+            const notFound = liveResults.filter(r => r.status === 'not_found').length;
+            const mismatched = liveResults.filter(r => r.status === 'author_mismatch').length;
+            const checked = liveResults.length;
+
+            const summary = {
+                total: totalRefs || checked,
+                verified: verified,
+                not_found: notFound,
+                mismatched: mismatched,
+                skipped: 0,
+                skipped_url: 0,
+                skipped_short_title: 0,
+                title_only: 0,
+            };
+
+            document.getElementById('hallucinations').querySelector('h2').style.display = 'block';
+
+            renderSingleFileResults({
+                summary: summary,
+                results: liveResults,
+            });
+
+            // Show a warning banner that results are partial
+            const resultsSection = document.getElementById('hallucinations');
+            const cancelBanner = document.createElement('div');
+            cancelBanner.style.cssText = 'margin-bottom: 1rem; padding: 0.5rem 1rem; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 0.375rem; color: #92400e; font-size: 0.9rem;';
+            cancelBanner.textContent = `Analysis cancelled. Showing partial results: ${checked} of ${totalRefs || '?'} references checked.`;
+            resultsSection.insertBefore(cancelBanner, resultsSection.children[1]);
+
+            results.classList.add('visible');
+        }
+
         function resetProgressUI() {
             liveResults = [];
             totalRefs = 0;
@@ -3384,9 +3427,7 @@ https://github.com/idramalab/hallucinator
 
                         results.classList.add('visible');
                     } else if (eventType === 'cancelled') {
-                        progressSection.classList.remove('visible');
-                        errorMessage.textContent = 'Analysis cancelled.';
-                        errorMessage.classList.add('visible');
+                        renderCancelledResults();
                         return;
                     } else if (eventType === 'error') {
                         throw new Error(eventData.message || 'Analysis failed');
@@ -3411,13 +3452,13 @@ https://github.com/idramalab/hallucinator
                 }
 
             } catch (err) {
-                progressSection.classList.remove('visible');
                 if (err.name === 'AbortError') {
-                    errorMessage.textContent = 'Analysis cancelled.';
+                    renderCancelledResults();
                 } else {
+                    progressSection.classList.remove('visible');
                     errorMessage.textContent = err.message;
+                    errorMessage.classList.add('visible');
                 }
-                errorMessage.classList.add('visible');
             } finally {
                 currentAbortController = null;
                 submitBtn.disabled = false;
