@@ -3180,7 +3180,7 @@ https://github.com/idramalab/hallucinator
         }
 
         cancelBtn.addEventListener('click', () => {
-            if (currentAbortController) {
+            if (currentAbortController && confirm('Are you sure you want to cancel the current analysis?')) {
                 currentAbortController.abort();
                 currentAbortController = null;
             }
