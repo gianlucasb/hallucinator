@@ -165,6 +165,103 @@ class TestCheckReferencesCancellation:
         assert len(checking_events) < 3
 
 
+class TestCancelledResultsData:
+    """Tests for cancelled results containing full data."""
+
+    @patch('check_hallucinated_references.query_all_databases_concurrent')
+    def test_cancelled_results_have_full_fields(self, mock_query):
+        """Cancelled results should contain all result fields, not just status/source."""
+        from check_hallucinated_references import check_references
+
+        cancel_event = threading.Event()
+        processed = 0
+
+        def mock_query_fn(title, ref_authors, **kwargs):
+            nonlocal processed
+            processed += 1
+            if processed >= 2:
+                cancel_event.set()
+            return _make_db_result(status='not_found', source=None, found_authors=[], failed_dbs=['SSRN'])
+
+        mock_query.side_effect = mock_query_fn
+
+        refs = _make_refs(5)
+        results, stats = check_references(
+            refs, cancel_event=cancel_event, max_concurrent_refs=1
+        )
+
+        # Should have some results (not all 5)
+        assert len(results) > 0
+        assert len(results) < 5
+
+        # Each result should have full data fields
+        for r in results:
+            assert 'title' in r
+            assert 'ref_authors' in r
+            assert 'status' in r
+            assert 'source' in r
+            assert 'found_authors' in r
+            assert 'failed_dbs' in r
+            assert 'doi_info' in r
+            assert 'arxiv_info' in r
+            assert 'retraction_info' in r
+
+    @patch('app.check_references')
+    @patch('app.extract_references_with_titles_and_authors')
+    def test_cancelled_sse_event_includes_results(self, mock_extract, mock_check):
+        """The cancelled SSE event should include full results and summary."""
+        import json
+        import queue
+        import threading
+
+        mock_extract.return_value = (
+            [("A Title of a Test Paper", ["A. Author"], None, None)],
+            {'total_raw': 1, 'skipped_url': 0, 'skipped_short_title': 0, 'skipped_no_authors': 0}
+        )
+        mock_check.return_value = (
+            [{'title': 'A Title of a Test Paper', 'status': 'not_found', 'source': None,
+              'ref_authors': ['A. Author'], 'found_authors': [], 'error_type': 'not_found',
+              'failed_dbs': ['SSRN'], 'doi_info': None, 'arxiv_info': None,
+              'retraction_info': None, 'paper_url': None}],
+            {'total_timeouts': 1, 'retried_count': 0, 'retry_successes': 0}
+        )
+
+        from app import app
+        app.config['TESTING'] = True
+
+        with app.test_client() as client:
+            # Create a minimal PDF
+            pdf_content = b'%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n0000000101 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n178\n%%EOF'
+
+            import io
+            data = {
+                'pdf': (io.BytesIO(pdf_content), 'test.pdf'),
+            }
+
+            # Use the stream endpoint
+            response = client.post('/analyze/stream', data=data, content_type='multipart/form-data')
+
+            # Parse SSE events from response
+            events = {}
+            for line in response.data.decode('utf-8').split('\n'):
+                if line.startswith('event: '):
+                    current_event = line[7:]
+                elif line.startswith('data: ') and current_event:
+                    events[current_event] = json.loads(line[6:])
+
+            # Either 'complete' or 'cancelled' should have full results
+            event_data = events.get('complete') or events.get('cancelled')
+            assert event_data is not None, f"Expected complete or cancelled event, got: {list(events.keys())}"
+            assert 'results' in event_data
+            assert 'summary' in event_data
+
+            # Results should have full fields
+            for r in event_data['results']:
+                assert 'ref_authors' in r
+                assert 'found_authors' in r
+                assert 'failed_dbs' in r
+
+
 class TestAnalyzePdfCancellation:
     """Tests for cancel_event in analyze_pdf()."""
 

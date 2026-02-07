@@ -3141,26 +3141,25 @@ https://github.com/idramalab/hallucinator
             return html;
         }
 
-        function renderCancelledResults() {
+        function renderCancelledResults(serverData) {
             progressSection.classList.remove('visible');
 
-            if (liveResults.length === 0) {
+            // Use server-provided partial results if available, fall back to liveResults
+            const hasServerData = serverData && serverData.results && serverData.results.length > 0;
+            const resultData = hasServerData ? serverData.results : liveResults;
+            const checked = resultData.length;
+
+            if (checked === 0) {
                 errorMessage.textContent = 'Analysis cancelled.';
                 errorMessage.classList.add('visible');
                 return;
             }
 
-            // Build summary from partial results
-            const verified = liveResults.filter(r => r.status === 'verified').length;
-            const notFound = liveResults.filter(r => r.status === 'not_found').length;
-            const mismatched = liveResults.filter(r => r.status === 'author_mismatch').length;
-            const checked = liveResults.length;
-
-            const summary = {
-                total: totalRefs || checked,
-                verified: verified,
-                not_found: notFound,
-                mismatched: mismatched,
+            const summary = hasServerData ? serverData.summary : {
+                total: checked,
+                verified: liveResults.filter(r => r.status === 'verified').length,
+                not_found: liveResults.filter(r => r.status === 'not_found').length,
+                mismatched: liveResults.filter(r => r.status === 'author_mismatch').length,
                 skipped: 0,
                 skipped_url: 0,
                 skipped_short_title: 0,
@@ -3171,7 +3170,7 @@ https://github.com/idramalab/hallucinator
 
             renderSingleFileResults({
                 summary: summary,
-                results: liveResults,
+                results: resultData,
             });
 
             // Show a warning banner that results are partial
@@ -3427,7 +3426,7 @@ https://github.com/idramalab/hallucinator
 
                         results.classList.add('visible');
                     } else if (eventType === 'cancelled') {
-                        renderCancelledResults();
+                        renderCancelledResults(eventData);
                         return;
                     } else if (eventType === 'error') {
                         throw new Error(eventData.message || 'Analysis failed');

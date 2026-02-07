@@ -2530,15 +2530,12 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
                 retry_candidates.append((i, failed_dbs))
             logger.info(f"  -> Will retry ({len(failed_dbs)} DBs failed: {', '.join(failed_dbs)})")
 
-        # Notify progress: result for this reference
+        # Notify progress: result for this reference (include full result data)
         if on_progress:
-            on_progress('result', {
-                'index': i,
-                'total': len(refs),
-                'title': title,
-                'status': result['status'],
-                'source': result['source'],
-            })
+            progress_data = dict(full_result)
+            progress_data['index'] = i
+            progress_data['total'] = len(refs)
+            on_progress('result', progress_data)
 
     # Process references in parallel with bounded concurrency
     with ThreadPoolExecutor(max_workers=max_concurrent_refs) as executor:
@@ -2618,13 +2615,11 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
                 logger.info(f"  -> RECOVERED: {result['status'].upper()} ({result['source']})")
 
                 if on_progress:
-                    on_progress('result', {
-                        'index': idx,
-                        'total': len(refs),
-                        'title': f"[RETRY] {title}",
-                        'status': result['status'],
-                        'source': result['source'],
-                    })
+                    progress_data = dict(results[idx])
+                    progress_data['index'] = idx
+                    progress_data['total'] = len(refs)
+                    progress_data['title'] = f"[RETRY] {title}"
+                    on_progress('result', progress_data)
             else:
                 logger.info(f"  -> Still not found")
 

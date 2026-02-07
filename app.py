@@ -651,13 +651,64 @@ def analyze_stream():
                         all_file_results.append(file_result)
                         event_queue.put(('file_complete', file_result))
 
+                def build_cancelled_data():
+                    """Build partial results data for cancelled analysis."""
+                    partial_files = list(all_file_results)
+
+                    # Include partial results from the file that was in progress
+                    if current_file_results:
+                        checked = [r for r in current_file_results if r is not None]
+                        if checked:
+                            skip_stats = current_skip_stats[0] or {}
+                            verified_c = sum(1 for r in checked if r['status'] == 'verified')
+                            not_found_c = sum(1 for r in checked if r['status'] == 'not_found')
+                            mismatched_c = sum(1 for r in checked if r['status'] == 'author_mismatch')
+                            total_skipped = skip_stats.get('skipped_url', 0) + skip_stats.get('skipped_short_title', 0)
+                            partial_files.append({
+                                'filename': current_filename[0],
+                                'success': True,
+                                'summary': {
+                                    'total_raw': skip_stats.get('total_raw', 0),
+                                    'total': len(checked),
+                                    'verified': verified_c,
+                                    'not_found': not_found_c,
+                                    'mismatched': mismatched_c,
+                                    'skipped': total_skipped,
+                                    'skipped_url': skip_stats.get('skipped_url', 0),
+                                    'skipped_short_title': skip_stats.get('skipped_short_title', 0),
+                                    'title_only': skip_stats.get('skipped_no_authors', 0),
+                                    'total_timeouts': skip_stats.get('total_timeouts', 0),
+                                    'retried_count': skip_stats.get('retried_count', 0),
+                                    'retry_successes': skip_stats.get('retry_successes', 0),
+                                },
+                                'results': checked,
+                            })
+
+                    agg_summary = {
+                        'total_raw': 0, 'total': 0, 'verified': 0, 'not_found': 0,
+                        'mismatched': 0, 'skipped': 0, 'skipped_url': 0,
+                        'skipped_short_title': 0, 'title_only': 0,
+                    }
+                    all_partial_results = []
+                    for fr in partial_files:
+                        if fr.get('success'):
+                            for key in agg_summary:
+                                agg_summary[key] += fr['summary'].get(key, 0)
+                            all_partial_results.extend(fr['results'])
+
+                    return {
+                        'summary': agg_summary,
+                        'results': all_partial_results,
+                        'files': partial_files if is_archive else None,
+                    }
+
                 if cancel_event.is_set():
-                    event_queue.put(('cancelled', None))
+                    event_queue.put(('cancelled', build_cancelled_data()))
                 else:
                     event_queue.put(('analysis_done', None))
             except Exception as e:
                 if cancel_event.is_set():
-                    event_queue.put(('cancelled', None))
+                    event_queue.put(('cancelled', build_cancelled_data()))
                 else:
                     event_queue.put(('error', {'message': str(e)}))
             finally:
@@ -681,7 +732,9 @@ def analyze_stream():
                     break
                 elif event_type == 'cancelled':
                     logger.info("SSE: Analysis was cancelled")
-                    yield f"event: cancelled\ndata: {json.dumps({'message': 'Analysis cancelled'})}\n\n".encode('utf-8')
+                    cancelled_data = data or {}
+                    cancelled_data['message'] = 'Analysis cancelled'
+                    yield f"event: cancelled\ndata: {json.dumps(cancelled_data)}\n\n".encode('utf-8')
                     break
                 elif event_type == 'error':
                     logger.debug(f"SSE: Sending error event")
@@ -706,18 +759,9 @@ def analyze_stream():
                     logger.debug(f"SSE: Sending checking event for index {data.get('index')}")
                     yield f"event: checking\ndata: {json.dumps(data)}\n\n".encode('utf-8')
                 elif event_type == 'result':
-                    # Include full result data
-                    result_data = {
-                        'index': data['index'],
-                        'total': data['total'],
-                        'title': data['title'],
-                        'status': data['status'],
-                        'source': data['source'],
-                    }
-                    if 'filename' in data:
-                        result_data['filename'] = data['filename']
+                    # Forward full result data (includes ref_authors, found_authors, doi_info, etc.)
                     logger.debug(f"SSE: Sending result event for index {data.get('index')}")
-                    yield f"event: result\ndata: {json.dumps(result_data)}\n\n".encode('utf-8')
+                    yield f"event: result\ndata: {json.dumps(data)}\n\n".encode('utf-8')
                 elif event_type == 'warning':
                     warning_data = {
                         'index': data['index'],
