@@ -2331,7 +2331,7 @@
             const retracted = data.results.filter(r => r.retraction_info && r.retraction_info.retracted);
             const timestamp = new Date().toLocaleString();
 
-            function refHtml(ref, idx, label) {
+            function refHtml(ref, idx) {
                 const fileInfo = ref.filename ? `<div style="color:#666;font-size:0.85rem;margin-bottom:0.25rem">📄 ${escapeHtml(ref.filename)}</div>` : '';
                 const citation = ref.raw_citation
                     ? `<div class="citation">${escapeHtml(ref.raw_citation)}</div>`
@@ -2354,7 +2354,7 @@
                     ? `<div class="retracted">⚠ RETRACTED: ${escapeHtml(ref.retraction_info.reason || 'No reason given')}</div>`
                     : '';
                 const failedDbs = (ref.failed_dbs || []).length > 0
-                    ? `<div class="failed-dbs">Databases that failed/timed out: ${ref.failed_dbs.join(', ')}</div>`
+                    ? `<div class="failed-dbs">Databases that failed/timed out: ${ref.failed_dbs.map(d => escapeHtml(d)).join(', ')}</div>`
                     : '';
 
                 let mismatchDetail = '';
@@ -2429,20 +2429,20 @@
             // Not Found
             if (notFound.length > 0) {
                 html += `<h2 style="color:#dc2626;">Not Found (${notFound.length})</h2>\n`;
-                notFound.forEach((ref, idx) => { html += refHtml(ref, idx, 'not_found'); });
+                notFound.forEach((ref, idx) => { html += refHtml(ref, idx); });
             }
 
             // Author Mismatches
             if (mismatched.length > 0) {
                 html += `<h2 style="color:#ca8a04;">Author Mismatches (${mismatched.length})</h2>\n`;
-                mismatched.forEach((ref, idx) => { html += refHtml(ref, idx, 'author_mismatch'); });
+                mismatched.forEach((ref, idx) => { html += refHtml(ref, idx); });
             }
 
             // Retracted (only if not already shown above)
             const retractedVerified = retracted.filter(r => r.status === 'verified');
             if (retractedVerified.length > 0) {
                 html += `<h2 style="color:#dc2626;">Retracted Papers (${retractedVerified.length})</h2>\n`;
-                retractedVerified.forEach((ref, idx) => { html += refHtml(ref, idx, 'retracted'); });
+                retractedVerified.forEach((ref, idx) => { html += refHtml(ref, idx); });
             }
 
             // Verified
@@ -2451,7 +2451,7 @@
                 html += '<p>No references were verified.</p>';
             } else {
                 verified.filter(r => !(r.retraction_info && r.retraction_info.retracted)).forEach((ref, idx) => {
-                    html += refHtml(ref, idx, 'verified');
+                    html += refHtml(ref, idx);
                 });
             }
 

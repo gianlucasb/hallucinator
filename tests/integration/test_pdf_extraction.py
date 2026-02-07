@@ -61,8 +61,10 @@ class TestFullPipeline:
         assert 'skipped_short_title' in stats
         assert 'skipped_no_authors' in stats
 
-        # Each reference should be a (title, authors) tuple
-        for title, authors in refs:
+        # Each reference should be a (title, authors, doi, arxiv_id, raw_citation) tuple
+        for ref in refs:
+            assert len(ref) == 5
+            title, authors, doi, arxiv_id, raw_citation = ref
             assert isinstance(title, str)
             assert len(title) > 0
             assert isinstance(authors, list)
