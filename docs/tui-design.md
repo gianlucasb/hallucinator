@@ -839,26 +839,97 @@ Semi-transparent overlay on top of whatever screen is active. The
 underlying screen is still visible (dimmed) so you maintain spatial
 context.
 
-## Open questions
+## Decisions (resolved)
 
-1. **Notification on completion?** When analysis finishes while the user
-   is in another tab, should we send a terminal bell? Desktop
-   notification via `notify-send`? Both? Configurable?
+### 1. Notification on completion
 
-2. **Persistent results?** Should completed results auto-save to a
-   default location so you can re-open them later without re-running?
-   Or is that just the export feature and we don't auto-save?
+Terminal bell by default. Works everywhere, zero config. Desktop
+notification via `notify-send` / platform equivalent available as
+opt-in flag (`--notify`). Don't overthink this.
 
-3. **Reference text preview.** On Screen 2 (Paper), should there be a
-   preview pane showing the raw reference text for the selected row? It
-   would help spot extraction errors without drilling into Screen 3. But
-   it takes vertical space.
+### 2. Results persistence
 
-4. **Color theme.** Ship one theme or support custom themes (e.g.,
-   reading a `theme.toml`)? One theme is simpler and more consistent.
-   Multiple themes are a rathole. Leaning toward one good default.
+Two distinct mechanisms:
 
-5. **Inline retry feedback.** When you press `r` to retry a reference,
-   should the verdict cell show a spinner while it re-checks? Or should
-   it transition to `⟳ retrying` status text? The spinner is flashier;
-   the text is clearer.
+**Temp state (invisible infrastructure).** In-progress and completed
+results write to `~/.cache/hallucinator/runs/<timestamp>/`. This is
+crash safety — if the terminal dies, SSH drops, or the user hits
+`Ctrl+C`, the work isn't lost. The TUI doesn't expose this to the
+user. It just exists.
+
+**Export (deliberate user action).** `e` key opens the export modal.
+User picks format (JSON, CSV, Markdown, plain text), scope (one paper
+or all), and destination. This produces the actual deliverable — the
+report they attach to AC notes or share with co-reviewers.
+
+**Resume (future).** Not in v1. Eventually: `hallucinator --resume`
+reads from the temp state dir and picks up where it left off. The temp
+state format should be designed with this in mind even if we don't
+build the resume path yet — don't paint ourselves into a corner.
+
+### 3. Reference text preview pane
+
+Yes. Shown on the Paper screen (Screen 2) when terminal height >= 40
+rows. Located below the reference list, separated by a horizontal rule.
+Shows the raw reference text as extracted from the PDF for the
+currently-selected reference.
+
+Updates in real-time as the cursor moves through the reference list
+(file-manager-style preview). This is the expected behavior and the
+rendering cost is trivial — it's just text reflow.
+
+On terminals shorter than 40 rows, the preview is hidden. The user can
+still see the raw text by drilling into Screen 3.
+
+```
+ ...
+  4  Smith & Jones "Recursive Self-Imp..."  ✗ not found   —
+> 5  Zhang et al. "Emergent Abilities..."   ⚠ mismatch   DBLP
+  6  Chen et al. "Evaluating Large..."      ✓ verified   arXiv
+ ...
+─────────────────────────────────────────────────────────────────
+ [5] Zhang, W., Wei, J., and Chen, L., "Emergent Abilities of
+ Large Language Models," in Proceedings of the International
+ Conference on Machine Learning (ICML), 2023, pp. 4812-4830.
+─────────────────────────────────────────────────────────────────
+```
+
+This earns its space. When the extracted title looks wrong (mangled by
+hyphenation, ligature issues, or a bad parse), you see it instantly
+without an extra keypress.
+
+### 4. Color themes
+
+Two themes, toggled via `--theme=green` or `--theme=modern`. No
+theming framework, no `theme.toml`. Just two palette structs.
+
+**green (default):** Dark background, green/cyan primary text. Terminal
+hacker aesthetic. The one that makes people at poster sessions say
+"what is that." Verdict colors as specified in the Color section above.
+
+**modern:** Dark background, white primary text, electric blue accents.
+Cleaner, more subdued. For people who think the green is too much, or
+for screenshots in formal reports where neon green looks unserious.
+
+Both palettes follow the same rules: verdict colors stay semantically
+consistent (green=verified, red=not found, etc.), only the chrome and
+accent colors differ.
+
+### 5. Inline retry feedback
+
+Both spinner and text. The verdict cell shows an animated spinner
+character cycling through frames (`◜ ◝ ◞ ◟`) followed by static
+"retrying" text:
+
+```
+  4  Smith & Jones "Recursive Self-..."    ◝ retrying    —
+```
+
+The spinner provides motion ("something is happening") while the text
+provides meaning ("what is happening"). Consistent with how the
+`⟳ checking` state already works during initial analysis — just a
+different animation to distinguish retry from first pass.
+
+When the retry completes, the cell snaps to the new verdict. No
+transition animation — just the immediate update. The change in color
+(from cyan retrying to green/red/yellow result) is transition enough.
