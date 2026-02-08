@@ -8,6 +8,7 @@ mod builder;
 mod db;
 pub mod parser;
 mod query;
+pub mod xml_parser;
 
 use std::path::{Path, PathBuf};
 
@@ -62,10 +63,17 @@ pub enum BuildProgress {
     Downloading {
         bytes_downloaded: u64,
         total_bytes: Option<u64>,
+        bytes_decompressed: u64,
     },
     Parsing {
-        lines_processed: u64,
+        /// Publications found by the XML parser.
+        records_parsed: u64,
+        /// DB operations committed to SQLite.
         records_inserted: u64,
+        /// Compressed bytes consumed from the .xml.gz file.
+        bytes_read: u64,
+        /// Total compressed file size (for ETA calculation).
+        bytes_total: u64,
     },
     RebuildingIndex,
     Complete {
@@ -176,18 +184,18 @@ impl DblpDatabase {
 ///
 /// Uses ETag/Last-Modified for conditional requests. Returns `false` if the
 /// remote file hasn't changed since the last build (no work done).
-pub fn build_database(
+pub async fn build_database(
     db_path: &Path,
     progress: impl FnMut(BuildProgress),
 ) -> Result<bool, DblpError> {
-    builder::build(db_path, progress)
+    builder::build(db_path, progress).await
 }
 
-/// Build the offline DBLP database from a local `.nt.gz` file.
+/// Build the offline DBLP database from a local `.xml.gz` file.
 pub fn build_database_from_file(
     db_path: &Path,
-    nt_gz_path: &Path,
+    xml_gz_path: &Path,
     progress: impl FnMut(BuildProgress),
 ) -> Result<(), DblpError> {
-    builder::build_from_file(db_path, nt_gz_path, progress)
+    builder::build_from_file(db_path, xml_gz_path, progress)
 }

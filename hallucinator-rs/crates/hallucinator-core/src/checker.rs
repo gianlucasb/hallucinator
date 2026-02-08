@@ -62,6 +62,22 @@ pub async fn check_references(
             let result =
                 check_single_reference(&reference, &config, &client, false).await;
 
+            // Emit warning if some databases failed/timed out
+            if !result.failed_dbs.is_empty() {
+                let context = match result.status {
+                    Status::NotFound => "not found in other DBs (will retry)".to_string(),
+                    Status::Verified => format!("verified via {}", result.source.as_deref().unwrap_or("unknown")),
+                    Status::AuthorMismatch => format!("author mismatch via {}", result.source.as_deref().unwrap_or("unknown")),
+                };
+                progress(ProgressEvent::Warning {
+                    index: i,
+                    total,
+                    title: title.to_string(),
+                    failed_dbs: result.failed_dbs.clone(),
+                    message: format!("{} timed out; {}", result.failed_dbs.join(", "), context),
+                });
+            }
+
             progress(ProgressEvent::Result {
                 index: i,
                 total,
@@ -164,6 +180,7 @@ async fn check_single_reference(
                 return ValidationResult {
                     title: title.to_string(),
                     raw_citation: reference.raw_citation.clone(),
+                    ref_authors: reference.authors.clone(),
                     status: if retraction_info.is_some() {
                         Status::Verified // Still verified, but flagged
                     } else {
@@ -185,6 +202,7 @@ async fn check_single_reference(
                 return ValidationResult {
                     title: title.to_string(),
                     raw_citation: reference.raw_citation.clone(),
+                    ref_authors: reference.authors.clone(),
                     status: Status::AuthorMismatch,
                     source: Some("DOI".into()),
                     found_authors: doi_authors,
@@ -224,6 +242,7 @@ async fn check_single_reference(
     ValidationResult {
         title: title.to_string(),
         raw_citation: reference.raw_citation.clone(),
+        ref_authors: reference.authors.clone(),
         status: db_result.status,
         source: db_result.source,
         found_authors: db_result.found_authors,
@@ -264,6 +283,7 @@ async fn check_single_reference_retry(
     ValidationResult {
         title: title.to_string(),
         raw_citation: reference.raw_citation.clone(),
+        ref_authors: reference.authors.clone(),
         status: db_result.status,
         source: db_result.source,
         found_authors: db_result.found_authors,

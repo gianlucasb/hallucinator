@@ -48,6 +48,29 @@ pub fn init_database(conn: &Connection) -> Result<(), DblpError> {
     Ok(())
 }
 
+/// Configure pragmas for fast bulk loading.
+pub fn begin_bulk_load(conn: &Connection) -> Result<(), DblpError> {
+    conn.execute_batch(
+        r#"
+        PRAGMA temp_store = MEMORY;
+        DROP INDEX IF EXISTS idx_pub_authors_pub;
+        DROP INDEX IF EXISTS idx_pub_authors_author;
+        "#,
+    )?;
+    Ok(())
+}
+
+/// Recreate indexes after bulk loading is complete.
+pub fn end_bulk_load(conn: &Connection) -> Result<(), DblpError> {
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pub_authors_pub ON publication_authors(pub_uri);
+        CREATE INDEX IF NOT EXISTS idx_pub_authors_author ON publication_authors(author_uri);
+        "#,
+    )?;
+    Ok(())
+}
+
 /// Batch of data to insert into the database.
 #[derive(Default)]
 pub struct InsertBatch {

@@ -14,7 +14,7 @@ use output::ColorMode;
 #[command(version, about, long_about = None)]
 struct Args {
     /// Path to the PDF file to check
-    pdf_path: PathBuf,
+    pdf_path: Option<PathBuf>,
 
     /// Disable colored output
     #[arg(long)]
@@ -56,8 +56,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Handle --update-dblp (exclusive mode)
     if let Some(ref db_path) = args.update_dblp {
-        return update_dblp(db_path);
+        return update_dblp(db_path).await;
     }
+
+    let pdf_path = args.pdf_path.ok_or_else(|| {
+        anyhow::anyhow!("A PDF path is required. Usage: hallucinator-cli <PDF_PATH>")
+    })?;
 
     // Resolve configuration: CLI flags > env vars > defaults
     let openalex_key = args
@@ -130,12 +134,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Extract references from PDF
-    let pdf_path = &args.pdf_path;
     if !pdf_path.exists() {
         anyhow::bail!("PDF file not found: {}", pdf_path.display());
     }
 
-    let extraction = hallucinator_pdf::extract_references(pdf_path)?;
+    let extraction = hallucinator_pdf::extract_references(&pdf_path)?;
     let pdf_name = pdf_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -225,56 +228,135 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
-    println!("Building offline DBLP database at {}...", db_path.display());
-    println!("This will download ~4.6 GB and may take a while.");
-    println!();
+async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
+    use indicatif::{HumanBytes, HumanCount, MultiProgress, ProgressBar, ProgressStyle};
+    use std::time::{Duration, Instant};
+
+    let multi = MultiProgress::new();
+
+    let dl_bar_style = ProgressStyle::with_template(
+        "{spinner:.cyan} {msg} [{bar:40.cyan/dim}] {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
+    )
+    .unwrap()
+    .progress_chars("=> ");
+
+    let dl_unknown_style = ProgressStyle::with_template(
+        "{spinner:.cyan} {msg} {bytes} ({bytes_per_sec})",
+    )
+    .unwrap();
+
+    let parse_bar_style = ProgressStyle::with_template(
+        "{spinner:.green} {msg} [{bar:40.green/dim}] {percent}% (eta {eta})",
+    )
+    .unwrap()
+    .progress_chars("=> ");
+
+    let parse_spinner_style = ProgressStyle::with_template(
+        "{spinner:.green} {msg}",
+    )
+    .unwrap();
+
+    let dl_bar = multi.add(ProgressBar::new(0));
+    dl_bar.set_style(dl_unknown_style.clone());
+    dl_bar.set_message("Connecting to dblp.org...");
+    dl_bar.enable_steady_tick(Duration::from_millis(120));
+
+    let parse_bar = multi.add(ProgressBar::new(0));
+    parse_bar.set_style(parse_spinner_style.clone());
+    parse_bar.enable_steady_tick(Duration::from_millis(120));
+
+    let parse_start = std::cell::Cell::new(None::<Instant>);
 
     let updated = hallucinator_dblp::build_database(db_path, |event| match event {
         hallucinator_dblp::BuildProgress::Downloading {
             bytes_downloaded,
             total_bytes,
+            ..
         } => {
-            let mb = bytes_downloaded / (1024 * 1024);
             if let Some(total) = total_bytes {
-                let total_mb = total / (1024 * 1024);
-                eprint!("\rDownloading: {} / {} MB", mb, total_mb);
+                if dl_bar.length() == Some(0) {
+                    dl_bar.set_length(total);
+                    dl_bar.set_style(dl_bar_style.clone());
+                }
+                dl_bar.set_position(bytes_downloaded);
+                dl_bar.set_message("dblp.xml.gz");
+                if bytes_downloaded >= total && !dl_bar.is_finished() {
+                    dl_bar.finish_with_message(format!(
+                        "Downloaded {} in {:.0?}",
+                        HumanBytes(total),
+                        dl_bar.elapsed()
+                    ));
+                }
             } else {
-                eprint!("\rDownloading: {} MB", mb);
+                dl_bar.set_position(bytes_downloaded);
+                dl_bar.set_message("dblp.xml.gz");
             }
         }
         hallucinator_dblp::BuildProgress::Parsing {
-            lines_processed,
+            records_parsed,
             records_inserted,
+            bytes_read,
+            bytes_total,
         } => {
-            if lines_processed % 1_000_000 == 0 {
-                eprint!(
-                    "\rParsing: {}M lines, {} records",
-                    lines_processed / 1_000_000,
-                    records_inserted
-                );
+            if !dl_bar.is_finished() {
+                dl_bar.finish_with_message(format!(
+                    "Downloaded {} in {:.0?}",
+                    HumanBytes(dl_bar.position()),
+                    dl_bar.elapsed()
+                ));
             }
+            if parse_start.get().is_none() {
+                parse_start.set(Some(Instant::now()));
+            }
+            // Switch to progress bar style on first event with a known total
+            if bytes_total > 0 && parse_bar.length() == Some(0) {
+                parse_bar.set_length(bytes_total);
+                parse_bar.set_style(parse_bar_style.clone());
+            }
+            parse_bar.set_position(bytes_read);
+            let elapsed = parse_start.get().unwrap().elapsed().as_secs_f64();
+            let inserted_per_sec = if elapsed > 0.0 {
+                records_inserted as f64 / elapsed
+            } else {
+                0.0
+            };
+            parse_bar.set_message(format!(
+                "{} parsed, {} inserted ({}/s)",
+                HumanCount(records_parsed),
+                HumanCount(records_inserted),
+                HumanCount(inserted_per_sec as u64),
+            ));
         }
         hallucinator_dblp::BuildProgress::RebuildingIndex => {
-            eprintln!();
-            eprintln!("Rebuilding FTS index...");
+            if !dl_bar.is_finished() {
+                dl_bar.finish_with_message(format!(
+                    "Downloaded {} in {:.0?}",
+                    HumanBytes(dl_bar.position()),
+                    dl_bar.elapsed()
+                ));
+            }
+            parse_bar.set_style(parse_spinner_style.clone());
+            parse_bar.set_message("Rebuilding FTS search index...");
         }
         hallucinator_dblp::BuildProgress::Complete {
             publications,
             authors,
             skipped,
         } => {
-            eprintln!();
+            let total_elapsed = parse_start
+                .get()
+                .map(|s| format!(" in {:.0?}", s.elapsed()))
+                .unwrap_or_default();
             if skipped {
-                println!("Database is already up to date (server returned 304).");
+                parse_bar.finish_with_message("Database is already up to date (304 Not Modified)");
             } else {
-                println!(
-                    "Done! {} publications, {} authors indexed.",
-                    publications, authors
-                );
+                parse_bar.finish_with_message(format!(
+                    "Indexed {} publications, {} authors{}",
+                    HumanCount(publications), HumanCount(authors), total_elapsed
+                ));
             }
         }
-    })?;
+    }).await?;
 
     if !updated {
         println!("Database is already up to date.");

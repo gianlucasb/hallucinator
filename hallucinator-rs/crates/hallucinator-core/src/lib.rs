@@ -13,6 +13,7 @@ pub mod retraction;
 
 // Re-export for convenience
 pub use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
+pub use orchestrator::{query_all_databases, DbSearchResult};
 
 #[derive(Error, Debug)]
 pub enum CoreError {
@@ -63,6 +64,7 @@ pub struct RetractionInfo {
 pub struct ValidationResult {
     pub title: String,
     pub raw_citation: String,
+    pub ref_authors: Vec<String>,
     pub status: Status,
     pub source: Option<String>,
     pub found_authors: Vec<String>,
@@ -87,6 +89,10 @@ pub enum ProgressEvent {
         result: ValidationResult,
     },
     Warning {
+        index: usize,
+        total: usize,
+        title: String,
+        failed_dbs: Vec<String>,
         message: String,
     },
     RetryPass {

@@ -109,7 +109,7 @@ pub fn print_progress(w: &mut dyn Write, event: &ProgressEvent, color: ColorMode
                 }
             }
         }
-        ProgressEvent::Warning { message } => {
+        ProgressEvent::Warning { message, .. } => {
             if color.enabled() {
                 writeln!(w, "{} {}", "WARNING:".yellow(), message)?;
             } else {

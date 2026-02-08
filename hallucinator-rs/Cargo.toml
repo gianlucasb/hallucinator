@@ -28,7 +28,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
 
 # Web framework
 axum = { version = "0.8", features = ["multipart"] }
@@ -41,6 +42,7 @@ rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 owo-colors = "4"
+indicatif = "0.17"
 
 # PDF
 mupdf = "0.6"
@@ -52,7 +54,7 @@ rapidfuzz = "0.5"
 
 # HTML/XML parsing
 scraper = "0.22"
-quick-xml = "0.37"
+quick-xml = { version = "0.37", features = ["encoding"] }
 
 # Archive handling
 zip = "2"
@@ -61,6 +63,16 @@ flate2 = "1"
 
 # Environment
 dotenvy = "0.15"
+
+# Streaming
+tokio-stream = "0.1"
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
+
+# Temp files
+tempfile = "3"
+
+# Channels
+async-channel = "2"
 
 # Error handling
 thiserror = "2"
