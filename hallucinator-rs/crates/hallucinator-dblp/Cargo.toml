@@ -9,5 +9,10 @@ description = "Offline DBLP database builder and querier"
 rusqlite.workspace = true
 reqwest.workspace = true
 regex.workspace = true
+once_cell.workspace = true
 thiserror.workspace = true
 flate2.workspace = true
+rapidfuzz.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

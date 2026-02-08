@@ -1,9 +1,18 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+pub mod authors;
+pub mod checker;
+pub mod db;
+pub mod doi;
+pub mod matching;
+pub mod orchestrator;
+pub mod retraction;
+
 // Re-export for convenience
-pub use hallucinator_pdf::{ExtractionResult, Reference};
+pub use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
 
 #[derive(Error, Debug)]
 pub enum CoreError {
@@ -97,14 +106,33 @@ pub struct CheckStats {
 }
 
 /// Configuration for the reference checker.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub openalex_key: Option<String>,
     pub s2_api_key: Option<String>,
     pub dblp_offline_path: Option<PathBuf>,
+    pub dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>>,
     pub max_concurrent_refs: usize,
     pub db_timeout_secs: u64,
     pub db_timeout_short_secs: u64,
+    pub disabled_dbs: Vec<String>,
+    pub check_openalex_authors: bool,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("openalex_key", &self.openalex_key.as_ref().map(|_| "***"))
+            .field("s2_api_key", &self.s2_api_key.as_ref().map(|_| "***"))
+            .field("dblp_offline_path", &self.dblp_offline_path)
+            .field("dblp_offline_db", &self.dblp_offline_db.as_ref().map(|_| "<open>"))
+            .field("max_concurrent_refs", &self.max_concurrent_refs)
+            .field("db_timeout_secs", &self.db_timeout_secs)
+            .field("db_timeout_short_secs", &self.db_timeout_short_secs)
+            .field("disabled_dbs", &self.disabled_dbs)
+            .field("check_openalex_authors", &self.check_openalex_authors)
+            .finish()
+    }
 }
 
 impl Default for Config {
@@ -113,9 +141,12 @@ impl Default for Config {
             openalex_key: None,
             s2_api_key: None,
             dblp_offline_path: None,
+            dblp_offline_db: None,
             max_concurrent_refs: 4,
             db_timeout_secs: 10,
             db_timeout_short_secs: 5,
+            disabled_dbs: vec![],
+            check_openalex_authors: false,
         }
     }
 }
@@ -126,10 +157,10 @@ impl Default for Config {
 /// Progress events are emitted via the callback. The operation can be cancelled
 /// via the CancellationToken.
 pub async fn check_references(
-    _refs: Vec<Reference>,
-    _config: Config,
-    _progress: impl Fn(ProgressEvent) + Send + Sync,
-    _cancel: CancellationToken,
-) -> Result<(Vec<ValidationResult>, CheckStats), CoreError> {
-    todo!("Phase 2: implement validation engine")
+    refs: Vec<Reference>,
+    config: Config,
+    progress: impl Fn(ProgressEvent) + Send + Sync + 'static,
+    cancel: CancellationToken,
+) -> Vec<ValidationResult> {
+    checker::check_references(refs, config, progress, cancel).await
 }
