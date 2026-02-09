@@ -1012,6 +1012,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "dotenvy",
  "flate2",
  "hallucinator-core",
  "hallucinator-dblp",

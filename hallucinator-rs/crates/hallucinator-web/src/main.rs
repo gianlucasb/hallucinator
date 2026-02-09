@@ -12,6 +12,8 @@ use state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+
     // Load DBLP offline database if configured
     let dblp_offline_path = std::env::var("DBLP_OFFLINE_PATH").ok();
     let mut dblp_offline_db = None;
@@ -50,11 +52,15 @@ async fn main() -> anyhow::Result<()> {
         dblp_offline_path_display,
     });
 
+    // Allow large file uploads (500MB)
+    let body_limit = axum::extract::DefaultBodyLimit::max(500 * 1024 * 1024);
+
     let app = axum::Router::new()
         .route("/", axum::routing::get(handlers::index::index))
         .route("/analyze/stream", axum::routing::post(handlers::stream::stream))
         .route("/retry", axum::routing::post(handlers::retry::retry))
         .route("/static/logo.png", axum::routing::get(template::serve_logo))
+        .layer(body_limit)
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 5001));

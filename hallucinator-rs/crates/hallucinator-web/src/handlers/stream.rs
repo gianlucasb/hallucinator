@@ -67,12 +67,17 @@ async fn handle_single_pdf(
     temp_dir: tempfile::TempDir,
 ) -> Result<(), String> {
     // Write PDF to temp file
+    let filename = &fields.file.filename;
     let pdf_path = temp_dir.path().join("upload.pdf");
     std::fs::write(&pdf_path, &fields.file.data)
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
     // Extract references (blocking I/O via MuPDF)
-    let extraction = extract_pdf_blocking(&pdf_path).await?;
+    let extraction = extract_pdf_blocking(&pdf_path).await
+        .map_err(|e| format!("{}: {}", filename, e))?;
+
+    // Temp dir no longer needed after extraction
+    drop(temp_dir);
 
     let skip_stats = extraction.skip_stats.clone();
     let refs = extraction.references;
@@ -88,21 +93,34 @@ async fn handle_single_pdf(
         },
     }).await?;
 
-    // Run validation
+    // Run validation in a separate task so we can detect client disconnect
     let config = build_config(&state, &fields);
     let cancel = CancellationToken::new();
-    let cancel_clone = cancel.clone();
+    let cancel_for_disconnect = cancel.clone();
     let tx_progress = tx.clone();
 
-    let results = hallucinator_core::check_references(
-        refs,
-        config,
-        move |event| {
-            send_progress_event(&tx_progress, &event, None);
-        },
-        cancel_clone,
-    )
-    .await;
+    let validation_handle = tokio::spawn(async move {
+        hallucinator_core::check_references(
+            refs,
+            config,
+            move |event| {
+                send_progress_event(&tx_progress, &event, None);
+            },
+            cancel,
+        )
+        .await
+    });
+
+    // Race between validation completing and client disconnecting
+    let results = tokio::select! {
+        result = validation_handle => {
+            result.map_err(|e| format!("Validation task error: {}", e))?
+        }
+        _ = tx.closed() => {
+            cancel_for_disconnect.cancel();
+            return Err("Client disconnected".to_string());
+        }
+    };
 
     // Send complete event
     let summary = SummaryJson::from_results(&results, &skip_stats);
@@ -115,8 +133,6 @@ async fn handle_single_pdf(
         files: None,
     }).await?;
 
-    // Keep temp_dir alive until we're done
-    drop(temp_dir);
     Ok(())
 }
 
@@ -136,9 +152,16 @@ async fn handle_archive(
     let mut aggregate_skip_stats = SkipStats::default();
 
     let cancel = CancellationToken::new();
+    let cancel_for_disconnect = cancel.clone();
 
     for (file_index, pdf) in pdfs.iter().enumerate() {
         if cancel.is_cancelled() {
+            break;
+        }
+
+        // Check for client disconnect before each file
+        if tx.is_closed() {
+            cancel.cancel();
             break;
         }
 
@@ -148,7 +171,7 @@ async fn handle_archive(
             filename: pdf.filename.clone(),
         }).await?;
 
-        match process_archive_file(&state, &fields, pdf, &tx, &cancel).await {
+        match process_archive_file(&state, &fields, pdf, &tx, &cancel, &cancel_for_disconnect).await {
             Ok((results, skip_stats)) => {
                 // Accumulate skip stats
                 aggregate_skip_stats.total_raw += skip_stats.total_raw;
@@ -178,6 +201,12 @@ async fn handle_archive(
                 });
             }
             Err(e) => {
+                // Client disconnect propagates as an error — stop processing
+                if tx.is_closed() {
+                    cancel.cancel();
+                    break;
+                }
+
                 send(&tx, "file_complete", &FileCompleteEvent {
                     filename: pdf.filename.clone(),
                     success: false,
@@ -217,8 +246,10 @@ async fn process_archive_file(
     pdf: &ExtractedPdf,
     tx: &mpsc::Sender<Result<Event, Infallible>>,
     cancel: &CancellationToken,
+    cancel_for_disconnect: &CancellationToken,
 ) -> Result<(Vec<ValidationResult>, SkipStats), String> {
-    let extraction = extract_pdf_blocking(&pdf.path).await?;
+    let extraction = extract_pdf_blocking(&pdf.path).await
+        .map_err(|e| format!("{}: {}", pdf.filename, e))?;
 
     let skip_stats = extraction.skip_stats.clone();
     let refs = extraction.references;
@@ -235,18 +266,33 @@ async fn process_archive_file(
 
     let config = build_config(state, fields);
     let cancel_clone = cancel.clone();
+    let cancel_disconnect = cancel_for_disconnect.clone();
     let tx_progress = tx.clone();
+    let tx_closed = tx.clone();
     let filename = pdf.filename.clone();
 
-    let results = hallucinator_core::check_references(
-        refs,
-        config,
-        move |event| {
-            send_progress_event(&tx_progress, &event, Some(&filename));
-        },
-        cancel_clone,
-    )
-    .await;
+    let validation_handle = tokio::spawn(async move {
+        hallucinator_core::check_references(
+            refs,
+            config,
+            move |event| {
+                send_progress_event(&tx_progress, &event, Some(&filename));
+            },
+            cancel_clone,
+        )
+        .await
+    });
+
+    // Race between validation completing and client disconnecting
+    let results = tokio::select! {
+        result = validation_handle => {
+            result.map_err(|e| format!("Validation task error: {}", e))?
+        }
+        _ = tx_closed.closed() => {
+            cancel_disconnect.cancel();
+            return Err("Client disconnected".to_string());
+        }
+    };
 
     Ok((results, skip_stats))
 }

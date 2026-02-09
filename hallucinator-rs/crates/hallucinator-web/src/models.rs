@@ -236,7 +236,10 @@ pub struct FileResultJson {
     pub error: Option<String>,
 }
 
+/// Sent when analysis is cancelled (e.g. server-initiated cancellation).
+/// Currently only used client-side via AbortController; kept for future use.
 #[derive(Serialize)]
+#[allow(dead_code)]
 pub struct CancelledEvent {
     pub summary: SummaryJson,
     pub results: Vec<ResultJson>,
