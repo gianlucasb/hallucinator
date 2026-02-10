@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
 mod output;
@@ -12,67 +12,101 @@ use output::ColorMode;
 /// Hallucinated Reference Detector - Detect fabricated references in academic PDFs
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
-    /// Path to the PDF file to check
-    pdf_path: Option<PathBuf>,
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
 
-    /// Disable colored output
-    #[arg(long)]
-    no_color: bool,
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Check a PDF for hallucinated references
+    Check {
+        /// Path to the PDF file to check
+        pdf_path: PathBuf,
 
-    /// OpenAlex API key
-    #[arg(long)]
-    openalex_key: Option<String>,
+        /// Disable colored output
+        #[arg(long)]
+        no_color: bool,
 
-    /// Semantic Scholar API key
-    #[arg(long)]
-    s2_api_key: Option<String>,
+        /// OpenAlex API key
+        #[arg(long)]
+        openalex_key: Option<String>,
 
-    /// Path to output log file
-    #[arg(long)]
-    output: Option<PathBuf>,
+        /// Semantic Scholar API key
+        #[arg(long)]
+        s2_api_key: Option<String>,
 
-    /// Path to offline DBLP database
-    #[arg(long)]
-    dblp_offline: Option<PathBuf>,
+        /// Path to output log file
+        #[arg(short, long)]
+        output: Option<PathBuf>,
 
-    /// Download and build offline DBLP database at the given path
-    #[arg(long)]
-    update_dblp: Option<PathBuf>,
+        /// Path to offline DBLP database
+        #[arg(long)]
+        dblp_offline: Option<PathBuf>,
 
-    /// Comma-separated list of databases to disable
-    #[arg(long, value_delimiter = ',')]
-    disable_dbs: Vec<String>,
+        /// Comma-separated list of databases to disable
+        #[arg(long, value_delimiter = ',')]
+        disable_dbs: Vec<String>,
 
-    /// Flag author mismatches from OpenAlex (default: skipped)
-    #[arg(long)]
-    check_openalex_authors: bool,
+        /// Flag author mismatches from OpenAlex (default: skipped)
+        #[arg(long)]
+        check_openalex_authors: bool,
+    },
+
+    /// Download and build the offline DBLP database
+    UpdateDblp {
+        /// Path to store the DBLP SQLite database
+        path: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    // Handle --update-dblp (exclusive mode)
-    if let Some(ref db_path) = args.update_dblp {
-        return update_dblp(db_path).await;
+    match cli.command {
+        Command::UpdateDblp { path } => update_dblp(&path).await,
+        Command::Check {
+            pdf_path,
+            no_color,
+            openalex_key,
+            s2_api_key,
+            output,
+            dblp_offline,
+            disable_dbs,
+            check_openalex_authors,
+        } => {
+            check(
+                pdf_path,
+                no_color,
+                openalex_key,
+                s2_api_key,
+                output,
+                dblp_offline,
+                disable_dbs,
+                check_openalex_authors,
+            )
+            .await
+        }
     }
+}
 
-    let pdf_path = args.pdf_path.ok_or_else(|| {
-        anyhow::anyhow!("A PDF path is required. Usage: hallucinator-cli <PDF_PATH>")
-    })?;
-
+async fn check(
+    pdf_path: PathBuf,
+    no_color: bool,
+    openalex_key: Option<String>,
+    s2_api_key: Option<String>,
+    output: Option<PathBuf>,
+    dblp_offline: Option<PathBuf>,
+    disable_dbs: Vec<String>,
+    check_openalex_authors: bool,
+) -> anyhow::Result<()> {
     // Resolve configuration: CLI flags > env vars > defaults
-    let openalex_key = args
-        .openalex_key
-        .or_else(|| std::env::var("OPENALEX_KEY").ok());
-    let s2_api_key = args
-        .s2_api_key
-        .or_else(|| std::env::var("S2_API_KEY").ok());
-    let dblp_offline_path = args
-        .dblp_offline
-        .or_else(|| std::env::var("DBLP_OFFLINE_PATH").ok().map(PathBuf::from));
+    let openalex_key = openalex_key.or_else(|| std::env::var("OPENALEX_KEY").ok());
+    let s2_api_key = s2_api_key.or_else(|| std::env::var("S2_API_KEY").ok());
+    let dblp_offline_path =
+        dblp_offline.or_else(|| std::env::var("DBLP_OFFLINE_PATH").ok().map(PathBuf::from));
     let db_timeout_secs: u64 = std::env::var("DB_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -83,10 +117,10 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(5);
 
     // Determine color mode and output writer
-    let use_color = !args.no_color && args.output.is_none();
+    let use_color = !no_color && output.is_none();
     let color = ColorMode(use_color);
 
-    let mut writer: Box<dyn Write> = if let Some(ref output_path) = args.output {
+    let mut writer: Box<dyn Write> = if let Some(ref output_path) = output {
         Box::new(std::fs::File::create(output_path)?)
     } else {
         Box::new(std::io::stdout())
@@ -96,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
     let dblp_offline_db = if let Some(ref path) = dblp_offline_path {
         if !path.exists() {
             anyhow::bail!(
-                "Offline DBLP database not found at {}. Use --update-dblp={} to build it.",
+                "Offline DBLP database not found at {}. Build it with: hallucinator-cli update-dblp {}",
                 path.display(),
                 path.display()
             );
@@ -108,13 +142,13 @@ async fn main() -> anyhow::Result<()> {
             if staleness.is_stale {
                 let msg = if let Some(days) = staleness.age_days {
                     format!(
-                        "Offline DBLP database is {} days old. Consider running --update-dblp={} to refresh.",
+                        "Offline DBLP database is {} days old. Consider running: hallucinator-cli update-dblp {}",
                         days,
                         path.display()
                     )
                 } else {
                     format!(
-                        "Offline DBLP database may be stale. Consider running --update-dblp={} to refresh.",
+                        "Offline DBLP database may be stale. Consider running: hallucinator-cli update-dblp {}",
                         path.display()
                     )
                 };
@@ -166,16 +200,12 @@ async fn main() -> anyhow::Result<()> {
         max_concurrent_refs: 4,
         db_timeout_secs,
         db_timeout_short_secs,
-        disabled_dbs: args.disable_dbs,
-        check_openalex_authors: args.check_openalex_authors,
+        disabled_dbs: disable_dbs,
+        check_openalex_authors,
     };
 
     // Set up progress callback
-    // We use a Mutex<Box<dyn Write>> so the callback can write progress
-    let progress_writer: Arc<Mutex<Box<dyn Write + Send>>> = if args.output.is_some() {
-        // When writing to file, progress goes to the file too
-        // But we already consumed `writer`, so reopen
-        // Actually, let's write progress to stderr when output is a file
+    let progress_writer: Arc<Mutex<Box<dyn Write + Send>>> = if output.is_some() {
         Arc::new(Mutex::new(Box::new(std::io::stderr())))
     } else {
         Arc::new(Mutex::new(Box::new(std::io::stdout())))

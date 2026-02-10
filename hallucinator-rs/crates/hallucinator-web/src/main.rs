@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
                     if let Ok(staleness) = db.check_staleness(30) {
                         if staleness.is_stale {
                             eprintln!(
-                                "Warning: DBLP offline database is {} days old. Consider updating with --update-dblp",
+                                "Warning: DBLP offline database is {} days old. Consider updating with: hallucinator-cli update-dblp <path>",
                                 staleness.age_days.unwrap_or(0)
                             );
                         }
