@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -967,10 +968,15 @@ impl App {
             Action::AddFiles => {
                 self.screen = Screen::FilePicker;
             }
+            Action::CopyToClipboard => {
+                if let Some(text) = self.get_copyable_text() {
+                    osc52_copy(&text);
+                    self.activity.log("Copied to clipboard".to_string());
+                }
+            }
             Action::Retry
             | Action::RetryAll
             | Action::RemovePaper
-            | Action::CopyToClipboard
             | Action::SaveConfig => {
                 // Placeholder for future implementation
             }
@@ -1304,6 +1310,28 @@ impl App {
         }
     }
 
+    /// Get text to copy for the current screen context.
+    fn get_copyable_text(&self) -> Option<String> {
+        match &self.screen {
+            Screen::RefDetail(paper_idx, ref_idx) => {
+                let rs = self.ref_states.get(*paper_idx)?.get(*ref_idx)?;
+                if let Some(result) = &rs.result {
+                    if !result.raw_citation.is_empty() {
+                        return Some(result.raw_citation.clone());
+                    }
+                }
+                Some(rs.title.clone())
+            }
+            Screen::Paper(idx) => {
+                let indices = self.paper_ref_indices(*idx);
+                let ref_idx = indices.get(self.paper_cursor)?;
+                let rs = self.ref_states.get(*idx)?.get(*ref_idx)?;
+                Some(rs.title.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Render the current screen.
     pub fn view(&mut self, f: &mut ratatui::Frame) {
         // Emit terminal bell if pending
@@ -1365,6 +1393,16 @@ impl App {
             crate::view::help::render(f, &self.theme);
         }
     }
+}
+
+/// Copy text to the system clipboard via OSC 52 escape sequence.
+/// Works in Ghostty, iTerm2, kitty, WezTerm, and most modern terminals.
+fn osc52_copy(text: &str) {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    // Write directly to stdout, bypassing the terminal backend buffer
+    let _ = std::io::stdout().write_all(format!("\x1b]52;c;{}\x07", encoded).as_bytes());
+    let _ = std::io::stdout().flush();
 }
 
 fn verdict_sort_key(rs: &RefState) -> u8 {

@@ -78,6 +78,9 @@ async-channel = "2"
 # TUI
 ratatui = "0.29"
 
+# Encoding
+base64 = "0.22"
+
 # Error handling
 thiserror = "2"
 anyhow = "1"

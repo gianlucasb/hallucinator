@@ -28,13 +28,13 @@ impl Theme {
     /// Hacker-green terminal theme.
     pub fn hacker() -> Self {
         Self {
-            verified: Color::Green,
+            verified: Color::Rgb(0, 210, 0),
             not_found: Color::Red,
             author_mismatch: Color::Yellow,
             retracted: Color::Magenta,
 
             header_fg: Color::Black,
-            header_bg: Color::Green,
+            header_bg: Color::Rgb(0, 210, 0),
             border: Color::DarkGray,
             text: Color::White,
             dim: Color::DarkGray,
