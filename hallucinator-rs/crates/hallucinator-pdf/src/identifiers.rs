@@ -15,9 +15,8 @@ pub fn extract_doi(text: &str) -> Option<String> {
     // Fix DOIs that are split across lines
 
     // Pattern 1: DOI ending with period + newline + 3+ digits
-    static FIX1: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(10\.\d{4,}/[^\s\]>)}\x{007D}]+\.)\s*\n\s*(\d{3,})").unwrap()
-    });
+    static FIX1: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>)}\x{007D}]+\.)\s*\n\s*(\d{3,})").unwrap());
     let text_fixed = FIX1.replace_all(text, "$1$2");
 
     // Pattern 1b: DOI ending with digits + newline + DOI continuation
@@ -27,9 +26,8 @@ pub fn extract_doi(text: &str) -> Option<String> {
     let text_fixed = FIX1B.replace_all(&text_fixed, "$1$2");
 
     // Pattern 2: DOI ending with dash + newline + continuation
-    static FIX2: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(10\.\d{4,}/[^\s\]>)}\x{007D}]+-)\s*\n\s*(\S+)").unwrap()
-    });
+    static FIX2: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>)}\x{007D}]+-)\s*\n\s*(\S+)").unwrap());
     let text_fixed = FIX2.replace_all(&text_fixed, "$1$2");
 
     // Pattern 3: URL split across lines (period variant)
@@ -122,9 +120,11 @@ pub fn extract_arxiv_id(text: &str) -> Option<String> {
 
 /// Common words to skip when building search queries.
 static STOP_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    ["a", "an", "the", "of", "and", "or", "for", "to", "in", "on", "with", "by"]
-        .into_iter()
-        .collect()
+    [
+        "a", "an", "the", "of", "and", "or", "for", "to", "in", "on", "with", "by",
+    ]
+    .into_iter()
+    .collect()
 });
 
 /// Extract `n` significant words from a title for building search queries.

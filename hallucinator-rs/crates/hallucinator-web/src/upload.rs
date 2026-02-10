@@ -41,10 +41,7 @@ pub async fn parse_multipart(mut multipart: Multipart) -> Result<FormFields, Str
 
         match name.as_str() {
             "pdf" => {
-                let filename = field
-                    .file_name()
-                    .unwrap_or("upload.pdf")
-                    .to_string();
+                let filename = field.file_name().unwrap_or("upload.pdf").to_string();
                 let data = field
                     .bytes()
                     .await

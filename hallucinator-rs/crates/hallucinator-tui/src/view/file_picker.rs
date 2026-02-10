@@ -14,7 +14,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Length(1), // current dir
-        Constraint::Min(5),   // file list
+        Constraint::Min(5),    // file list
         Constraint::Length(3), // selected summary
         Constraint::Length(1), // footer
     ])
@@ -46,7 +46,8 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         0
     };
 
-    let items: Vec<ListItem> = picker.entries
+    let items: Vec<ListItem> = picker
+        .entries
         .iter()
         .skip(scroll_offset)
         .take(visible_height)
@@ -56,7 +57,12 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
             } else if entry.is_pdf {
                 let selected = picker.is_selected(&entry.path);
                 if selected {
-                    ("\u{2713} ", Style::default().fg(theme.verified).add_modifier(Modifier::BOLD))
+                    (
+                        "\u{2713} ",
+                        Style::default()
+                            .fg(theme.verified)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
                     ("\u{1F4C4} ", Style::default().fg(theme.text))
                 }
@@ -99,7 +105,8 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
             )),
         ]
     } else {
-        let names: Vec<String> = picker.selected
+        let names: Vec<String> = picker
+            .selected
             .iter()
             .map(|p| {
                 p.file_name()
@@ -108,12 +115,16 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
         vec![
-            Line::from(vec![
-                Span::styled(
-                    format!("  {} PDF{} selected: ", selected_count, if selected_count == 1 { "" } else { "s" }),
-                    Style::default().fg(theme.verified).add_modifier(Modifier::BOLD),
+            Line::from(vec![Span::styled(
+                format!(
+                    "  {} PDF{} selected: ",
+                    selected_count,
+                    if selected_count == 1 { "" } else { "s" }
                 ),
-            ]),
+                Style::default()
+                    .fg(theme.verified)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(Span::styled(
                 format!("  {}", names.join(", ")),
                 Style::default().fg(theme.text),

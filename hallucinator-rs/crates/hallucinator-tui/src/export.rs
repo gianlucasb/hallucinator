@@ -19,15 +19,20 @@ pub fn export_results(
         ExportFormat::Text => export_text(papers),
     };
 
-    let mut file = std::fs::File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
-    file.write_all(content.as_bytes()).map_err(|e| format!("Failed to write: {}", e))?;
+    let mut file =
+        std::fs::File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write: {}", e))?;
     Ok(())
 }
 
 fn export_json(papers: &[(String, &[Option<ValidationResult>])]) -> String {
     let mut out = String::from("[\n");
     for (pi, (filename, results)) in papers.iter().enumerate() {
-        out.push_str(&format!("  {{\n    \"filename\": {:?},\n    \"references\": [\n", filename));
+        out.push_str(&format!(
+            "  {{\n    \"filename\": {:?},\n    \"references\": [\n",
+            filename
+        ));
         for (ri, result) in results.iter().enumerate() {
             if let Some(r) = result {
                 let status = match r.status {
@@ -35,7 +40,10 @@ fn export_json(papers: &[(String, &[Option<ValidationResult>])]) -> String {
                     Status::NotFound => "not_found",
                     Status::AuthorMismatch => "author_mismatch",
                 };
-                let retracted = r.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted);
+                let retracted = r
+                    .retraction_info
+                    .as_ref()
+                    .map_or(false, |ri| ri.is_retracted);
                 out.push_str(&format!(
                     "      {{\"index\": {}, \"title\": {:?}, \"status\": {:?}, \"source\": {:?}, \"retracted\": {}}}",
                     ri,
@@ -70,7 +78,10 @@ fn export_csv(papers: &[(String, &[Option<ValidationResult>])]) -> String {
                     Status::NotFound => "not_found",
                     Status::AuthorMismatch => "author_mismatch",
                 };
-                let retracted = r.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted);
+                let retracted = r
+                    .retraction_info
+                    .as_ref()
+                    .map_or(false, |ri| ri.is_retracted);
                 out.push_str(&format!(
                     "{:?},{},{:?},{},{:?},{}\n",
                     filename,
@@ -96,7 +107,10 @@ fn export_markdown(papers: &[(String, &[Option<ValidationResult>])]) -> String {
             if let Some(r) = result {
                 let status = match r.status {
                     Status::Verified => {
-                        if r.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted) {
+                        if r.retraction_info
+                            .as_ref()
+                            .map_or(false, |ri| ri.is_retracted)
+                        {
                             "\u{2620} RETRACTED"
                         } else {
                             "\u{2713} Verified"
@@ -107,7 +121,13 @@ fn export_markdown(papers: &[(String, &[Option<ValidationResult>])]) -> String {
                 };
                 let source = r.source.as_deref().unwrap_or("\u{2014}");
                 let title_escaped = r.title.replace('|', "\\|");
-                out.push_str(&format!("| {} | {} | {} | {} |\n", ri + 1, title_escaped, status, source));
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    ri + 1,
+                    title_escaped,
+                    status,
+                    source
+                ));
             }
         }
         out.push('\n');
@@ -130,7 +150,11 @@ fn export_text(papers: &[(String, &[Option<ValidationResult>])]) -> String {
                     Status::NotFound => "NOT FOUND",
                     Status::AuthorMismatch => "Author Mismatch",
                 };
-                let retracted = if r.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted) {
+                let retracted = if r
+                    .retraction_info
+                    .as_ref()
+                    .map_or(false, |ri| ri.is_retracted)
+                {
                     " [RETRACTED]"
                 } else {
                     ""
@@ -138,7 +162,11 @@ fn export_text(papers: &[(String, &[Option<ValidationResult>])]) -> String {
                 let source = r.source.as_deref().unwrap_or("-");
                 out.push_str(&format!(
                     "  [{}] {} - {} ({}){}\n",
-                    ri + 1, r.title, status, source, retracted
+                    ri + 1,
+                    r.title,
+                    status,
+                    source,
+                    retracted
                 ));
             }
         }

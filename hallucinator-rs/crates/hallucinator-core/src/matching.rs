@@ -21,10 +21,7 @@ pub fn normalize_title(title: &str) -> String {
         .replace("&apos;", "'");
 
     // NFKD normalization and strip to ASCII
-    let normalized: String = title
-        .nfkd()
-        .filter(|c| c.is_ascii())
-        .collect();
+    let normalized: String = title.nfkd().filter(|c| c.is_ascii()).collect();
 
     // Keep only alphanumeric
     static NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-zA-Z0-9]").unwrap());
@@ -50,18 +47,12 @@ mod tests {
 
     #[test]
     fn test_normalize_title_basic() {
-        assert_eq!(
-            normalize_title("Hello, World! 123"),
-            "helloworld123"
-        );
+        assert_eq!(normalize_title("Hello, World! 123"), "helloworld123");
     }
 
     #[test]
     fn test_normalize_title_html_entities() {
-        assert_eq!(
-            normalize_title("Foo &amp; Bar"),
-            "foobar"
-        );
+        assert_eq!(normalize_title("Foo &amp; Bar"), "foobar");
     }
 
     #[test]
@@ -82,7 +73,7 @@ mod tests {
     fn test_titles_match_minor_difference() {
         assert!(titles_match(
             "Detecting Hallucinated References in Academic Papers",
-            "Detecting Hallucinated References in Academic Paper"  // minor typo
+            "Detecting Hallucinated References in Academic Paper" // minor typo
         ));
     }
 

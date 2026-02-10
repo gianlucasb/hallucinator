@@ -93,8 +93,7 @@ pub fn parse_xml<R: BufRead>(reader: R, mut on_pub: impl FnMut(Publication)) {
 
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"key" {
-                            current_key =
-                                String::from_utf8_lossy(&attr.value).into_owned();
+                            current_key = String::from_utf8_lossy(&attr.value).into_owned();
                         }
                     }
                 } else if in_pub && reading.is_none() {

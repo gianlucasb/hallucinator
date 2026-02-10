@@ -81,12 +81,7 @@ impl Default for ActivityState {
 }
 
 impl ActivityState {
-    pub fn record_db_complete(
-        &mut self,
-        db_name: &str,
-        success: bool,
-        elapsed_ms: f64,
-    ) {
+    pub fn record_db_complete(&mut self, db_name: &str, success: bool, elapsed_ms: f64) {
         let health = self
             .db_health
             .entry(db_name.to_string())
@@ -103,8 +98,17 @@ impl ActivityState {
 
     /// Build sparkline string from throughput buckets.
     pub fn sparkline(&self) -> String {
-        const CHARS: &[char] = &[' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
-        let max = self.throughput_buckets.iter().copied().max().unwrap_or(1).max(1);
+        const CHARS: &[char] = &[
+            ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}',
+            '\u{2587}', '\u{2588}',
+        ];
+        let max = self
+            .throughput_buckets
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(1)
+            .max(1);
         self.throughput_buckets
             .iter()
             .map(|&v| {

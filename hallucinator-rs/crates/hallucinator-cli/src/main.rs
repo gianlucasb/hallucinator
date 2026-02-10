@@ -233,23 +233,14 @@ async fn check(
     });
 
     let skip_stats = extraction.skip_stats.clone();
-    let results = hallucinator_core::check_references(
-        extraction.references,
-        config,
-        progress_cb,
-        cancel,
-    )
-    .await;
+    let results =
+        hallucinator_core::check_references(extraction.references, config, progress_cb, cancel)
+            .await;
 
     // Print final report
     writeln!(writer)?;
 
-    output::print_hallucination_report(
-        &mut writer,
-        &results,
-        openalex_key.is_some(),
-        color,
-    )?;
+    output::print_hallucination_report(&mut writer, &results, openalex_key.is_some(), color)?;
 
     output::print_doi_issues(&mut writer, &results, color)?;
     output::print_retraction_warnings(&mut writer, &results, color)?;
@@ -270,10 +261,8 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     .unwrap()
     .progress_chars("=> ");
 
-    let dl_unknown_style = ProgressStyle::with_template(
-        "{spinner:.cyan} {msg} {bytes} ({bytes_per_sec})",
-    )
-    .unwrap();
+    let dl_unknown_style =
+        ProgressStyle::with_template("{spinner:.cyan} {msg} {bytes} ({bytes_per_sec})").unwrap();
 
     let parse_bar_style = ProgressStyle::with_template(
         "{spinner:.green} {msg} [{bar:40.green/dim}] {percent}% (eta {eta})",
@@ -281,10 +270,7 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     .unwrap()
     .progress_chars("=> ");
 
-    let parse_spinner_style = ProgressStyle::with_template(
-        "{spinner:.green} {msg}",
-    )
-    .unwrap();
+    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} {msg}").unwrap();
 
     let dl_bar = multi.add(ProgressBar::new(0));
     dl_bar.set_style(dl_unknown_style.clone());
@@ -382,11 +368,14 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
             } else {
                 parse_bar.finish_with_message(format!(
                     "Indexed {} publications, {} authors{}",
-                    HumanCount(publications), HumanCount(authors), total_elapsed
+                    HumanCount(publications),
+                    HumanCount(authors),
+                    total_elapsed
                 ));
             }
         }
-    }).await?;
+    })
+    .await?;
 
     if !updated {
         println!("Database is already up to date.");

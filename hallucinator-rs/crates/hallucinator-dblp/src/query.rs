@@ -90,7 +90,10 @@ pub fn query_fts(
         let score = rapidfuzz::fuzz::ratio(norm_query.chars(), norm_candidate.chars());
 
         if score >= threshold {
-            if best_match.as_ref().map_or(true, |(best, _, _)| score > *best) {
+            if best_match
+                .as_ref()
+                .map_or(true, |(best, _, _)| score > *best)
+            {
                 best_match = Some((score, uri.clone(), candidate_title.clone()));
             }
         }
@@ -122,7 +125,9 @@ mod tests {
         init_database(&conn).unwrap();
 
         let mut batch = InsertBatch::new();
-        batch.authors.push(("pid/1".into(), "Ashish Vaswani".into()));
+        batch
+            .authors
+            .push(("pid/1".into(), "Ashish Vaswani".into()));
         batch.authors.push(("pid/2".into(), "Noam Shazeer".into()));
         batch.publications.push((
             "rec/conf/nips/VaswaniSPUJGKP17".into(),

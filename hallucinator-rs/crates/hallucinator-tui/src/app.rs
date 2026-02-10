@@ -7,12 +7,12 @@ use tokio::sync::mpsc;
 use hallucinator_core::{DbStatus, ProgressEvent, Reference};
 
 use crate::action::Action;
-use crate::tui_event::{BackendCommand, BackendEvent};
 use crate::model::activity::{ActiveQuery, ActivityState};
 use crate::model::config::ConfigState;
 use crate::model::paper::{PaperFilter, PaperSortOrder, RefPhase, RefState};
 use crate::model::queue::{filtered_indices, PaperPhase, PaperState, QueueFilter, SortOrder};
 use crate::theme::Theme;
+use crate::tui_event::{BackendCommand, BackendEvent};
 use crate::view::export::ExportState;
 
 /// Which screen is currently displayed.
@@ -20,8 +20,8 @@ use crate::view::export::ExportState;
 pub enum Screen {
     Banner,
     Queue,
-    Paper(usize),                // index into papers vec
-    RefDetail(usize, usize),     // (paper_index, ref_index)
+    Paper(usize),            // index into papers vec
+    RefDetail(usize, usize), // (paper_index, ref_index)
     Config,
     FilePicker,
 }
@@ -107,7 +107,8 @@ impl FilePickerState {
                         is_pdf: false,
                     });
                 } else {
-                    let is_pdf = path.extension()
+                    let is_pdf = path
+                        .extension()
                         .map(|ext| ext.eq_ignore_ascii_case("pdf"))
                         .unwrap_or(false);
                     files.push(FileEntry {
@@ -224,10 +225,7 @@ pub struct App {
 
 impl App {
     pub fn new(filenames: Vec<String>, theme: Theme) -> Self {
-        let papers: Vec<PaperState> = filenames
-            .into_iter()
-            .map(PaperState::new)
-            .collect();
+        let papers: Vec<PaperState> = filenames.into_iter().map(PaperState::new).collect();
         let paper_count = papers.len();
         let ref_states = vec![Vec::new(); paper_count];
         let paper_refs = vec![Vec::new(); paper_count];
@@ -287,9 +285,7 @@ impl App {
                 });
             }
             SortOrder::Name => {
-                indices.sort_by(|&a, &b| {
-                    self.papers[a].filename.cmp(&self.papers[b].filename)
-                });
+                indices.sort_by(|&a, &b| self.papers[a].filename.cmp(&self.papers[b].filename));
             }
         }
         self.queue_sorted = indices;
@@ -304,7 +300,9 @@ impl App {
             indices.retain(|&i| {
                 refs[i].result.as_ref().map_or(false, |r| {
                     r.status != hallucinator_core::Status::Verified
-                        || r.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted)
+                        || r.retraction_info
+                            .as_ref()
+                            .map_or(false, |ri| ri.is_retracted)
                 })
             });
         }
@@ -376,7 +374,9 @@ impl App {
 
     /// Build a `hallucinator_core::Config` from the current ConfigState.
     fn build_config(&self) -> hallucinator_core::Config {
-        let disabled_dbs: Vec<String> = self.config_state.disabled_dbs
+        let disabled_dbs: Vec<String> = self
+            .config_state
+            .disabled_dbs
             .iter()
             .filter(|(_, enabled)| !enabled)
             .map(|(name, _)| name.clone())
@@ -396,7 +396,9 @@ impl App {
             dblp_offline_path: if self.config_state.dblp_offline_path.is_empty() {
                 None
             } else {
-                Some(std::path::PathBuf::from(&self.config_state.dblp_offline_path))
+                Some(std::path::PathBuf::from(
+                    &self.config_state.dblp_offline_path,
+                ))
             },
             dblp_offline_db: None, // Populated from main.rs
             max_concurrent_refs: self.config_state.max_concurrent_refs,
@@ -415,7 +417,8 @@ impl App {
         }
 
         for path in &new_files {
-            let filename = path.file_name()
+            let filename = path
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.display().to_string());
             self.papers.push(PaperState::new(filename));
@@ -444,38 +447,51 @@ impl App {
                 Action::MoveUp => {
                     self.export_state.cursor = self.export_state.cursor.saturating_sub(1);
                 }
-                Action::DrillIn => {
-                    match self.export_state.cursor {
-                        0 => {
-                            let formats = crate::view::export::ExportFormat::all();
-                            let idx = formats.iter().position(|&f| f == self.export_state.format).unwrap_or(0);
-                            self.export_state.format = formats[(idx + 1) % formats.len()];
-                        }
-                        1 => {
-                            self.export_state.scope = match self.export_state.scope {
-                                crate::view::export::ExportScope::ThisPaper => crate::view::export::ExportScope::AllPapers,
-                                crate::view::export::ExportScope::AllPapers => crate::view::export::ExportScope::ThisPaper,
-                            };
-                        }
-                        3 => {
-                            let path = format!("{}.{}", self.export_state.output_path, self.export_state.format.extension());
-                            let data = crate::export::collect_paper_data(&self.papers);
-                            let refs: Vec<(String, &[Option<hallucinator_core::ValidationResult>])> = data
-                                .iter()
+                Action::DrillIn => match self.export_state.cursor {
+                    0 => {
+                        let formats = crate::view::export::ExportFormat::all();
+                        let idx = formats
+                            .iter()
+                            .position(|&f| f == self.export_state.format)
+                            .unwrap_or(0);
+                        self.export_state.format = formats[(idx + 1) % formats.len()];
+                    }
+                    1 => {
+                        self.export_state.scope = match self.export_state.scope {
+                            crate::view::export::ExportScope::ThisPaper => {
+                                crate::view::export::ExportScope::AllPapers
+                            }
+                            crate::view::export::ExportScope::AllPapers => {
+                                crate::view::export::ExportScope::ThisPaper
+                            }
+                        };
+                    }
+                    3 => {
+                        let path = format!(
+                            "{}.{}",
+                            self.export_state.output_path,
+                            self.export_state.format.extension()
+                        );
+                        let data = crate::export::collect_paper_data(&self.papers);
+                        let refs: Vec<(String, &[Option<hallucinator_core::ValidationResult>])> =
+                            data.iter()
                                 .map(|(name, results)| (name.clone(), results.as_slice()))
                                 .collect();
-                            match crate::export::export_results(&refs, self.export_state.format, std::path::Path::new(&path)) {
-                                Ok(()) => {
-                                    self.export_state.message = Some(format!("Saved to {}", path));
-                                }
-                                Err(e) => {
-                                    self.export_state.message = Some(format!("Error: {}", e));
-                                }
+                        match crate::export::export_results(
+                            &refs,
+                            self.export_state.format,
+                            std::path::Path::new(&path),
+                        ) {
+                            Ok(()) => {
+                                self.export_state.message = Some(format!("Saved to {}", path));
+                            }
+                            Err(e) => {
+                                self.export_state.message = Some(format!("Error: {}", e));
                             }
                         }
-                        _ => {}
                     }
-                }
+                    _ => {}
+                },
                 Action::Tick => {
                     self.tick = self.tick.wrapping_add(1);
                 }
@@ -746,36 +762,33 @@ impl App {
                     self.detail_scroll = u16::MAX;
                 }
                 Screen::Config => {
-                    self.config_state.item_cursor = self.config_section_item_count().saturating_sub(1);
+                    self.config_state.item_cursor =
+                        self.config_section_item_count().saturating_sub(1);
                 }
                 Screen::Banner | Screen::FilePicker => {}
             },
-            Action::CycleSort => {
-                match &self.screen {
-                    Screen::Queue => {
-                        self.sort_order = self.sort_order.next();
-                        self.recompute_sorted_indices();
-                    }
-                    Screen::Paper(_) => {
-                        self.paper_sort = self.paper_sort.next();
-                    }
-                    _ => {}
+            Action::CycleSort => match &self.screen {
+                Screen::Queue => {
+                    self.sort_order = self.sort_order.next();
+                    self.recompute_sorted_indices();
                 }
-            }
-            Action::CycleFilter => {
-                match &self.screen {
-                    Screen::Queue => {
-                        self.queue_filter = self.queue_filter.next();
-                        self.recompute_sorted_indices();
-                        self.queue_cursor = 0;
-                    }
-                    Screen::Paper(_) => {
-                        self.paper_filter = self.paper_filter.next();
-                        self.paper_cursor = 0;
-                    }
-                    _ => {}
+                Screen::Paper(_) => {
+                    self.paper_sort = self.paper_sort.next();
                 }
-            }
+                _ => {}
+            },
+            Action::CycleFilter => match &self.screen {
+                Screen::Queue => {
+                    self.queue_filter = self.queue_filter.next();
+                    self.recompute_sorted_indices();
+                    self.queue_cursor = 0;
+                }
+                Screen::Paper(_) => {
+                    self.paper_filter = self.paper_filter.next();
+                    self.paper_cursor = 0;
+                }
+                _ => {}
+            },
             Action::StartSearch => {
                 self.input_mode = InputMode::Search;
                 self.search_query.clear();
@@ -884,7 +897,10 @@ impl App {
             Action::CycleConfigSection => {
                 if self.screen == Screen::Config {
                     let sections = crate::model::config::ConfigSection::all();
-                    let idx = sections.iter().position(|&s| s == self.config_state.section).unwrap_or(0);
+                    let idx = sections
+                        .iter()
+                        .position(|&s| s == self.config_state.section)
+                        .unwrap_or(0);
                     self.config_state.section = sections[(idx + 1) % sections.len()];
                     self.config_state.item_cursor = 0;
                 }
@@ -892,8 +908,11 @@ impl App {
             Action::AddFiles => {
                 self.screen = Screen::FilePicker;
             }
-            Action::Retry | Action::RetryAll
-            | Action::RemovePaper | Action::CopyToClipboard | Action::SaveConfig => {
+            Action::Retry
+            | Action::RetryAll
+            | Action::RemovePaper
+            | Action::CopyToClipboard
+            | Action::SaveConfig => {
                 // Placeholder for future implementation
             }
             Action::Tick => {
@@ -1036,38 +1055,34 @@ impl App {
         use crate::model::config::ConfigSection;
         let buf = self.config_state.edit_buffer.clone();
         match self.config_state.section {
-            ConfigSection::ApiKeys => {
-                match self.config_state.item_cursor {
-                    0 => self.config_state.openalex_key = buf,
-                    1 => self.config_state.s2_api_key = buf,
-                    _ => {}
+            ConfigSection::ApiKeys => match self.config_state.item_cursor {
+                0 => self.config_state.openalex_key = buf,
+                1 => self.config_state.s2_api_key = buf,
+                _ => {}
+            },
+            ConfigSection::Concurrency => match self.config_state.item_cursor {
+                0 => {
+                    if let Ok(v) = buf.parse::<usize>() {
+                        self.config_state.max_concurrent_papers = v.max(1);
+                    }
                 }
-            }
-            ConfigSection::Concurrency => {
-                match self.config_state.item_cursor {
-                    0 => {
-                        if let Ok(v) = buf.parse::<usize>() {
-                            self.config_state.max_concurrent_papers = v.max(1);
-                        }
+                1 => {
+                    if let Ok(v) = buf.parse::<usize>() {
+                        self.config_state.max_concurrent_refs = v.max(1);
                     }
-                    1 => {
-                        if let Ok(v) = buf.parse::<usize>() {
-                            self.config_state.max_concurrent_refs = v.max(1);
-                        }
-                    }
-                    2 => {
-                        if let Ok(v) = buf.parse::<u64>() {
-                            self.config_state.db_timeout_secs = v.max(1);
-                        }
-                    }
-                    3 => {
-                        if let Ok(v) = buf.parse::<u64>() {
-                            self.config_state.db_timeout_short_secs = v.max(1);
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                2 => {
+                    if let Ok(v) = buf.parse::<u64>() {
+                        self.config_state.db_timeout_secs = v.max(1);
+                    }
+                }
+                3 => {
+                    if let Ok(v) = buf.parse::<u64>() {
+                        self.config_state.db_timeout_short_secs = v.max(1);
+                    }
+                }
+                _ => {}
+            },
             ConfigSection::Databases => {
                 if self.config_state.item_cursor == 0 {
                     self.config_state.dblp_offline_path = buf;
@@ -1159,9 +1174,7 @@ impl App {
                     started_tick: self.tick,
                 });
             }
-            ProgressEvent::Result {
-                index, result, ..
-            } => {
+            ProgressEvent::Result { index, result, .. } => {
                 if let Some(paper) = self.papers.get_mut(paper_index) {
                     paper.record_result(index, result.clone());
                 }
@@ -1170,7 +1183,9 @@ impl App {
                         rs.phase = RefPhase::Done;
                         // Remove matching active query
                         let title = rs.title.clone();
-                        self.activity.active_queries.retain(|q| q.ref_title != title);
+                        self.activity
+                            .active_queries
+                            .retain(|q| q.ref_title != title);
                         rs.result = Some(result);
                     }
                 }
@@ -1192,8 +1207,15 @@ impl App {
             } => {
                 // Skip recording Skipped status — those are early-exit artifacts, not real queries
                 if status != DbStatus::Skipped {
-                    let success = matches!(status, DbStatus::Match | DbStatus::NoMatch | DbStatus::AuthorMismatch);
-                    self.activity.record_db_complete(&db_name, success, elapsed.as_secs_f64() * 1000.0);
+                    let success = matches!(
+                        status,
+                        DbStatus::Match | DbStatus::NoMatch | DbStatus::AuthorMismatch
+                    );
+                    self.activity.record_db_complete(
+                        &db_name,
+                        success,
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
                 }
             }
         }
@@ -1250,12 +1272,13 @@ impl App {
 
         // Activity panel split
         let main_area = if self.activity_panel_visible {
-            let panel_width = if content_area.width > 120 { 45 } else { (content_area.width / 3).max(30) };
-            let chunks = Layout::horizontal([
-                Constraint::Min(40),
-                Constraint::Length(panel_width),
-            ])
-            .split(content_area);
+            let panel_width = if content_area.width > 120 {
+                45
+            } else {
+                (content_area.width / 3).max(30)
+            };
+            let chunks = Layout::horizontal([Constraint::Min(40), Constraint::Length(panel_width)])
+                .split(content_area);
 
             crate::view::activity::render(f, chunks[1], self);
             chunks[0]
@@ -1288,7 +1311,10 @@ impl App {
 fn verdict_sort_key(rs: &RefState) -> u8 {
     match &rs.result {
         Some(r) => {
-            if r.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted) {
+            if r.retraction_info
+                .as_ref()
+                .map_or(false, |ri| ri.is_retracted)
+            {
                 0
             } else {
                 match r.status {

@@ -4,19 +4,16 @@ use std::collections::HashSet;
 /// Common surname prefixes (case-insensitive).
 static SURNAME_PREFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "van", "von", "de", "del", "della", "di", "da", "al", "el", "la", "le",
-        "ben", "ibn", "mac", "mc", "o",
+        "van", "von", "de", "del", "della", "di", "da", "al", "el", "la", "le", "ben", "ibn",
+        "mac", "mc", "o",
     ]
     .into_iter()
     .collect()
 });
 
 /// Name suffixes to strip.
-static NAME_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    ["jr", "sr", "ii", "iii", "iv", "v"]
-        .into_iter()
-        .collect()
-});
+static NAME_SUFFIXES: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| ["jr", "sr", "ii", "iii", "iv", "v"].into_iter().collect());
 
 /// Validate that at least one author in `ref_authors` matches one in `found_authors`.
 ///
@@ -47,7 +44,11 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
             .iter()
             .filter_map(|a| {
                 let s = get_last_name(a);
-                if s.is_empty() { None } else { Some(s) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
             })
             .collect();
 
@@ -55,7 +56,11 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
             .iter()
             .filter_map(|a| {
                 let s = get_last_name(a);
-                if s.is_empty() { None } else { Some(s) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
             })
             .collect();
 
@@ -99,22 +104,14 @@ fn get_surname_from_parts(parts: &[&str]) -> String {
 
     // Check for three-part surnames like "De La Cruz"
     if parts.len() >= 3
-        && SURNAME_PREFIXES.contains(
-            parts[parts.len() - 3]
-                .to_lowercase()
-                .trim_end_matches('.')
-        )
+        && SURNAME_PREFIXES.contains(parts[parts.len() - 3].to_lowercase().trim_end_matches('.'))
     {
         return parts[parts.len() - 3..].join(" ");
     }
 
     // Check for two-part surnames like "Van Bavel"
     if parts.len() >= 2
-        && SURNAME_PREFIXES.contains(
-            parts[parts.len() - 2]
-                .to_lowercase()
-                .trim_end_matches('.')
-        )
+        && SURNAME_PREFIXES.contains(parts[parts.len() - 2].to_lowercase().trim_end_matches('.'))
     {
         return parts[parts.len() - 2..].join(" ");
     }
@@ -130,11 +127,7 @@ fn normalize_author(name: &str) -> String {
     if name.contains(',') {
         let parts: Vec<&str> = name.splitn(2, ',').collect();
         let surname = parts[0].trim();
-        let initials = if parts.len() > 1 {
-            parts[1].trim()
-        } else {
-            ""
-        };
+        let initials = if parts.len() > 1 { parts[1].trim() } else { "" };
         let first_initial = initials.chars().next().unwrap_or(' ');
         return format!("{} {}", first_initial, surname.to_lowercase());
     }
@@ -194,7 +187,7 @@ fn has_first_name_or_initial(name: &str) -> bool {
     // Strip name suffixes
     let core_parts: Vec<&str> = parts
         .iter()
-        .filter(|p| !NAME_SUFFIXES.contains(p.to_lowercase().trim_end_matches('.') ))
+        .filter(|p| !NAME_SUFFIXES.contains(p.to_lowercase().trim_end_matches('.')))
         .copied()
         .collect();
 
@@ -250,10 +243,7 @@ mod tests {
 
     #[test]
     fn test_validate_authors_no_overlap() {
-        assert!(!validate_authors(
-            &s(&["John Smith"]),
-            &s(&["Bob Brown"]),
-        ));
+        assert!(!validate_authors(&s(&["John Smith"]), &s(&["Bob Brown"]),));
     }
 
     #[test]

@@ -21,8 +21,7 @@ impl DatabaseBackend for EuropePmc {
     ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, String>> + Send + 'a>> {
         Box::pin(async move {
             // Clean title for search
-            static SPECIAL: Lazy<Regex> =
-                Lazy::new(|| Regex::new(r#"["\'\[\](){}:;]"#).unwrap());
+            static SPECIAL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"["\'\[\](){}:;]"#).unwrap());
             let clean_title = SPECIAL.replace_all(title, " ");
             static WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
             let clean_title = WS.replace_all(&clean_title, " ");

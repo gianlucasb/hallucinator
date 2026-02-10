@@ -49,7 +49,11 @@ pub fn print_extraction_summary(
 }
 
 /// Print a real-time progress event.
-pub fn print_progress(w: &mut dyn Write, event: &ProgressEvent, color: ColorMode) -> std::io::Result<()> {
+pub fn print_progress(
+    w: &mut dyn Write,
+    event: &ProgressEvent,
+    color: ColorMode,
+) -> std::io::Result<()> {
     match event {
         ProgressEvent::Checking {
             index,
@@ -181,11 +185,7 @@ fn print_not_found_block(
     writeln!(w)?;
 
     if color.enabled() {
-        writeln!(
-            w,
-            "{} Reference not found in any database",
-            "Status:".red()
-        )?;
+        writeln!(w, "{} Reference not found in any database", "Status:".red())?;
     } else {
         writeln!(w, "Status: Reference not found in any database")?;
     }
@@ -290,11 +290,7 @@ pub fn print_doi_issues(
 ) -> std::io::Result<()> {
     let issues: Vec<_> = results
         .iter()
-        .filter(|r| {
-            r.doi_info
-                .as_ref()
-                .map_or(false, |d| !d.valid)
-        })
+        .filter(|r| r.doi_info.as_ref().map_or(false, |d| !d.valid))
         .collect();
 
     if issues.is_empty() {
@@ -305,7 +301,11 @@ pub fn print_doi_issues(
     let sep = "=".repeat(60);
     if color.enabled() {
         writeln!(w, "{}", sep.bold().red())?;
-        writeln!(w, "{}", "DOI ISSUES - POTENTIAL HALLUCINATIONS".bold().red())?;
+        writeln!(
+            w,
+            "{}",
+            "DOI ISSUES - POTENTIAL HALLUCINATIONS".bold().red()
+        )?;
         writeln!(w, "{}", sep.bold().red())?;
     } else {
         writeln!(w, "{}", sep)?;
@@ -384,12 +384,7 @@ pub fn print_retraction_warnings(
         }
         if let Some(ref doi) = ri.retraction_doi {
             if color.enabled() {
-                writeln!(
-                    w,
-                    "{} https://doi.org/{}",
-                    "Retraction notice:".bold(),
-                    doi
-                )?;
+                writeln!(w, "{} https://doi.org/{}", "Retraction notice:".bold(), doi)?;
             } else {
                 writeln!(w, "Retraction notice: https://doi.org/{}", doi)?;
             }
@@ -406,8 +401,14 @@ pub fn print_summary(
     skip_stats: &SkipStats,
     color: ColorMode,
 ) -> std::io::Result<()> {
-    let verified = results.iter().filter(|r| r.status == Status::Verified).count();
-    let not_found = results.iter().filter(|r| r.status == Status::NotFound).count();
+    let verified = results
+        .iter()
+        .filter(|r| r.status == Status::Verified)
+        .count();
+    let not_found = results
+        .iter()
+        .filter(|r| r.status == Status::NotFound)
+        .count();
     let mismatched = results
         .iter()
         .filter(|r| r.status == Status::AuthorMismatch)

@@ -32,11 +32,7 @@ pub enum DoiMatchResult {
 }
 
 /// Validate a DOI by querying doi.org for metadata.
-pub async fn validate_doi(
-    doi: &str,
-    client: &reqwest::Client,
-    timeout: Duration,
-) -> DoiValidation {
+pub async fn validate_doi(doi: &str, client: &reqwest::Client, timeout: Duration) -> DoiValidation {
     if doi.is_empty() {
         return DoiValidation {
             valid: false,
@@ -75,11 +71,7 @@ pub async fn validate_doi(
                                     .filter_map(|a| {
                                         if let Some(family) = a["family"].as_str() {
                                             let given = a["given"].as_str().unwrap_or("");
-                                            Some(
-                                                format!("{} {}", given, family)
-                                                    .trim()
-                                                    .to_string(),
-                                            )
+                                            Some(format!("{} {}", given, family).trim().to_string())
                                         } else {
                                             a["literal"].as_str().map(String::from)
                                         }
@@ -163,8 +155,8 @@ pub fn check_doi_match(
     };
 
     // For longer DOI titles, check if one contains the other
-    let is_long_substring_match = doi_norm.len() >= 20
-        && (ref_norm.contains(&doi_norm) || doi_norm.contains(&ref_norm));
+    let is_long_substring_match =
+        doi_norm.len() >= 20 && (ref_norm.contains(&doi_norm) || doi_norm.contains(&ref_norm));
 
     let title_match = title_ratio >= 0.95
         || is_prefix

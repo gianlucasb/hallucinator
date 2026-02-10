@@ -92,10 +92,7 @@ impl ConfigState {
         } else if key.len() <= 4 {
             "*".repeat(key.len())
         } else {
-            format!("{}{}",
-                &key[..4],
-                "*".repeat(key.len() - 4)
-            )
+            format!("{}{}", &key[..4], "*".repeat(key.len() - 4))
         }
     }
 }

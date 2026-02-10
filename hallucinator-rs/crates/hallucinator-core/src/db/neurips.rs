@@ -42,11 +42,10 @@ impl DatabaseBackend for NeurIPS {
 
                 // Parse in spawn_blocking to avoid !Send scraper types in async context
                 let title_clone = title_owned.clone();
-                let match_result = tokio::task::spawn_blocking(move || {
-                    parse_neurips_index(&body, &title_clone)
-                })
-                .await
-                .map_err(|e| e.to_string())?;
+                let match_result =
+                    tokio::task::spawn_blocking(move || parse_neurips_index(&body, &title_clone))
+                        .await
+                        .map_err(|e| e.to_string())?;
 
                 if let Some((found_title, href)) = match_result {
                     let paper_url = format!("https://papers.nips.cc{}", href);

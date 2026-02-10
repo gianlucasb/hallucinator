@@ -16,10 +16,8 @@ pub fn find_references_section(text: &str) -> Option<String> {
         let rest = &text[ref_start..];
 
         static END_RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(
-                r"(?i)\n\s*(?:Appendix|Acknowledgments|Acknowledgements|Supplementary)",
-            )
-            .unwrap()
+            Regex::new(r"(?i)\n\s*(?:Appendix|Acknowledgments|Acknowledgements|Supplementary)")
+                .unwrap()
         });
 
         let ref_end = if let Some(end_m) = END_RE.find(rest) {
@@ -111,8 +109,7 @@ fn try_numbered(ref_text: &str) -> Option<Vec<String>> {
     }
 
     // Extract the captured numbers to check sequentiality
-    static RE_CAP: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?m)(?:^|\n)\s*(\d+)\.\s+").unwrap());
+    static RE_CAP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)(?:^|\n)\s*(\d+)\.\s+").unwrap());
 
     let caps: Vec<_> = RE_CAP.captures_iter(ref_text).collect();
     let first_nums: Vec<i64> = caps
@@ -125,9 +122,7 @@ fn try_numbered(ref_text: &str) -> Option<Vec<String>> {
         return None;
     }
 
-    let is_sequential = first_nums
-        .windows(2)
-        .all(|w| w[1] == w[0] + 1);
+    let is_sequential = first_nums.windows(2).all(|w| w[1] == w[0] + 1);
 
     if !is_sequential {
         return None;

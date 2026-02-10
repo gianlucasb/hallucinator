@@ -211,7 +211,11 @@ fn build_database_list(
     let mut databases: Vec<Box<dyn DatabaseBackend>> = Vec::new();
 
     let should_include = |name: &str| -> bool {
-        if config.disabled_dbs.iter().any(|d| d.eq_ignore_ascii_case(name)) {
+        if config
+            .disabled_dbs
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(name))
+        {
             return false;
         }
         match only_dbs {

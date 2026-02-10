@@ -17,7 +17,12 @@ pub enum ExportFormat {
 
 impl ExportFormat {
     pub fn all() -> &'static [ExportFormat] {
-        &[ExportFormat::Json, ExportFormat::Csv, ExportFormat::Markdown, ExportFormat::Text]
+        &[
+            ExportFormat::Json,
+            ExportFormat::Csv,
+            ExportFormat::Markdown,
+            ExportFormat::Text,
+        ]
     }
 
     pub fn label(self) -> &'static str {
@@ -100,21 +105,30 @@ pub fn render(f: &mut Frame, app: &App) {
     // Format
     let fmt_indicator = if export.cursor == 0 { "> " } else { "  " };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {}Format:  ", fmt_indicator), Style::default().fg(theme.text)),
+        Span::styled(
+            format!("  {}Format:  ", fmt_indicator),
+            Style::default().fg(theme.text),
+        ),
         Span::styled(export.format.label(), Style::default().fg(theme.active)),
     ]));
 
     // Scope
     let scope_indicator = if export.cursor == 1 { "> " } else { "  " };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {}Scope:   ", scope_indicator), Style::default().fg(theme.text)),
+        Span::styled(
+            format!("  {}Scope:   ", scope_indicator),
+            Style::default().fg(theme.text),
+        ),
         Span::styled(export.scope.label(), Style::default().fg(theme.active)),
     ]));
 
     // Output path
     let path_indicator = if export.cursor == 2 { "> " } else { "  " };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {}Output:  ", path_indicator), Style::default().fg(theme.text)),
+        Span::styled(
+            format!("  {}Output:  ", path_indicator),
+            Style::default().fg(theme.text),
+        ),
         Span::styled(
             format!("{}.{}", export.output_path, export.format.extension()),
             Style::default().fg(theme.dim),
@@ -125,7 +139,10 @@ pub fn render(f: &mut Frame, app: &App) {
 
     // Confirm button
     let confirm_style = if export.cursor == 3 {
-        Style::default().fg(theme.header_fg).bg(theme.active).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.header_fg)
+            .bg(theme.active)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.active)
     };

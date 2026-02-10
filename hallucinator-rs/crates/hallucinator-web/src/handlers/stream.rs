@@ -16,10 +16,7 @@ use crate::models::*;
 use crate::state::AppState;
 use crate::upload::{self, FileType, FormFields};
 
-pub async fn stream(
-    State(state): State<Arc<AppState>>,
-    multipart: Multipart,
-) -> impl IntoResponse {
+pub async fn stream(State(state): State<Arc<AppState>>, multipart: Multipart) -> impl IntoResponse {
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
 
     tokio::spawn(async move {
@@ -46,9 +43,7 @@ async fn handle_stream(
         tempfile::tempdir().map_err(|e| format!("Failed to create temp directory: {}", e))?;
 
     match fields.file.file_type {
-        FileType::Pdf => {
-            handle_single_pdf(state, fields, tx, temp_dir).await
-        }
+        FileType::Pdf => handle_single_pdf(state, fields, tx, temp_dir).await,
         FileType::Zip => {
             let pdfs = archive::extract_from_zip(&fields.file.data, temp_dir.path())?;
             handle_archive(state, fields, pdfs, tx, temp_dir).await
@@ -73,7 +68,8 @@ async fn handle_single_pdf(
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
     // Extract references (blocking I/O via MuPDF)
-    let extraction = extract_pdf_blocking(&pdf_path).await
+    let extraction = extract_pdf_blocking(&pdf_path)
+        .await
         .map_err(|e| format!("{}: {}", filename, e))?;
 
     // Temp dir no longer needed after extraction
@@ -83,15 +79,20 @@ async fn handle_single_pdf(
     let refs = extraction.references;
 
     // Send extraction_complete event
-    send(&tx, "extraction_complete", &ExtractionCompleteEvent {
-        total_refs: refs.len(),
-        skip_stats: SkipStatsJson {
-            total_raw: skip_stats.total_raw,
-            skipped_url: skip_stats.url_only,
-            skipped_short_title: skip_stats.short_title,
-            skipped_no_authors: skip_stats.no_authors,
+    send(
+        &tx,
+        "extraction_complete",
+        &ExtractionCompleteEvent {
+            total_refs: refs.len(),
+            skip_stats: SkipStatsJson {
+                total_raw: skip_stats.total_raw,
+                skipped_url: skip_stats.url_only,
+                skipped_short_title: skip_stats.short_title,
+                skipped_no_authors: skip_stats.no_authors,
+            },
         },
-    }).await?;
+    )
+    .await?;
 
     // Run validation in a separate task so we can detect client disconnect
     let config = build_config(&state, &fields);
@@ -126,12 +127,17 @@ async fn handle_single_pdf(
     let summary = SummaryJson::from_results(&results, &skip_stats);
     let result_jsons: Vec<ResultJson> = results.iter().map(ResultJson::from).collect();
 
-    send(&tx, "complete", &CompleteEvent {
-        summary,
-        results: result_jsons,
-        file_count: None,
-        files: None,
-    }).await?;
+    send(
+        &tx,
+        "complete",
+        &CompleteEvent {
+            summary,
+            results: result_jsons,
+            file_count: None,
+            files: None,
+        },
+    )
+    .await?;
 
     Ok(())
 }
@@ -165,13 +171,19 @@ async fn handle_archive(
             break;
         }
 
-        send(&tx, "file_start", &FileStartEvent {
-            file_index,
-            file_count,
-            filename: pdf.filename.clone(),
-        }).await?;
+        send(
+            &tx,
+            "file_start",
+            &FileStartEvent {
+                file_index,
+                file_count,
+                filename: pdf.filename.clone(),
+            },
+        )
+        .await?;
 
-        match process_archive_file(&state, &fields, pdf, &tx, &cancel, &cancel_for_disconnect).await {
+        match process_archive_file(&state, &fields, pdf, &tx, &cancel, &cancel_for_disconnect).await
+        {
             Ok((results, skip_stats)) => {
                 // Accumulate skip stats
                 aggregate_skip_stats.total_raw += skip_stats.total_raw;
@@ -180,16 +192,20 @@ async fn handle_archive(
                 aggregate_skip_stats.no_authors += skip_stats.no_authors;
 
                 let summary = SummaryJson::from_results(&results, &skip_stats);
-                let result_jsons: Vec<ResultJson> =
-                    results.iter().map(ResultJson::from).collect();
+                let result_jsons: Vec<ResultJson> = results.iter().map(ResultJson::from).collect();
 
-                send(&tx, "file_complete", &FileCompleteEvent {
-                    filename: pdf.filename.clone(),
-                    success: true,
-                    error: None,
-                    summary: Some(summary.clone()),
-                    results: result_jsons.clone(),
-                }).await?;
+                send(
+                    &tx,
+                    "file_complete",
+                    &FileCompleteEvent {
+                        filename: pdf.filename.clone(),
+                        success: true,
+                        error: None,
+                        summary: Some(summary.clone()),
+                        results: result_jsons.clone(),
+                    },
+                )
+                .await?;
 
                 all_results.extend(result_jsons.clone());
                 file_results.push(FileResultJson {
@@ -207,13 +223,18 @@ async fn handle_archive(
                     break;
                 }
 
-                send(&tx, "file_complete", &FileCompleteEvent {
-                    filename: pdf.filename.clone(),
-                    success: false,
-                    error: Some(e.clone()),
-                    summary: None,
-                    results: vec![],
-                }).await?;
+                send(
+                    &tx,
+                    "file_complete",
+                    &FileCompleteEvent {
+                        filename: pdf.filename.clone(),
+                        success: false,
+                        error: Some(e.clone()),
+                        summary: None,
+                        results: vec![],
+                    },
+                )
+                .await?;
 
                 file_results.push(FileResultJson {
                     filename: pdf.filename.clone(),
@@ -229,12 +250,17 @@ async fn handle_archive(
     // Compute aggregate summary from all_results
     let aggregate_summary = compute_aggregate_summary(&all_results, &aggregate_skip_stats);
 
-    send(&tx, "complete", &CompleteEvent {
-        summary: aggregate_summary,
-        results: all_results,
-        file_count: Some(file_count),
-        files: Some(file_results),
-    }).await?;
+    send(
+        &tx,
+        "complete",
+        &CompleteEvent {
+            summary: aggregate_summary,
+            results: all_results,
+            file_count: Some(file_count),
+            files: Some(file_results),
+        },
+    )
+    .await?;
 
     drop(temp_dir);
     Ok(())
@@ -248,21 +274,27 @@ async fn process_archive_file(
     cancel: &CancellationToken,
     cancel_for_disconnect: &CancellationToken,
 ) -> Result<(Vec<ValidationResult>, SkipStats), String> {
-    let extraction = extract_pdf_blocking(&pdf.path).await
+    let extraction = extract_pdf_blocking(&pdf.path)
+        .await
         .map_err(|e| format!("{}: {}", pdf.filename, e))?;
 
     let skip_stats = extraction.skip_stats.clone();
     let refs = extraction.references;
 
-    send(tx, "extraction_complete", &ExtractionCompleteEvent {
-        total_refs: refs.len(),
-        skip_stats: SkipStatsJson {
-            total_raw: skip_stats.total_raw,
-            skipped_url: skip_stats.url_only,
-            skipped_short_title: skip_stats.short_title,
-            skipped_no_authors: skip_stats.no_authors,
+    send(
+        tx,
+        "extraction_complete",
+        &ExtractionCompleteEvent {
+            total_refs: refs.len(),
+            skip_stats: SkipStatsJson {
+                total_raw: skip_stats.total_raw,
+                skipped_url: skip_stats.url_only,
+                skipped_short_title: skip_stats.short_title,
+                skipped_no_authors: skip_stats.no_authors,
+            },
         },
-    }).await?;
+    )
+    .await?;
 
     let config = build_config(state, fields);
     let cancel_clone = cancel.clone();
@@ -328,38 +360,49 @@ fn send_progress_event(
     filename: Option<&str>,
 ) {
     let sse = match event {
-        ProgressEvent::Checking { index, total, title } => {
-            sse_event("checking", &CheckingEvent {
+        ProgressEvent::Checking {
+            index,
+            total,
+            title,
+        } => sse_event(
+            "checking",
+            &CheckingEvent {
                 index: *index,
                 total: *total,
                 title: title.clone(),
                 filename: filename.map(String::from),
-            })
-        }
-        ProgressEvent::Result { index, total, result } => {
-            sse_event("result", &ResultEvent {
+            },
+        ),
+        ProgressEvent::Result {
+            index,
+            total,
+            result,
+        } => sse_event(
+            "result",
+            &ResultEvent {
                 result: ResultJson::from(result),
                 index: *index,
                 total: *total,
                 filename: filename.map(String::from),
-            })
-        }
+            },
+        ),
         ProgressEvent::Warning {
             index,
             total,
             title,
             failed_dbs,
             message,
-        } => {
-            sse_event("warning", &WarningEvent {
+        } => sse_event(
+            "warning",
+            &WarningEvent {
                 index: *index,
                 total: *total,
                 title: title.clone(),
                 failed_dbs: failed_dbs.clone(),
                 message: message.clone(),
                 filename: filename.map(String::from),
-            })
-        }
+            },
+        ),
         ProgressEvent::RetryPass { count } => {
             sse_event("retry_pass", &RetryPassEvent { count: *count })
         }

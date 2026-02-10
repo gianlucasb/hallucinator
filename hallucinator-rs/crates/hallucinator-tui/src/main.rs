@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use ratatui::crossterm::event;
-use ratatui::crossterm::event::{EnableMouseCapture, DisableMouseCapture};
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -19,11 +19,11 @@ mod action;
 mod app;
 mod backend;
 mod export;
-mod persistence;
-mod tui_event;
 mod input;
 mod model;
+mod persistence;
 mod theme;
+mod tui_event;
 mod view;
 
 use app::{App, Screen};
@@ -76,9 +76,7 @@ async fn main() -> anyhow::Result<()> {
     let openalex_key = args
         .openalex_key
         .or_else(|| std::env::var("OPENALEX_KEY").ok());
-    let s2_api_key = args
-        .s2_api_key
-        .or_else(|| std::env::var("S2_API_KEY").ok());
+    let s2_api_key = args.s2_api_key.or_else(|| std::env::var("S2_API_KEY").ok());
     let dblp_offline_path = args
         .dblp_offline
         .or_else(|| std::env::var("DBLP_OFFLINE_PATH").ok().map(PathBuf::from));
@@ -149,14 +147,19 @@ async fn main() -> anyhow::Result<()> {
     app.config_state.max_concurrent_refs = 4;
     app.config_state.db_timeout_secs = db_timeout_secs;
     app.config_state.db_timeout_short_secs = db_timeout_short_secs;
-    app.config_state.dblp_offline_path = dblp_offline_path.as_ref()
+    app.config_state.dblp_offline_path = dblp_offline_path
+        .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     app.config_state.theme_name = args.theme.clone();
 
     // Mark disabled DBs from CLI args
     for (name, enabled) in &mut app.config_state.disabled_dbs {
-        if args.disable_dbs.iter().any(|d| d.eq_ignore_ascii_case(name)) {
+        if args
+            .disable_dbs
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(name))
+        {
             *enabled = false;
         }
     }
@@ -188,7 +191,12 @@ async fn main() -> anyhow::Result<()> {
 
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
-                tui_event::BackendCommand::ProcessFiles { files, starting_index, max_concurrent_papers, mut config } => {
+                tui_event::BackendCommand::ProcessFiles {
+                    files,
+                    starting_index,
+                    max_concurrent_papers,
+                    mut config,
+                } => {
                     // Fresh token for this batch
                     batch_cancel = CancellationToken::new();
 
@@ -210,7 +218,15 @@ async fn main() -> anyhow::Result<()> {
                     let cancel = batch_cancel.clone();
                     // Spawn batch as a separate task so we can still receive commands
                     tokio::spawn(async move {
-                        backend::run_batch_with_offset(files, config, tx, cancel, starting_index, max_concurrent_papers).await;
+                        backend::run_batch_with_offset(
+                            files,
+                            config,
+                            tx,
+                            cancel,
+                            starting_index,
+                            max_concurrent_papers,
+                        )
+                        .await;
                     });
                 }
                 tui_event::BackendCommand::CancelProcessing => {
@@ -306,7 +322,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
 
     Ok(())
 }

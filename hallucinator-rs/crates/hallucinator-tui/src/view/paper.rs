@@ -60,7 +60,10 @@ fn render_breadcrumb(f: &mut Frame, area: Rect, filename: &str, theme: &Theme) {
     let breadcrumb = Line::from(vec![
         Span::styled(" HALLUCINATOR ", theme.header_style()),
         Span::styled(" > ", Style::default().fg(theme.dim)),
-        Span::styled(filename, Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            filename,
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ),
     ]);
     f.render_widget(Paragraph::new(breadcrumb), area);
 }
@@ -80,12 +83,7 @@ fn render_progress(
         0.0
     };
 
-    let label = format!(
-        "{} {} / {} refs",
-        spinner_char(tick),
-        done,
-        total
-    );
+    let label = format!("{} {} / {} refs", spinner_char(tick), done, total);
 
     let gauge = Gauge::default()
         .block(
@@ -101,9 +99,18 @@ fn render_progress(
 }
 
 fn render_search_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let cursor = if app.input_mode == InputMode::Search { "\u{2588}" } else { "" };
+    let cursor = if app.input_mode == InputMode::Search {
+        "\u{2588}"
+    } else {
+        ""
+    };
     let line = Line::from(vec![
-        Span::styled(" /", Style::default().fg(theme.active).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " /",
+            Style::default()
+                .fg(theme.active)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(&app.search_query, Style::default().fg(theme.text)),
         Span::styled(cursor, Style::default().fg(theme.active)),
     ]);
@@ -119,11 +126,9 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
     } else {
         vec!["#", "Reference", "Verdict"]
     };
-    let header = Row::new(
-        header_cells
-            .iter()
-            .map(|h| Cell::from(*h).style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))),
-    )
+    let header = Row::new(header_cells.iter().map(|h| {
+        Cell::from(*h).style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+    }))
     .height(1);
 
     let refs = &app.ref_states[paper_index];
@@ -145,11 +150,17 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
 
             let verdict = rs.verdict_label();
             let verdict_style = if rs.marked_safe {
-                Style::default().fg(theme.verified).add_modifier(Modifier::DIM)
+                Style::default()
+                    .fg(theme.verified)
+                    .add_modifier(Modifier::DIM)
             } else {
                 match &rs.result {
                     Some(r) => {
-                        let color = if r.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted) {
+                        let color = if r
+                            .retraction_info
+                            .as_ref()
+                            .map_or(false, |ri| ri.is_retracted)
+                        {
                             theme.retracted
                         } else {
                             theme.status_color(&r.status)
@@ -189,10 +200,7 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
         ]
     };
 
-    let block_title = format!(
-        " References | sort: {} (s) ",
-        app.paper_sort.label()
-    );
+    let block_title = format!(" References | sort: {} (s) ", app.paper_sort.label());
 
     let table = Table::new(rows, &widths)
         .header(header)
@@ -245,18 +253,16 @@ fn render_footer(
     paper: &crate::model::queue::PaperState,
     theme: &Theme,
 ) {
-    let mut spans = vec![
-        Span::styled(
-            format!(
-                " V:{} M:{} NF:{} R:{} ",
-                paper.stats.verified,
-                paper.stats.author_mismatch,
-                paper.stats.not_found,
-                paper.stats.retracted
-            ),
-            Style::default().fg(theme.text),
+    let mut spans = vec![Span::styled(
+        format!(
+            " V:{} M:{} NF:{} R:{} ",
+            paper.stats.verified,
+            paper.stats.author_mismatch,
+            paper.stats.not_found,
+            paper.stats.retracted
         ),
-    ];
+        Style::default().fg(theme.text),
+    )];
 
     // Filter indicator
     if app.paper_filter != PaperFilter::All {

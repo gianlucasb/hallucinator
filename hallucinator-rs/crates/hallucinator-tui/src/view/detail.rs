@@ -19,7 +19,7 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
 
     let chunks = Layout::vertical([
         Constraint::Length(1), // breadcrumb
-        Constraint::Min(5),   // scrollable content
+        Constraint::Min(5),    // scrollable content
         Constraint::Length(1), // footer
     ])
     .split(area);
@@ -48,7 +48,9 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
     if rs.marked_safe {
         lines.push(Line::from(Span::styled(
             "  \u{2713} Marked as SAFE (false positive)",
-            Style::default().fg(theme.verified).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.verified)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
     }
@@ -75,16 +77,19 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         // VALIDATION section
         section_header(&mut lines, "VALIDATION", theme);
 
-        let (status_text, status_color) =
-            if result.retraction_info.as_ref().map_or(false, |ri| ri.is_retracted) {
-                ("\u{2620} RETRACTED", theme.retracted)
-            } else {
-                match result.status {
-                    Status::Verified => ("\u{2713} Verified", theme.verified),
-                    Status::NotFound => ("\u{2717} Not Found", theme.not_found),
-                    Status::AuthorMismatch => ("\u{26A0} Author Mismatch", theme.author_mismatch),
-                }
-            };
+        let (status_text, status_color) = if result
+            .retraction_info
+            .as_ref()
+            .map_or(false, |ri| ri.is_retracted)
+        {
+            ("\u{2620} RETRACTED", theme.retracted)
+        } else {
+            match result.status {
+                Status::Verified => ("\u{2713} Verified", theme.verified),
+                Status::NotFound => ("\u{2717} Not Found", theme.not_found),
+                Status::AuthorMismatch => ("\u{26A0} Author Mismatch", theme.author_mismatch),
+            }
+        };
 
         lines.push(Line::from(vec![
             Span::styled("  Status:        ", Style::default().fg(theme.dim)),
@@ -102,10 +107,14 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         if !result.found_authors.is_empty() {
             // Show overlap count if ref_authors are available
             let overlap = if !result.ref_authors.is_empty() {
-                let ref_set: std::collections::HashSet<_> = result.ref_authors.iter()
+                let ref_set: std::collections::HashSet<_> = result
+                    .ref_authors
+                    .iter()
                     .map(|a| a.to_lowercase())
                     .collect();
-                let found_set: std::collections::HashSet<_> = result.found_authors.iter()
+                let found_set: std::collections::HashSet<_> = result
+                    .found_authors
+                    .iter()
                     .map(|a| a.to_lowercase())
                     .collect();
                 let overlap_count = ref_set.intersection(&found_set).count();
@@ -137,12 +146,13 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
             section_header(&mut lines, "DATABASE RESULTS", theme);
 
             // Header
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {:<20}{:<16}{:<8}{}", "Database", "Result", "Time", "Notes"),
-                    Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    "  {:<20}{:<16}{:<8}{}",
+                    "Database", "Result", "Time", "Notes"
                 ),
-            ]));
+                Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
+            )]));
             lines.push(Line::from(Span::styled(
                 "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
                 Style::default().fg(theme.dim),
@@ -164,7 +174,9 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
                 };
 
                 let mut notes = String::new();
-                if db_result.status == DbStatus::Match && result.source.as_deref() == Some(&db_result.db_name) {
+                if db_result.status == DbStatus::Match
+                    && result.source.as_deref() == Some(&db_result.db_name)
+                {
                     notes = "\u{2190} verified (early exit)".to_string();
                 } else if db_result.status == DbStatus::Skipped {
                     notes = "early exit".to_string();
@@ -179,14 +191,8 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
                         format!("{:<16}", result_text),
                         Style::default().fg(result_color),
                     ),
-                    Span::styled(
-                        format!("{:<8}", time_str),
-                        Style::default().fg(theme.dim),
-                    ),
-                    Span::styled(
-                        notes,
-                        Style::default().fg(theme.dim),
-                    ),
+                    Span::styled(format!("{:<8}", time_str), Style::default().fg(theme.dim)),
+                    Span::styled(notes, Style::default().fg(theme.dim)),
                 ]));
             }
         }
@@ -229,10 +235,20 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         let scholar_url = format!("https://scholar.google.com/scholar?q={}", scholar_query);
         url_line(&mut lines, "Google Scholar", &scholar_url, theme);
         if let Some(doi) = &result.doi_info {
-            url_line(&mut lines, "DOI", &format!("https://doi.org/{}", doi.doi), theme);
+            url_line(
+                &mut lines,
+                "DOI",
+                &format!("https://doi.org/{}", doi.doi),
+                theme,
+            );
         }
         if let Some(arxiv) = &result.arxiv_info {
-            url_line(&mut lines, "arXiv", &format!("https://arxiv.org/abs/{}", arxiv.arxiv_id), theme);
+            url_line(
+                &mut lines,
+                "arXiv",
+                &format!("https://arxiv.org/abs/{}", arxiv.arxiv_id),
+                theme,
+            );
         }
 
         // RETRACTION section
@@ -314,25 +330,22 @@ fn section_header<'a>(lines: &mut Vec<Line<'a>>, title: &'a str, theme: &Theme) 
 
 fn labeled_line<'a>(lines: &mut Vec<Line<'a>>, label: &'a str, value: &str, theme: &Theme) {
     lines.push(Line::from(vec![
-        Span::styled(
-            format!("  {label:<16}"),
-            Style::default().fg(theme.dim),
-        ),
+        Span::styled(format!("  {label:<16}"), Style::default().fg(theme.dim)),
         Span::styled(value.to_string(), Style::default().fg(theme.text)),
     ]));
 }
 
 /// Render a link: label on one line, URL on the next (for terminal click detection).
 fn url_line(lines: &mut Vec<Line<'_>>, label: &str, url: &str, theme: &Theme) {
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("  {label:<16}"),
-            Style::default().fg(theme.dim),
-        ),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("  {label:<16}"),
+        Style::default().fg(theme.dim),
+    )]));
     lines.push(Line::from(Span::styled(
         format!("    {url}"),
-        Style::default().fg(theme.active).add_modifier(Modifier::UNDERLINED),
+        Style::default()
+            .fg(theme.active)
+            .add_modifier(Modifier::UNDERLINED),
     )));
 }
 

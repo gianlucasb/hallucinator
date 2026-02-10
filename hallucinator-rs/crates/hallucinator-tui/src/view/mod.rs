@@ -9,7 +9,10 @@ pub mod paper;
 pub mod queue;
 
 /// Spinner frames for animated progress indication.
-const SPINNER_FRAMES: &[char] = &['\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}', '\u{2807}', '\u{280F}'];
+const SPINNER_FRAMES: &[char] = &[
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
 
 /// Get the current spinner character based on a tick counter.
 pub fn spinner_char(tick: usize) -> char {

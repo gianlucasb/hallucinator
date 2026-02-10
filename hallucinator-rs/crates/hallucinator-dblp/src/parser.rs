@@ -206,14 +206,16 @@ mod tests {
 
     #[test]
     fn test_parse_language_tagged() {
-        let line = r#"<https://dblp.org/rec/123> <http://purl.org/dc/terms/title> "Some Title"@en ."#;
+        let line =
+            r#"<https://dblp.org/rec/123> <http://purl.org/dc/terms/title> "Some Title"@en ."#;
         let triple = parse_line(line).unwrap();
         assert_eq!(triple.object, "Some Title");
     }
 
     #[test]
     fn test_parse_escaped_quote() {
-        let line = r#"<https://dblp.org/rec/123> <http://purl.org/dc/terms/title> "He said \"hello\"" ."#;
+        let line =
+            r#"<https://dblp.org/rec/123> <http://purl.org/dc/terms/title> "He said \"hello\"" ."#;
         let triple = parse_line(line).unwrap();
         assert_eq!(triple.object, "He said \"hello\"");
     }

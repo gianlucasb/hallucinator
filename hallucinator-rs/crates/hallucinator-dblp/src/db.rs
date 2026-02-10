@@ -76,7 +76,7 @@ pub fn end_bulk_load(conn: &Connection) -> Result<(), DblpError> {
 pub struct InsertBatch {
     pub authors: Vec<(String, String)>,             // (uri, name)
     pub publications: Vec<(String, String)>,        // (uri, title)
-    pub publication_authors: Vec<(String, String)>,  // (pub_uri, author_uri)
+    pub publication_authors: Vec<(String, String)>, // (pub_uri, author_uri)
 }
 
 impl InsertBatch {
@@ -150,9 +150,7 @@ pub fn rebuild_fts_index(conn: &Connection) -> Result<(), DblpError> {
 /// Get a metadata value by key.
 pub fn get_metadata(conn: &Connection, key: &str) -> Result<Option<String>, DblpError> {
     let mut stmt = conn.prepare_cached("SELECT value FROM metadata WHERE key = ?1")?;
-    let result = stmt
-        .query_row(params![key], |row| row.get(0))
-        .ok();
+    let result = stmt.query_row(params![key], |row| row.get(0)).ok();
     Ok(result)
 }
 
@@ -170,10 +168,9 @@ pub fn set_metadata(conn: &Connection, key: &str, value: &str) -> Result<(), Dbl
 pub fn get_counts(conn: &Connection) -> Result<(i64, i64, i64), DblpError> {
     let pubs: i64 = conn.query_row("SELECT COUNT(*) FROM publications", [], |row| row.get(0))?;
     let authors: i64 = conn.query_row("SELECT COUNT(*) FROM authors", [], |row| row.get(0))?;
-    let relations: i64 =
-        conn.query_row("SELECT COUNT(*) FROM publication_authors", [], |row| {
-            row.get(0)
-        })?;
+    let relations: i64 = conn.query_row("SELECT COUNT(*) FROM publication_authors", [], |row| {
+        row.get(0)
+    })?;
     Ok((pubs, authors, relations))
 }
 
@@ -218,9 +215,7 @@ mod tests {
     fn test_insert_and_query_batch() {
         let conn = setup_db();
         let mut batch = InsertBatch::new();
-        batch
-            .authors
-            .push(("pid/1".into(), "Alice Smith".into()));
+        batch.authors.push(("pid/1".into(), "Alice Smith".into()));
         batch
             .publications
             .push(("rec/1".into(), "Test Paper Title".into()));
@@ -241,7 +236,9 @@ mod tests {
         let conn = setup_db();
 
         let mut batch = InsertBatch::new();
-        batch.publications.push(("rec/1".into(), "Old Title".into()));
+        batch
+            .publications
+            .push(("rec/1".into(), "Old Title".into()));
         insert_batch(&conn, &batch).unwrap();
 
         let mut batch2 = InsertBatch::new();
@@ -281,9 +278,7 @@ mod tests {
         let mut batch = InsertBatch::new();
         batch.authors.push(("pid/1".into(), "Alice".into()));
         batch.authors.push(("pid/2".into(), "Bob".into()));
-        batch
-            .publications
-            .push(("rec/1".into(), "Paper".into()));
+        batch.publications.push(("rec/1".into(), "Paper".into()));
         batch
             .publication_authors
             .push(("rec/1".into(), "pid/1".into()));

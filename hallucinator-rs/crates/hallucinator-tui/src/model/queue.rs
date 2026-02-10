@@ -77,7 +77,11 @@ impl PaperState {
                     self.stats.author_mismatch = self.stats.author_mismatch.saturating_sub(1)
                 }
             }
-            if old.retraction_info.as_ref().map_or(false, |r| r.is_retracted) {
+            if old
+                .retraction_info
+                .as_ref()
+                .map_or(false, |r| r.is_retracted)
+            {
                 self.stats.retracted = self.stats.retracted.saturating_sub(1);
             }
         }
@@ -88,7 +92,11 @@ impl PaperState {
             Status::NotFound => self.stats.not_found += 1,
             Status::AuthorMismatch => self.stats.author_mismatch += 1,
         }
-        if result.retraction_info.as_ref().map_or(false, |r| r.is_retracted) {
+        if result
+            .retraction_info
+            .as_ref()
+            .map_or(false, |r| r.is_retracted)
+        {
             self.stats.retracted += 1;
         }
 
@@ -189,8 +197,7 @@ pub fn filtered_indices(
         .enumerate()
         .filter(|(_, p)| {
             filter.matches(p)
-                && (search_query.is_empty()
-                    || p.filename.to_lowercase().contains(&query_lower))
+                && (search_query.is_empty() || p.filename.to_lowercase().contains(&query_lower))
         })
         .map(|(i, _)| i)
         .collect()

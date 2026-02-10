@@ -35,11 +35,7 @@ impl DatabaseBackend for DblpOffline {
             .map_err(|e| e.to_string())??;
 
             match result {
-                Some(qr) => Ok((
-                    Some(qr.record.title),
-                    qr.record.authors,
-                    qr.record.url,
-                )),
+                Some(qr) => Ok((Some(qr.record.title), qr.record.authors, qr.record.url)),
                 None => Ok((None, vec![], None)),
             }
         })

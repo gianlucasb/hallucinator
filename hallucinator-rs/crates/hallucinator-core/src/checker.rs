@@ -94,11 +94,7 @@ pub async fn check_references(
                     total,
                     title: title.to_string(),
                     failed_dbs: result.failed_dbs.clone(),
-                    message: format!(
-                        "{} timed out; {}",
-                        result.failed_dbs.join(", "),
-                        context
-                    ),
+                    message: format!("{} timed out; {}", result.failed_dbs.join(", "), context),
                 });
             }
 
@@ -310,14 +306,11 @@ async fn check_single_reference(
         failed_dbs: db_result.failed_dbs,
         db_results: db_result.db_results,
         doi_info,
-        arxiv_info: reference
-            .arxiv_id
-            .as_ref()
-            .map(|id| ArxivInfo {
-                arxiv_id: id.clone(),
-                valid: false, // Will be validated separately if needed
-                title: None,
-            }),
+        arxiv_info: reference.arxiv_id.as_ref().map(|id| ArxivInfo {
+            arxiv_id: id.clone(),
+            valid: false, // Will be validated separately if needed
+            title: None,
+        }),
         retraction_info,
     }
 }

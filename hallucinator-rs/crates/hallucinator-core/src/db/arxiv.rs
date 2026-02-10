@@ -93,8 +93,7 @@ fn parse_arxiv_response(xml: &str, title: &str) -> Result<DbQueryResult, String>
                 if local.as_ref() == b"link" && in_entry {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"href" {
-                            current_link =
-                                String::from_utf8_lossy(&attr.value).to_string();
+                            current_link = String::from_utf8_lossy(&attr.value).to_string();
                         }
                     }
                 }
@@ -104,8 +103,7 @@ fn parse_arxiv_response(xml: &str, title: &str) -> Result<DbQueryResult, String>
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"href" {
                             if current_link.is_empty() {
-                                current_link =
-                                    String::from_utf8_lossy(&attr.value).to_string();
+                                current_link = String::from_utf8_lossy(&attr.value).to_string();
                             }
                         }
                     }
@@ -132,11 +130,7 @@ fn parse_arxiv_response(xml: &str, title: &str) -> Result<DbQueryResult, String>
                             } else {
                                 Some(current_link.clone())
                             };
-                            return Ok((
-                                Some(entry_title),
-                                current_authors.clone(),
-                                link,
-                            ));
+                            return Ok((Some(entry_title), current_authors.clone(), link));
                         }
                         in_entry = false;
                     }

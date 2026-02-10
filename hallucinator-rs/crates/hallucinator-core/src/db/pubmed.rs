@@ -68,11 +68,7 @@ impl DatabaseBackend for PubMed {
 
             let resp = client
                 .get(fetch_url)
-                .query(&[
-                    ("db", "pubmed"),
-                    ("id", ids.as_str()),
-                    ("retmode", "json"),
-                ])
+                .query(&[("db", "pubmed"), ("id", ids.as_str()), ("retmode", "json")])
                 .header("User-Agent", "Academic Reference Parser")
                 .timeout(timeout)
                 .send()

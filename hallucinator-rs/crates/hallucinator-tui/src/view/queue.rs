@@ -49,7 +49,10 @@ pub fn render_in(f: &mut Frame, app: &mut App, area: Rect) {
 fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let mut spans = vec![
         Span::styled(" HALLUCINATOR ", theme.header_style()),
-        Span::styled(" Queue", Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Queue",
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ),
     ];
 
     // Filter indicator
@@ -67,7 +70,11 @@ fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn render_progress_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let total = app.papers.len();
     let done = app.papers.iter().filter(|p| p.phase.is_terminal()).count();
-    let ratio = if total > 0 { done as f64 / total as f64 } else { 0.0 };
+    let ratio = if total > 0 {
+        done as f64 / total as f64
+    } else {
+        0.0
+    };
 
     // Build a text progress bar: ██████░░░░ 12/50
     let bar_width = (area.width as usize).saturating_sub(12);
@@ -92,9 +99,18 @@ fn render_progress_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn render_search_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let cursor = if app.input_mode == InputMode::Search { "\u{2588}" } else { "" };
+    let cursor = if app.input_mode == InputMode::Search {
+        "\u{2588}"
+    } else {
+        ""
+    };
     let line = Line::from(vec![
-        Span::styled(" /", Style::default().fg(theme.active).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " /",
+            Style::default()
+                .fg(theme.active)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(&app.search_query, Style::default().fg(theme.text)),
         Span::styled(cursor, Style::default().fg(theme.active)),
     ]);
@@ -111,11 +127,9 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
     } else {
         vec!["#", "Paper", "Refs", "Prob", "Status"]
     };
-    let header = Row::new(
-        header_cells
-            .iter()
-            .map(|h| Cell::from(*h).style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))),
-    )
+    let header = Row::new(header_cells.iter().map(|h| {
+        Cell::from(*h).style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+    }))
     .height(1);
 
     // Use the pre-computed sorted/filtered indices
@@ -220,11 +234,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let total = app.papers.len();
-    let done = app
-        .papers
-        .iter()
-        .filter(|p| p.phase.is_terminal())
-        .count();
+    let done = app.papers.iter().filter(|p| p.phase.is_terminal()).count();
 
     let total_verified: usize = app.papers.iter().map(|p| p.stats.verified).sum();
     let total_not_found: usize = app.papers.iter().map(|p| p.stats.not_found).sum();

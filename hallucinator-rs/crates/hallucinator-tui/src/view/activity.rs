@@ -16,7 +16,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // Database health section
     lines.push(Line::from(Span::styled(
         " Database Health",
-        Style::default().fg(theme.active).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.active)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
 
@@ -58,10 +60,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 format!("{:>4}", health.total_queries),
                 Style::default().fg(theme.dim),
             ),
-            Span::styled(
-                format!("{:>7}", avg_ms),
-                Style::default().fg(theme.dim),
-            ),
+            Span::styled(format!("{:>7}", avg_ms), Style::default().fg(theme.dim)),
         ]));
     }
 
@@ -76,7 +75,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         " Throughput",
-        Style::default().fg(theme.active).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.active)
+            .add_modifier(Modifier::BOLD),
     )));
 
     let sparkline = activity.sparkline();
@@ -107,7 +108,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         " Active Queries",
-        Style::default().fg(theme.active).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.active)
+            .add_modifier(Modifier::BOLD),
     )));
 
     if activity.active_queries.is_empty() {
@@ -136,7 +139,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         " Summary",
-        Style::default().fg(theme.active).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.active)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         format!(" Total completed: {}", activity.total_completed),

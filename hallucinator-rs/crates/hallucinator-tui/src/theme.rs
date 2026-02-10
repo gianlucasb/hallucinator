@@ -91,18 +91,27 @@ impl Theme {
     pub fn ref_phase_style(&self, phase: &RefPhase) -> Style {
         match phase {
             RefPhase::Pending => Style::default().fg(self.dim),
-            RefPhase::Checking => Style::default().fg(self.spinner).add_modifier(Modifier::BOLD),
-            RefPhase::Retrying => Style::default().fg(self.author_mismatch).add_modifier(Modifier::BOLD),
+            RefPhase::Checking => Style::default()
+                .fg(self.spinner)
+                .add_modifier(Modifier::BOLD),
+            RefPhase::Retrying => Style::default()
+                .fg(self.author_mismatch)
+                .add_modifier(Modifier::BOLD),
             RefPhase::Done => Style::default().fg(self.text),
         }
     }
 
     pub fn header_style(&self) -> Style {
-        Style::default().fg(self.header_fg).bg(self.header_bg).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(self.header_fg)
+            .bg(self.header_bg)
+            .add_modifier(Modifier::BOLD)
     }
 
     pub fn highlight_style(&self) -> Style {
-        Style::default().bg(self.highlight_bg).add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(self.highlight_bg)
+            .add_modifier(Modifier::BOLD)
     }
 
     pub fn border_style(&self) -> Style {

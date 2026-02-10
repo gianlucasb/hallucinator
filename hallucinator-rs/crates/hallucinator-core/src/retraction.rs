@@ -82,10 +82,7 @@ pub async fn check_retraction(
                     retracted: true,
                     retraction_doi: update["DOI"].as_str().map(String::from),
                     retraction_type: Some(
-                        update["type"]
-                            .as_str()
-                            .unwrap_or("Retraction")
-                            .to_string(),
+                        update["type"].as_str().unwrap_or("Retraction").to_string(),
                     ),
                     error: None,
                 };
@@ -188,10 +185,7 @@ pub async fn check_retraction_by_title(
                         retracted: true,
                         retraction_doi: update["DOI"].as_str().map(String::from),
                         retraction_type: Some(
-                            update["type"]
-                                .as_str()
-                                .unwrap_or("Retraction")
-                                .to_string(),
+                            update["type"].as_str().unwrap_or("Retraction").to_string(),
                         ),
                         error: None,
                     };

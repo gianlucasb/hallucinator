@@ -1,6 +1,5 @@
 use ratatui::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
 use crate::action::Action;
@@ -31,9 +30,7 @@ fn map_mouse(mouse: &MouseEvent) -> Action {
     match mouse.kind {
         MouseEventKind::ScrollDown => Action::MoveDown,
         MouseEventKind::ScrollUp => Action::MoveUp,
-        MouseEventKind::Down(MouseButton::Left) => {
-            Action::ClickAt(mouse.column, mouse.row)
-        }
+        MouseEventKind::Down(MouseButton::Left) => Action::ClickAt(mouse.column, mouse.row),
         _ => Action::None,
     }
 }

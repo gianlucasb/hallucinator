@@ -97,13 +97,12 @@ async fn process_single_paper(
 
     // Extract references (blocking MuPDF call)
     let path = pdf_path.clone();
-    let extraction: Result<ExtractionResult, String> =
-        tokio::task::spawn_blocking(move || {
-            hallucinator_pdf::extract_references(&path)
-                .map_err(|e| format!("PDF extraction failed: {}", e))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("Task join error: {}", e)));
+    let extraction: Result<ExtractionResult, String> = tokio::task::spawn_blocking(move || {
+        hallucinator_pdf::extract_references(&path)
+            .map_err(|e| format!("PDF extraction failed: {}", e))
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("Task join error: {}", e)));
 
     let extraction = match extraction {
         Ok(ext) => ext,
@@ -142,16 +141,12 @@ async fn process_single_paper(
     // Bridge sync progress callback → async channel via unbounded send
     let tx_progress = tx.clone();
     let progress_cb = move |event: ProgressEvent| {
-        let _ = tx_progress.send(BackendEvent::Progress {
-            paper_index,
-            event,
-        });
+        let _ = tx_progress.send(BackendEvent::Progress { paper_index, event });
     };
 
     let paper_cancel = cancel.clone();
     let results =
-        hallucinator_core::check_references(refs, paper_config, progress_cb, paper_cancel)
-            .await;
+        hallucinator_core::check_references(refs, paper_config, progress_cb, paper_cancel).await;
 
     let _ = tx.send(BackendEvent::PaperComplete {
         paper_index,
@@ -160,9 +155,7 @@ async fn process_single_paper(
 }
 
 /// Open offline DBLP database if a path is configured, returning the Arc<Mutex<..>> handle.
-pub fn open_dblp_db(
-    path: &PathBuf,
-) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
+pub fn open_dblp_db(path: &PathBuf) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline DBLP database not found at {}. Use hallucinator-cli --update-dblp={} to build it.",

@@ -88,8 +88,7 @@ pub fn extract_references(pdf_path: &Path) -> Result<ExtractionResult, PdfError>
         let ref_text = text_processing::fix_hyphenation(&ref_text);
 
         // Skip entries with non-academic URLs
-        static URL_RE: Lazy<Regex> =
-            Lazy::new(|| Regex::new(r"https?\s*:\s*//").unwrap());
+        static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?\s*:\s*//").unwrap());
         static BROKEN_URL_RE: Lazy<Regex> =
             Lazy::new(|| Regex::new(r"ht\s*tps?\s*:\s*//").unwrap());
         static ACADEMIC_URL_RE: Lazy<Regex> = Lazy::new(|| {

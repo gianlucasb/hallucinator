@@ -32,8 +32,7 @@ pub fn extract_authors_from_reference(ref_text: &str) -> Vec<String> {
     // Determine where authors section ends based on format
 
     // IEEE format: authors end at quoted title
-    static QUOTE_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"["\u{201c}\u{201d}]"#).unwrap());
+    static QUOTE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"["\u{201c}\u{201d}]"#).unwrap());
     let quote_match = QUOTE_RE.find(ref_text);
 
     // Springer/Nature format: authors end before "(Year)" pattern
@@ -74,8 +73,7 @@ pub fn extract_authors_from_reference(ref_text: &str) -> Vec<String> {
     }
 
     // Check for AAAI format (semicolon-separated)
-    static AAAI_CHECK: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[A-Z][a-z]+,\s+[A-Z]\.").unwrap());
+    static AAAI_CHECK: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Z][a-z]+,\s+[A-Z]\.").unwrap());
     if author_section.contains("; ") && AAAI_CHECK.is_match(author_section) {
         return parse_aaai_authors(author_section);
     }
@@ -194,7 +192,8 @@ mod tests {
 
     #[test]
     fn test_ieee_format() {
-        let ref_text = r#"J. Smith, A. Jones, and C. Williams, "Detecting Fake References," in IEEE, 2023."#;
+        let ref_text =
+            r#"J. Smith, A. Jones, and C. Williams, "Detecting Fake References," in IEEE, 2023."#;
         let authors = extract_authors_from_reference(ref_text);
         assert!(!authors.is_empty());
     }

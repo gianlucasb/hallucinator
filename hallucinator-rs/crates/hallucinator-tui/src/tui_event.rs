@@ -21,9 +21,7 @@ pub enum BackendCommand {
 #[allow(dead_code)]
 pub enum BackendEvent {
     /// PDF text extraction started for paper at queue index.
-    ExtractionStarted {
-        paper_index: usize,
-    },
+    ExtractionStarted { paper_index: usize },
     /// PDF extraction completed — references parsed.
     ExtractionComplete {
         paper_index: usize,
@@ -33,10 +31,7 @@ pub enum BackendEvent {
         skip_stats: SkipStats,
     },
     /// PDF extraction failed.
-    ExtractionFailed {
-        paper_index: usize,
-        error: String,
-    },
+    ExtractionFailed { paper_index: usize, error: String },
     /// Progress event from check_references (checking/result/warning/retry).
     Progress {
         paper_index: usize,

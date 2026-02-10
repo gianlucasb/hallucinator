@@ -161,7 +161,10 @@ impl std::fmt::Debug for Config {
             .field("openalex_key", &self.openalex_key.as_ref().map(|_| "***"))
             .field("s2_api_key", &self.s2_api_key.as_ref().map(|_| "***"))
             .field("dblp_offline_path", &self.dblp_offline_path)
-            .field("dblp_offline_db", &self.dblp_offline_db.as_ref().map(|_| "<open>"))
+            .field(
+                "dblp_offline_db",
+                &self.dblp_offline_db.as_ref().map(|_| "<open>"),
+            )
             .field("max_concurrent_refs", &self.max_concurrent_refs)
             .field("db_timeout_secs", &self.db_timeout_secs)
             .field("db_timeout_short_secs", &self.db_timeout_short_secs)

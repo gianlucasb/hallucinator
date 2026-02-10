@@ -8,7 +8,10 @@ use hallucinator_core::ValidationResult;
 pub fn run_dir() -> Option<PathBuf> {
     let cache = dirs::cache_dir()?;
     let now = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let dir = cache.join("hallucinator").join("runs").join(now.to_string());
+    let dir = cache
+        .join("hallucinator")
+        .join("runs")
+        .join(now.to_string());
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }

@@ -16,28 +16,24 @@ const LOGO: &[&str] = &[
 const LOGO_WIDTH: u16 = 48;
 
 // Magnifying glass suffix for persistent logo bar — box-drawing style, 10 chars each
-const GLASS: &[&str] = &[
-    "  ╭─────╮ ",
-    "  │  ·  │ ",
-    "  ╰─────╯╲",
-];
+const GLASS: &[&str] = &["  ╭─────╮ ", "  │  ·  │ ", "  ╰─────╯╲"];
 
 const GLASS_WIDTH: u16 = 11;
 
 // 12-stop rainbow palette for the trippy splash effect
 const RAINBOW: &[(u8, u8, u8)] = &[
-    (255, 0, 0),     // Red
-    (255, 127, 0),   // Orange
-    (255, 255, 0),   // Yellow
-    (127, 255, 0),   // Chartreuse
-    (0, 255, 0),     // Green
-    (0, 255, 127),   // Spring
-    (0, 255, 255),   // Cyan
-    (0, 127, 255),   // Azure
-    (0, 0, 255),     // Blue
-    (127, 0, 255),   // Violet
-    (255, 0, 255),   // Magenta
-    (255, 0, 127),   // Rose
+    (255, 0, 0),   // Red
+    (255, 127, 0), // Orange
+    (255, 255, 0), // Yellow
+    (127, 255, 0), // Chartreuse
+    (0, 255, 0),   // Green
+    (0, 255, 127), // Spring
+    (0, 255, 255), // Cyan
+    (0, 127, 255), // Azure
+    (0, 0, 255),   // Blue
+    (127, 0, 255), // Violet
+    (255, 0, 255), // Magenta
+    (255, 0, 127), // Rose
 ];
 
 // Tip strings — the "Pro-tip: " prefix is stripped when displayed in the pane
@@ -175,11 +171,8 @@ pub fn render_logo_bar(f: &mut Frame, area: Rect, theme: &Theme, tick: usize) ->
 
     // 5-line bar: logo+glass left, pro-tips pane right
     let rows = Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).split(area);
-    let cols = Layout::horizontal([
-        Constraint::Length(logo_glass_width),
-        Constraint::Min(15),
-    ])
-    .split(rows[0]);
+    let cols = Layout::horizontal([Constraint::Length(logo_glass_width), Constraint::Min(15)])
+        .split(rows[0]);
 
     // ── Left: logo + magnifying glass ──
     let mut logo_lines: Vec<Line> = Vec::new();
@@ -201,9 +194,7 @@ pub fn render_logo_bar(f: &mut Frame, area: Rect, theme: &Theme, tick: usize) ->
     let tip_block = Block::default()
         .title(Line::from(Span::styled(
             " Pro-tips ",
-            Style::default()
-                .fg(theme.text)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border));

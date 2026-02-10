@@ -14,12 +14,14 @@ pub fn extract_text_from_pdf(pdf_path: &Path) -> Result<String, PdfError> {
         .to_str()
         .ok_or_else(|| PdfError::OpenError("invalid path encoding".into()))?;
 
-    let document =
-        Document::open(path_str).map_err(|e| PdfError::OpenError(e.to_string()))?;
+    let document = Document::open(path_str).map_err(|e| PdfError::OpenError(e.to_string()))?;
 
     let mut pages_text = Vec::new();
 
-    for page_result in document.pages().map_err(|e| PdfError::ExtractionError(e.to_string()))? {
+    for page_result in document
+        .pages()
+        .map_err(|e| PdfError::ExtractionError(e.to_string()))?
+    {
         let page = page_result.map_err(|e| PdfError::ExtractionError(e.to_string()))?;
         let text_page = page
             .to_text_page(TextPageFlags::empty())
