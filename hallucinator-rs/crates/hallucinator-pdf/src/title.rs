@@ -109,7 +109,7 @@ pub fn clean_title(title: &str, from_quotes: bool) -> String {
 
     // Handle "? JournalName, vol(issue)" — journal name bleeding after question mark
     static QMARK_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\?\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*[\(:]").unwrap()
+        Regex::new(r"\?\s+[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]+,\s*\d+\s*[\(:]").unwrap()
     });
     if let Some(m) = QMARK_JOURNAL_RE.find(&title) {
         let qmark_pos = title[..m.end()].rfind('?').unwrap();
@@ -193,6 +193,7 @@ fn try_quoted_title(ref_text: &str) -> Option<(String, bool)> {
 
 fn find_subtitle_end(text: &str) -> usize {
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        let j = r"[a-zA-Z&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars (no \s)
         vec![
             Regex::new(r"\.\s*[Ii]n\s+").unwrap(),
             Regex::new(r"\.\s*(?:Proc|IEEE|ACM|USENIX|NDSS|CCS|AAAI|WWW|CHI|arXiv)").unwrap(),
@@ -201,7 +202,7 @@ fn find_subtitle_end(text: &str) -> usize {
             Regex::new(r"[,.]\s*(?:19|20)\d{2}").unwrap(),
             Regex::new(r"\s+(?:19|20)\d{2}\.").unwrap(),
             Regex::new(r"[.,]\s+[A-Z][a-z]+\s+\d+[,\s]").unwrap(),
-            Regex::new(r"\.\s*[A-Z][a-zA-Z]+(?:\s+(?:in|of|on|and|for|the|a|an|&|[A-Za-z]+))+,\s*\d+\s*[,:]").unwrap(),
+            Regex::new(&format!(r"\.\s*[A-Z](?:{}|\s)+,\s*\d+\s*[,(:]", j)).unwrap(),
         ]
     });
 
@@ -295,22 +296,24 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
     let caps = RE.captures(ref_text)?;
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
+    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        let j = r"[a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars
         vec![
             Regex::new(r"\.\s*[Ii]n:\s+").unwrap(),
             Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
             Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
-            Regex::new(r"\.\s*[A-Z][a-zA-Z\s]+\d+\s*\(\d+\)").unwrap(),
-            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&]+\d+:\d+").unwrap(),
-            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&-]+,\s*\d+").unwrap(),
+            Regex::new(&format!(r"\.\s*[A-Z]{}+\d+\s*\(\d+\)", j)).unwrap(),
+            Regex::new(&format!(r"\.\s*[A-Z]{}+\d+:\d+", j)).unwrap(),
+            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+", j)).unwrap(),
             Regex::new(r"\.\s*https?://").unwrap(),
             Regex::new(r"\.\s*URL\s+").unwrap(),
             Regex::new(r"\.\s*Tech\.\s*rep\.").unwrap(),
             Regex::new(r"\.\s*pp?\.?\s*\d+").unwrap(),
             // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
-            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*\(").unwrap(),
+            Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Journal after ? with volume:pages: "? JournalName, vol: pages"
-            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*:").unwrap(),
+            Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
         ]
     });
 
@@ -344,19 +347,24 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     let caps = RE.captures(ref_text)?;
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
+    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        let j = r"[a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars
         vec![
             Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
             Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
             Regex::new(r"\s+doi:").unwrap(),
             // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
-            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*\(").unwrap(),
+            Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Journal after ? with volume:issue pattern: "? JournalName, vol: pages"
-            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*:").unwrap(),
+            Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
             // Period then journal + volume/issue: ". JournalName, vol(issue)"
-            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&]+,\s*\d+\s*\(").unwrap(),
+            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Period then journal + volume:pages: ". JournalName, vol: pages"
-            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&]+,\s*\d+\s*:").unwrap(),
+            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
+            // Period then journal name + comma + volume (no parens/colon): ". JournalName, vol"
+            // Catches "Foundations and Trends® in Human–Computer Interaction, 14(4–5)"
+            Regex::new(&format!(r"\.\s*[A-Z]{}{{10,}},\s*\d+", j)).unwrap(),
         ]
     });
 
@@ -682,6 +690,7 @@ fn truncate_at_sentence_end(title: &str) -> String {
 
 fn apply_cutoff_patterns(title: &str) -> String {
     static CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        let j = r"[a-zA-Z&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars (no \s)
         vec![
             Regex::new(r"(?i)\.\s*[Ii]n:\s+[A-Z].*$").unwrap(),
             Regex::new(r"(?i)\.\s*[Ii]n\s+[A-Z].*$").unwrap(),
@@ -709,7 +718,11 @@ fn apply_cutoff_patterns(title: &str) -> String {
             Regex::new(r"\s*\(\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
             Regex::new(r"\s*\(pp\.?\s*\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
             Regex::new(r",?\s+\d+[\u{2013}\-]\d+\s*$").unwrap(),
-            Regex::new(r"\.\s*[A-Z][a-zA-Z]+(?:\s+(?:in|of|on|and|for|the|a|an|&|[A-Z]?[a-zA-Z]+))+,\s*\d+\s*[,:\s]\s*\d+[\u{2013}\-]?\d*.*$").unwrap(),
+            // Journal + volume/pages with expanded char class for &, +, ®, dashes
+            Regex::new(&format!(r"\.\s*[A-Z](?:{}|\s)+,\s*\d+\s*[,:\s]\s*\d+[\u{{2013}}\-]?\d*.*$", j)).unwrap(),
+            // Journal name after period with no volume (just ends): ". Big Data & Society, 1(1)"
+            // These are caught by the volume/issue patterns above; this handles standalone names
+            Regex::new(&format!(r"\.\s+(?:[A-Z](?:{}|\s)+[&+](?:{}|\s)+)\s*$", j, j)).unwrap(),
         ]
     });
 
@@ -828,6 +841,78 @@ mod tests {
         let text = "Smith J. \u{201c}Some title\u{201d}. In Proceedings.";
         let parts = split_sentences_skip_initials(text);
         assert!(!parts.is_empty());
+    }
+
+    #[test]
+    fn test_big_data_society_journal_leak() {
+        // "Big Data & Society" should NOT be in the title (& in journal name)
+        let ref_text = "Burrell, J. 2016. How the Machine \u{201c}Thinks\u{201d}: Understanding Opacity in Machine Learning Algorithms. Big Data & Society, 3(1)";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            !cleaned.contains("Big Data"),
+            "Journal 'Big Data & Society' leaked into title: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("Understanding Opacity"),
+            "Title should contain 'Understanding Opacity': {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_foundations_trends_journal_leak() {
+        // "Foundations and Trends® in Human–Computer Interaction" should NOT be in the title
+        let ref_text = "Metaxa, D.; Park, J. S.; Robertson, R. E.; Karahalios, K.; Wilson, C.; and Hancock, J. 2021. Auditing Algorithms: Understanding Algorithmic Systems from the Outside In. Foundations and Trends\u{00AE} in Human\u{2013}Computer Interaction, 14(4\u{2013}5)";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            !cleaned.contains("Foundations"),
+            "Journal 'Foundations and Trends' leaked into title: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("Outside In"),
+            "Title should contain 'Outside In': {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_communication_research_journal_leak() {
+        // "Communication Research" should NOT be in the title — straight quotes
+        let ref_text = "Marchal, N. 2021. \"Be nice or leave me alone\": An intergroup perspective on affective polarization in online political discussions. Communication Research, 49(3): 376\u{2013}398";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, from_quotes);
+        assert!(
+            !cleaned.contains("Communication Research"),
+            "Journal 'Communication Research' leaked into title (straight quotes): {}",
+            cleaned,
+        );
+
+        // Also test with smart quotes (as commonly found in PDFs)
+        let ref_text2 = "Marchal, N. 2021. \u{201c}Be nice or leave me alone\u{201d}: An intergroup perspective on affective polarization in online political discussions. Communication Research, 49(3): 376\u{2013}398";
+        let (title2, from_quotes2) = extract_title_from_reference(ref_text2);
+        let cleaned2 = clean_title(&title2, from_quotes2);
+        assert!(
+            !cleaned2.contains("Communication Research"),
+            "Journal 'Communication Research' leaked into title (smart quotes): {}",
+            cleaned2,
+        );
+    }
+
+    #[test]
+    fn test_social_media_plus_society_journal_leak() {
+        // "Social Media + Society" should NOT be in the title (+ in journal name)
+        let ref_text = "Zhao, H.; Wang, J.; and Hu, X. 2025. \u{201c}A wandering existence\u{201d}: Social media practices of Chinese youth in the context of platform-swinging. Social Media + Society, 11(1)";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            !cleaned.contains("Social Media + Society"),
+            "Journal 'Social Media + Society' leaked into title: {}",
+            cleaned,
+        );
     }
 
     #[test]

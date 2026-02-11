@@ -55,6 +55,10 @@ enum Command {
         /// Flag author mismatches from OpenAlex (default: skipped)
         #[arg(long)]
         check_openalex_authors: bool,
+
+        /// Dry run: extract and print references without querying databases
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Download and build the offline DBLP database
@@ -88,19 +92,24 @@ async fn main() -> anyhow::Result<()> {
             acl_offline,
             disable_dbs,
             check_openalex_authors,
+            dry_run,
         } => {
-            check(
-                pdf_path,
-                no_color,
-                openalex_key,
-                s2_api_key,
-                output,
-                dblp_offline,
-                acl_offline,
-                disable_dbs,
-                check_openalex_authors,
-            )
-            .await
+            if dry_run {
+                dry_run_check(pdf_path, no_color, output).await
+            } else {
+                check(
+                    pdf_path,
+                    no_color,
+                    openalex_key,
+                    s2_api_key,
+                    output,
+                    dblp_offline,
+                    acl_offline,
+                    disable_dbs,
+                    check_openalex_authors,
+                )
+                .await
+            }
         }
     }
 }
@@ -304,6 +313,127 @@ async fn check(
     output::print_doi_issues(&mut writer, &results, color)?;
     output::print_retraction_warnings(&mut writer, &results, color)?;
     output::print_summary(&mut writer, &results, &skip_stats, color)?;
+
+    Ok(())
+}
+
+async fn dry_run_check(
+    pdf_path: PathBuf,
+    no_color: bool,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    use owo_colors::OwoColorize;
+
+    let use_color = !no_color && output.is_none();
+
+    let mut writer: Box<dyn Write> = if let Some(ref output_path) = output {
+        Box::new(std::fs::File::create(output_path)?)
+    } else {
+        Box::new(std::io::stdout())
+    };
+
+    if !pdf_path.exists() {
+        anyhow::bail!("PDF file not found: {}", pdf_path.display());
+    }
+
+    let text = hallucinator_pdf::extract::extract_text_from_pdf(&pdf_path)?;
+    let ref_section = hallucinator_pdf::section::find_references_section(&text)
+        .ok_or_else(|| anyhow::anyhow!("No references section found"))?;
+    let raw_refs = hallucinator_pdf::section::segment_references(&ref_section);
+
+    let pdf_name = pdf_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| pdf_path.display().to_string());
+
+    if use_color {
+        writeln!(
+            writer,
+            "{} {} ({} raw references segmented)\n",
+            "DRY RUN:".bold().cyan(),
+            pdf_name.bold(),
+            raw_refs.len()
+        )?;
+    } else {
+        writeln!(
+            writer,
+            "DRY RUN: {} ({} raw references segmented)\n",
+            pdf_name,
+            raw_refs.len()
+        )?;
+    }
+
+    for (i, ref_text) in raw_refs.iter().enumerate() {
+        let doi = hallucinator_pdf::identifiers::extract_doi(ref_text);
+        let arxiv_id = hallucinator_pdf::identifiers::extract_arxiv_id(ref_text);
+        let (extracted_title, from_quotes) =
+            hallucinator_pdf::title::extract_title_from_reference(ref_text);
+        let cleaned_title = hallucinator_pdf::title::clean_title(&extracted_title, from_quotes);
+        let authors = hallucinator_pdf::authors::extract_authors_from_reference(ref_text);
+
+        // Normalize raw citation for display
+        let raw_display: String = ref_text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let raw_display = if raw_display.len() > 200 {
+            format!("{}...", &raw_display[..200])
+        } else {
+            raw_display
+        };
+
+        if use_color {
+            writeln!(
+                writer,
+                "{}",
+                format!("[{}]", i + 1).bold().yellow()
+            )?;
+        } else {
+            writeln!(writer, "[{}]", i + 1)?;
+        }
+
+        writeln!(writer, "  Title:   {}", cleaned_title)?;
+        writeln!(
+            writer,
+            "  Authors: {}",
+            if authors.is_empty() {
+                "(none)".to_string()
+            } else {
+                authors.join("; ")
+            }
+        )?;
+
+        if let Some(ref d) = doi {
+            writeln!(writer, "  DOI:     {}", d)?;
+        }
+        if let Some(ref a) = arxiv_id {
+            writeln!(writer, "  arXiv:   {}", a)?;
+        }
+
+        if use_color {
+            writeln!(writer, "  Raw:     {}", raw_display.dimmed())?;
+        } else {
+            writeln!(writer, "  Raw:     {}", raw_display)?;
+        }
+
+        let word_count = cleaned_title.split_whitespace().count();
+        if cleaned_title.is_empty() || word_count < 4 {
+            if use_color {
+                writeln!(
+                    writer,
+                    "  {}",
+                    format!("SKIPPED (title too short: {} words)", word_count)
+                        .red()
+                )?;
+            } else {
+                writeln!(writer, "  SKIPPED (title too short: {} words)", word_count)?;
+            }
+        }
+
+        writeln!(writer)?;
+    }
+
+    writeln!(writer, "Total: {} raw references", raw_refs.len())?;
 
     Ok(())
 }

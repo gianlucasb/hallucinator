@@ -16,7 +16,7 @@ pub fn find_references_section(text: &str) -> Option<String> {
         let rest = &text[ref_start..];
 
         static END_RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"(?i)\n\s*(?:Appendix|Acknowledgments|Acknowledgements|Supplementary)")
+            Regex::new(r"(?i)\n\s*(?:Appendix|Acknowledgments|Acknowledgements|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|Paper\s+Checklist|Checklist)")
                 .unwrap()
         });
 
@@ -145,43 +145,76 @@ fn try_numbered(ref_text: &str) -> Option<Vec<String>> {
 }
 
 fn try_aaai(ref_text: &str) -> Option<Vec<String>> {
+    // Surname chars: ASCII letters + common diacritics (Latin Extended)
+    let sc = r"[a-zA-Z\u{00C0}-\u{024F}\u{00E4}\u{00F6}\u{00FC}\u{00DF}\u{00E8}\u{00E9}]";
+
     // AAAI pattern: end of previous ref (lowercase/digit/paren/CAPS). + newline
     // + optional page number line + Surname, I. (next ref start)
     // Rust regex doesn't support look-ahead, so we match without (?!In\s) and filter in code
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"([a-z0-9)]|[A-Z]{2})\.\n(?:\d{1,4}\n)?\s*([A-Z][a-zA-Z]+(?:[ \-][A-Za-z]+)?,\s+[A-Z]\.)",
-        )
-        .unwrap()
+    let re_pattern = format!(
+        r"([a-z0-9)]|[A-Z]{{2}})\.\n(?:\d{{1,4}}\n)?\s*({}{}+(?:[ \-]{}+)?,\s+[A-Z]\.)",
+        r"[A-Z\u{00C0}-\u{024F}]", sc, sc,
+    );
+    let re = Regex::new(&re_pattern).unwrap();
+
+    // Secondary pattern for organization authors: "OrgName. Year." on its own boundary
+    // e.g., "European Union. 2022a." or "World Health Organization. 2021."
+    let org_re = Regex::new(
+        r"([a-z0-9)]|[A-Z]{2})\.\n(?:\d{1,4}\n)?\s*([A-Z][a-zA-Z]+(?:\s+[A-Z]?[a-zA-Z]+)+\.\s+(?:19|20)\d{2}[a-z]?\.)",
+    ).unwrap();
+
+    // Collect boundary matches from both patterns
+    struct Boundary {
+        prefix_end: usize,
+        ref_start: usize,
+    }
+
+    let mut boundaries: Vec<Boundary> = Vec::new();
+
+    // Primary pattern matches (Surname, I.)
+    for caps in re.captures_iter(ref_text) {
+        let surname = caps.get(2).unwrap().as_str();
+        if surname.starts_with("In ") {
+            continue;
+        }
+        boundaries.push(Boundary {
+            prefix_end: caps.get(1).unwrap().end(),
+            ref_start: caps.get(2).unwrap().start(),
+        });
+    }
+
+    // Organization pattern matches
+    for caps in org_re.captures_iter(ref_text) {
+        boundaries.push(Boundary {
+            prefix_end: caps.get(1).unwrap().end(),
+            ref_start: caps.get(2).unwrap().start(),
+        });
+    }
+
+    // Sort by position and deduplicate overlapping boundaries
+    boundaries.sort_by_key(|b| b.ref_start);
+    boundaries.dedup_by(|a, b| {
+        // If two boundaries overlap (ref_start within 10 chars), keep the earlier one
+        (a.ref_start as isize - b.ref_start as isize).unsigned_abs() < 10
     });
 
-    // Filter out matches where group 2 starts with "In " (editor references)
-    let matches: Vec<_> = RE
-        .captures_iter(ref_text)
-        .filter(|caps| {
-            let surname = caps.get(2).unwrap().as_str();
-            !surname.starts_with("In ")
-        })
-        .collect();
-
-    if matches.len() < 3 {
+    if boundaries.len() < 3 {
         return None;
     }
 
     let mut refs = Vec::new();
 
-    // First reference: everything before the first match's prefix group end
-    let prefix_end = matches[0].get(1).unwrap().end();
-    let first_ref = ref_text[..prefix_end].trim();
+    // First reference: everything before the first boundary
+    let first_ref = ref_text[..boundaries[0].prefix_end].trim();
     if !first_ref.is_empty() && first_ref.len() > 20 {
         refs.push(first_ref.to_string());
     }
 
     // Remaining references
-    for i in 0..matches.len() {
-        let start = matches[i].get(2).unwrap().start();
-        let end = if i + 1 < matches.len() {
-            matches[i + 1].get(1).unwrap().end()
+    for i in 0..boundaries.len() {
+        let start = boundaries[i].ref_start;
+        let end = if i + 1 < boundaries.len() {
+            boundaries[i + 1].prefix_end
         } else {
             ref_text.len()
         };
