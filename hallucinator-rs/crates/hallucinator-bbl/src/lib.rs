@@ -101,8 +101,7 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
 
 /// Segment .bbl content into individual `\bibitem` entries.
 fn segment_bibitem_entries(content: &str) -> Vec<String> {
-    static BIBITEM_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?m)^\\bibitem").unwrap());
+    static BIBITEM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\\bibitem").unwrap());
 
     let matches: Vec<_> = BIBITEM_RE.find_iter(content).collect();
 
@@ -203,8 +202,7 @@ fn is_url_only_entry(entry: &str) -> bool {
     // If the entry's main content is just a howpublished URL with no article title, skip
     let has_article_title = entry.contains("\\showarticletitle");
     let has_bibinfo_title = {
-        static TITLE_RE: Lazy<Regex> =
-            Lazy::new(|| Regex::new(r"\\bibinfo\s*\{title\}").unwrap());
+        static TITLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\bibinfo\s*\{title\}").unwrap());
         TITLE_RE.is_match(entry)
     };
     let has_url = URL_RE.is_match(entry);
@@ -288,13 +286,11 @@ fn strip_latex(text: &str) -> String {
     result = EMPH_RE.replace_all(&result, "$1").to_string();
 
     // \textbf{X} → X
-    static TEXTBF_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\\textbf\s*\{([^}]*)\}").unwrap());
+    static TEXTBF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\textbf\s*\{([^}]*)\}").unwrap());
     result = TEXTBF_RE.replace_all(&result, "$1").to_string();
 
     // \textit{X} → X
-    static TEXTIT_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\\textit\s*\{([^}]*)\}").unwrap());
+    static TEXTIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\textit\s*\{([^}]*)\}").unwrap());
     result = TEXTIT_RE.replace_all(&result, "$1").to_string();
 
     // \url{X} → X
@@ -318,7 +314,7 @@ fn strip_latex(text: &str) -> String {
     result = TILDE_SPACE.replace_all(&result, " ").to_string();
 
     // Remove remaining stray braces
-    result = result.replace('{', "").replace('}', "");
+    result = result.replace(['{', '}'], "");
 
     // Collapse whitespace
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
@@ -390,7 +386,7 @@ fn apply_accent(accent: &str, letter: &str) -> String {
         ("~", "N") => "Ñ".to_string(),
         ("~", "a") => "ã".to_string(),
         ("~", "o") => "õ".to_string(),
-        _ => format!("{}", letter), // Unknown accent, just return the letter
+        _ => letter.to_string(), // Unknown accent, just return the letter
     }
 }
 
@@ -465,7 +461,10 @@ Second entry content.
 
     #[test]
     fn test_strip_latex_ampersand() {
-        assert_eq!(strip_latex("IEEE Security \\& Privacy"), "IEEE Security & Privacy");
+        assert_eq!(
+            strip_latex("IEEE Security \\& Privacy"),
+            "IEEE Security & Privacy"
+        );
     }
 
     #[test]
@@ -554,14 +553,11 @@ Second entry content.
         );
 
         // Spot-check: entry with LaTeX accents
-        let mamie = result
-            .references
-            .iter()
-            .find(|r| {
-                r.authors
-                    .iter()
-                    .any(|a| a.contains("Mamié") || a.contains("Mamie"))
-            });
+        let mamie = result.references.iter().find(|r| {
+            r.authors
+                .iter()
+                .any(|a| a.contains("Mamié") || a.contains("Mamie"))
+        });
         if let Some(mamie_ref) = mamie {
             assert!(
                 mamie_ref.title.as_ref().unwrap().contains("Anti-Feminist"),

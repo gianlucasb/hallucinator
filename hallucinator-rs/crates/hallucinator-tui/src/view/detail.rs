@@ -80,7 +80,7 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         let (status_text, status_color) = if result
             .retraction_info
             .as_ref()
-            .map_or(false, |ri| ri.is_retracted)
+            .is_some_and(|ri| ri.is_retracted)
         {
             ("\u{2620} RETRACTED", theme.retracted)
         } else {

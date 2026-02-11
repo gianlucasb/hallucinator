@@ -10,7 +10,7 @@ pub enum BackendCommand {
         files: Vec<PathBuf>,
         starting_index: usize,
         max_concurrent_papers: usize,
-        config: hallucinator_core::Config,
+        config: Box<hallucinator_core::Config>,
     },
     /// Cancel the current batch.
     CancelProcessing,
@@ -35,7 +35,7 @@ pub enum BackendEvent {
     /// Progress event from check_references (checking/result/warning/retry).
     Progress {
         paper_index: usize,
-        event: ProgressEvent,
+        event: Box<ProgressEvent>,
     },
     /// All references for a paper have been checked.
     PaperComplete {

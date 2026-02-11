@@ -74,10 +74,10 @@ impl DatabaseBackend for EuropePmc {
                         Some(format!("https://doi.org/{}", doi))
                     } else if let Some(pmcid) = item["pmcid"].as_str() {
                         Some(format!("https://europepmc.org/article/PMC/{}", pmcid))
-                    } else if let Some(pmid) = item["pmid"].as_str() {
-                        Some(format!("https://europepmc.org/article/MED/{}", pmid))
                     } else {
-                        None
+                        item["pmid"]
+                            .as_str()
+                            .map(|pmid| format!("https://europepmc.org/article/MED/{}", pmid))
                     };
 
                     return Ok((Some(found_title.to_string()), authors, paper_url));

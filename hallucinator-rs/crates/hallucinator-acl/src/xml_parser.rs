@@ -68,24 +68,21 @@ pub fn parse_xml<R: BufRead>(reader: R, mut on_paper: impl FnMut(AclPaper)) {
                     "collection" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"id" {
-                                collection_id =
-                                    String::from_utf8_lossy(&attr.value).to_string();
+                                collection_id = String::from_utf8_lossy(&attr.value).to_string();
                             }
                         }
                     }
                     "volume" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"id" {
-                                volume_id =
-                                    String::from_utf8_lossy(&attr.value).to_string();
+                                volume_id = String::from_utf8_lossy(&attr.value).to_string();
                             }
                         }
                     }
                     "paper" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"id" {
-                                paper_id =
-                                    String::from_utf8_lossy(&attr.value).to_string();
+                                paper_id = String::from_utf8_lossy(&attr.value).to_string();
                             }
                         }
                         // Check for frontmatter (id="0")
@@ -133,8 +130,7 @@ pub fn parse_xml<R: BufRead>(reader: R, mut on_paper: impl FnMut(AclPaper)) {
                 if tag == "collection" {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"id" {
-                            collection_id =
-                                String::from_utf8_lossy(&attr.value).to_string();
+                            collection_id = String::from_utf8_lossy(&attr.value).to_string();
                         }
                     }
                 }

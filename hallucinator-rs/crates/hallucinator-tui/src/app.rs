@@ -117,12 +117,8 @@ impl FilePickerState {
                     });
                 } else {
                     let ext = path.extension().and_then(|e| e.to_str());
-                    let is_pdf = ext
-                        .map(|e| e.eq_ignore_ascii_case("pdf"))
-                        .unwrap_or(false);
-                    let is_bbl = ext
-                        .map(|e| e.eq_ignore_ascii_case("bbl"))
-                        .unwrap_or(false);
+                    let is_pdf = ext.map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false);
+                    let is_bbl = ext.map(|e| e.eq_ignore_ascii_case("bbl")).unwrap_or(false);
                     let is_archive = hallucinator_pdf::archive::is_archive_path(&path);
                     files.push(FileEntry {
                         name,
@@ -349,11 +345,9 @@ impl App {
 
         if self.paper_filter == PaperFilter::ProblemsOnly {
             indices.retain(|&i| {
-                refs[i].result.as_ref().map_or(false, |r| {
+                refs[i].result.as_ref().is_some_and(|r| {
                     r.status != hallucinator_core::Status::Verified
-                        || r.retraction_info
-                            .as_ref()
-                            .map_or(false, |ri| ri.is_retracted)
+                        || r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted)
                 })
             });
         }
@@ -418,7 +412,7 @@ impl App {
                 files: self.file_paths.clone(),
                 starting_index: 0,
                 max_concurrent_papers: self.config_state.max_concurrent_papers,
-                config,
+                config: Box::new(config),
             });
         }
     }
@@ -568,10 +562,7 @@ impl App {
             None => return false,
         };
 
-        let archive_name = self
-            .archive_streaming_name
-            .clone()
-            .unwrap_or_default();
+        let archive_name = self.archive_streaming_name.clone().unwrap_or_default();
         let mut finished = false;
         let mut new_pdfs: Vec<PathBuf> = Vec::new();
 
@@ -625,7 +616,7 @@ impl App {
                     files: new_pdfs,
                     starting_index,
                     max_concurrent_papers: self.config_state.max_concurrent_papers,
-                    config,
+                    config: Box::new(config),
                 });
             }
         }
@@ -1477,7 +1468,7 @@ impl App {
                 }
             }
             BackendEvent::Progress { paper_index, event } => {
-                self.handle_progress(paper_index, event);
+                self.handle_progress(paper_index, *event);
             }
             BackendEvent::PaperComplete {
                 paper_index,
@@ -1509,10 +1500,10 @@ impl App {
                 self.activity.active_queries.push(ActiveQuery {
                     db_name: format!("ref #{}", index + 1),
                     ref_title: title,
-                    started_tick: self.tick,
                 });
             }
             ProgressEvent::Result { index, result, .. } => {
+                let result = *result;
                 if let Some(paper) = self.papers.get_mut(paper_index) {
                     // Track retry progress
                     if paper.phase == PaperPhase::Retrying {
@@ -1711,10 +1702,7 @@ fn osc52_copy(text: &str) {
 fn verdict_sort_key(rs: &RefState) -> u8 {
     match &rs.result {
         Some(r) => {
-            if r.retraction_info
-                .as_ref()
-                .map_or(false, |ri| ri.is_retracted)
-            {
+            if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
                 0
             } else {
                 match r.status {

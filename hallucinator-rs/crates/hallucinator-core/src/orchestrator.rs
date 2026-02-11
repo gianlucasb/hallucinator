@@ -38,7 +38,7 @@ pub async fn query_all_databases(
     // Build the list of databases to query
     let databases: Vec<Arc<dyn DatabaseBackend>> = build_database_list(config, only_dbs)
         .into_iter()
-        .map(|b| Arc::from(b))
+        .map(Arc::from)
         .collect();
 
     if databases.is_empty() {

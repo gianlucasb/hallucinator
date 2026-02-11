@@ -111,7 +111,7 @@ pub enum ProgressEvent {
     Result {
         index: usize,
         total: usize,
-        result: ValidationResult,
+        result: Box<ValidationResult>,
     },
     Warning {
         index: usize,
@@ -180,7 +180,10 @@ impl std::fmt::Debug for Config {
             .field("db_timeout_short_secs", &self.db_timeout_short_secs)
             .field("disabled_dbs", &self.disabled_dbs)
             .field("check_openalex_authors", &self.check_openalex_authors)
-            .field("crossref_mailto", &self.crossref_mailto.as_ref().map(|_| "***"))
+            .field(
+                "crossref_mailto",
+                &self.crossref_mailto.as_ref().map(|_| "***"),
+            )
             .finish()
     }
 }

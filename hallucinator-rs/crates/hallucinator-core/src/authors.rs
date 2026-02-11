@@ -211,14 +211,13 @@ fn has_first_name_or_initial(name: &str) -> bool {
     // Check if first part is a first name
     let first = core_parts[0].trim_end_matches('.');
     if first.len() >= 2
-        && first.chars().next().map_or(false, |c| c.is_uppercase())
+        && first.chars().next().is_some_and(|c| c.is_uppercase())
         && !SURNAME_PREFIXES.contains(first.to_lowercase().as_str())
+        && core_parts.len() >= 2
     {
-        if core_parts.len() >= 2 {
-            let second = core_parts[1].trim_end_matches('.');
-            if second.len() >= 2 && second.chars().next().map_or(false, |c| c.is_uppercase()) {
-                return true;
-            }
+        let second = core_parts[1].trim_end_matches('.');
+        if second.len() >= 2 && second.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return true;
         }
     }
 

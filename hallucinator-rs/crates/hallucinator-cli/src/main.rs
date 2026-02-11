@@ -114,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn check(
     file_path: PathBuf,
     no_color: bool,
@@ -363,7 +364,7 @@ async fn dry_run_check(
 }
 
 fn dry_run_pdf(
-    file_path: &PathBuf,
+    file_path: &std::path::Path,
     file_name: &str,
     use_color: bool,
     writer: &mut Box<dyn Write>,
@@ -401,10 +402,7 @@ fn dry_run_pdf(
         let authors = hallucinator_pdf::authors::extract_authors_from_reference(ref_text);
 
         // Normalize raw citation for display
-        let raw_display: String = ref_text
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let raw_display: String = ref_text.split_whitespace().collect::<Vec<_>>().join(" ");
         let raw_display = if raw_display.len() > 200 {
             format!("{}...", &raw_display[..200])
         } else {
@@ -412,11 +410,7 @@ fn dry_run_pdf(
         };
 
         if use_color {
-            writeln!(
-                writer,
-                "{}",
-                format!("[{}]", i + 1).bold().yellow()
-            )?;
+            writeln!(writer, "{}", format!("[{}]", i + 1).bold().yellow())?;
         } else {
             writeln!(writer, "[{}]", i + 1)?;
         }
@@ -451,8 +445,7 @@ fn dry_run_pdf(
                 writeln!(
                     writer,
                     "  {}",
-                    format!("SKIPPED (title too short: {} words)", word_count)
-                        .red()
+                    format!("SKIPPED (title too short: {} words)", word_count).red()
                 )?;
             } else {
                 writeln!(writer, "  SKIPPED (title too short: {} words)", word_count)?;
@@ -468,7 +461,7 @@ fn dry_run_pdf(
 }
 
 fn dry_run_bbl(
-    file_path: &PathBuf,
+    file_path: &std::path::Path,
     file_name: &str,
     use_color: bool,
     writer: &mut Box<dyn Write>,
@@ -502,11 +495,7 @@ fn dry_run_bbl(
         let title = reference.title.as_deref().unwrap_or("");
 
         if use_color {
-            writeln!(
-                writer,
-                "{}",
-                format!("[{}]", i + 1).bold().yellow()
-            )?;
+            writeln!(writer, "{}", format!("[{}]", i + 1).bold().yellow())?;
         } else {
             writeln!(writer, "[{}]", i + 1)?;
         }
@@ -751,10 +740,7 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
         }
         hallucinator_acl::BuildProgress::Extracting { files_extracted } => {
             if !dl_bar.is_finished() {
-                dl_bar.finish_with_message(format!(
-                    "Downloaded in {:.0?}",
-                    dl_bar.elapsed()
-                ));
+                dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
             }
             parse_bar.set_message(format!("Extracting XML files... ({})", files_extracted));
         }
@@ -765,10 +751,7 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
             files_total,
         } => {
             if !dl_bar.is_finished() {
-                dl_bar.finish_with_message(format!(
-                    "Downloaded in {:.0?}",
-                    dl_bar.elapsed()
-                ));
+                dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
             }
             if parse_start.get().is_none() {
                 parse_start.set(Some(Instant::now()));
@@ -793,10 +776,7 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
         }
         hallucinator_acl::BuildProgress::RebuildingIndex => {
             if !dl_bar.is_finished() {
-                dl_bar.finish_with_message(format!(
-                    "Downloaded in {:.0?}",
-                    dl_bar.elapsed()
-                ));
+                dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
             }
             parse_bar.set_style(parse_spinner_style.clone());
             parse_bar.set_message("Rebuilding FTS search index...");

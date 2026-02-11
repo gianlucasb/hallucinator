@@ -102,11 +102,11 @@ pub fn extract_references(pdf_path: &Path) -> Result<ExtractionResult, PdfError>
             Regex::new(r"(?i)(acm\.org|ieee\.org|usenix\.org|arxiv\.org|doi\.org)").unwrap()
         });
 
-        if URL_RE.is_match(&ref_text) || BROKEN_URL_RE.is_match(&ref_text) {
-            if !ACADEMIC_URL_RE.is_match(&ref_text) {
-                stats.url_only += 1;
-                continue;
-            }
+        if (URL_RE.is_match(&ref_text) || BROKEN_URL_RE.is_match(&ref_text))
+            && !ACADEMIC_URL_RE.is_match(&ref_text)
+        {
+            stats.url_only += 1;
+            continue;
         }
 
         // Extract title

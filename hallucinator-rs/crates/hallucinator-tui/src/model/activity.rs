@@ -3,7 +3,6 @@ use std::collections::{HashMap, VecDeque};
 /// Health status of a database backend.
 #[derive(Debug, Clone)]
 pub struct DbHealth {
-    pub name: String,
     pub total_queries: usize,
     pub successful: usize,
     pub failed: usize,
@@ -12,9 +11,8 @@ pub struct DbHealth {
 }
 
 impl DbHealth {
-    pub fn new(name: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            name,
             total_queries: 0,
             successful: 0,
             failed: 0,
@@ -60,7 +58,6 @@ impl DbHealth {
 pub struct ActiveQuery {
     pub db_name: String,
     pub ref_title: String,
-    pub started_tick: usize,
 }
 
 /// State for the activity panel.
@@ -116,7 +113,7 @@ impl ActivityState {
         let health = self
             .db_health
             .entry(db_name.to_string())
-            .or_insert_with(|| DbHealth::new(db_name.to_string()));
+            .or_insert_with(DbHealth::new);
         health.record(success, is_match, elapsed_ms);
     }
 

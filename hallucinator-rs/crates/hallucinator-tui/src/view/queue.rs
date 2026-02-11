@@ -106,11 +106,7 @@ fn render_progress_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 app.extracted_count,
             )
         } else {
-            format!(
-                " {} Extracting {}...",
-                spinner_char(app.tick),
-                archive_name,
-            )
+            format!(" {} Extracting {}...", spinner_char(app.tick), archive_name,)
         };
         spans.push(Span::styled(
             label,
@@ -148,7 +144,9 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
 
     // Build header row
     let header_cells = if wide {
-        vec!["#", "Paper", "Refs", "OK", "Mis", "NF", "Ret", "%", "Status"]
+        vec![
+            "#", "Paper", "Refs", "OK", "Mis", "NF", "Ret", "%", "Status",
+        ]
     } else {
         vec!["#", "Paper", "Refs", "Prob", "Status"]
     };

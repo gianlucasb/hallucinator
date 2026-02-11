@@ -290,7 +290,7 @@ pub fn print_doi_issues(
 ) -> std::io::Result<()> {
     let issues: Vec<_> = results
         .iter()
-        .filter(|r| r.doi_info.as_ref().map_or(false, |d| !d.valid))
+        .filter(|r| r.doi_info.as_ref().is_some_and(|d| !d.valid))
         .collect();
 
     if issues.is_empty() {
@@ -339,11 +339,7 @@ pub fn print_retraction_warnings(
 ) -> std::io::Result<()> {
     let retracted: Vec<_> = results
         .iter()
-        .filter(|r| {
-            r.retraction_info
-                .as_ref()
-                .map_or(false, |ri| ri.is_retracted)
-        })
+        .filter(|r| r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted))
         .collect();
 
     if retracted.is_empty() {
@@ -415,11 +411,7 @@ pub fn print_summary(
         .count();
     let retracted = results
         .iter()
-        .filter(|r| {
-            r.retraction_info
-                .as_ref()
-                .map_or(false, |ri| ri.is_retracted)
-        })
+        .filter(|r| r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted))
         .count();
 
     writeln!(w)?;
@@ -497,7 +489,7 @@ pub fn print_summary(
     let dois_found = results.iter().filter(|r| r.doi_info.is_some()).count();
     let dois_valid = results
         .iter()
-        .filter(|r| r.doi_info.as_ref().map_or(false, |d| d.valid))
+        .filter(|r| r.doi_info.as_ref().is_some_and(|d| d.valid))
         .count();
     if dois_found > 0 && dois_valid > 0 {
         let msg = format!("DOIs validated: {}/{}", dois_valid, dois_found);

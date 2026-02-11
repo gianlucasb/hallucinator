@@ -163,7 +163,7 @@ fn parse_general_authors(section: &str) -> Vec<String> {
         let lowercase_words: Vec<&&str> = words
             .iter()
             .filter(|w| {
-                w.chars().next().map_or(false, |c| c.is_lowercase())
+                w.chars().next().is_some_and(|c| c.is_lowercase())
                     && !NAME_PREPOSITIONS.contains(w.to_lowercase().as_str())
             })
             .collect();

@@ -174,11 +174,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
                 )
             }
         } else if count_part.is_empty() {
-            format!(
-                " {} Extracting {}...",
-                spinner_char(app.tick),
-                archive_name,
-            )
+            format!(" {} Extracting {}...", spinner_char(app.tick), archive_name,)
         } else {
             format!(
                 " {} Extracting {} ({})...",

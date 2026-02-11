@@ -36,9 +36,7 @@ fn status_str(s: &Status) -> &'static str {
 }
 
 fn is_retracted(r: &ValidationResult) -> bool {
-    r.retraction_info
-        .as_ref()
-        .map_or(false, |ri| ri.is_retracted)
+    r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted)
 }
 
 fn problematic_pct(stats: &CheckStats) -> f64 {
@@ -230,11 +228,7 @@ fn export_csv(papers: &[&PaperState]) -> String {
                 let authors = r.ref_authors.join("; ");
                 let found = r.found_authors.join("; ");
                 let url = r.paper_url.as_deref().unwrap_or("");
-                let doi = r
-                    .doi_info
-                    .as_ref()
-                    .map(|d| d.doi.as_str())
-                    .unwrap_or("");
+                let doi = r.doi_info.as_ref().map(|d| d.doi.as_str()).unwrap_or("");
                 let arxiv = r
                     .arxiv_info
                     .as_ref()
@@ -374,7 +368,10 @@ fn write_md_ref(out: &mut String, ri: usize, r: &ValidationResult) {
     // DOI/arXiv issues
     if let Some(doi) = &r.doi_info {
         if !doi.valid {
-            out.push_str(&format!("- **DOI** `{}` \u{2014} invalid/unresolvable\n", doi.doi));
+            out.push_str(&format!(
+                "- **DOI** `{}` \u{2014} invalid/unresolvable\n",
+                doi.doi
+            ));
         }
     }
     if let Some(ax) = &r.arxiv_info {
@@ -402,17 +399,11 @@ fn write_md_ref(out: &mut String, ri: usize, r: &ValidationResult) {
     if let Some(url) = &r.paper_url {
         out.push_str(&format!("- [Paper URL]({})\n", url));
     }
-    out.push_str(&format!(
-        "- [Google Scholar]({})\n",
-        scholar_url(&r.title)
-    ));
+    out.push_str(&format!("- [Google Scholar]({})\n", scholar_url(&r.title)));
 
     // Failed DBs
     if !r.failed_dbs.is_empty() {
-        out.push_str(&format!(
-            "- **Timed out:** {}\n",
-            r.failed_dbs.join(", ")
-        ));
+        out.push_str(&format!("- **Timed out:** {}\n", r.failed_dbs.join(", ")));
     }
 
     // Raw citation in details block
@@ -448,11 +439,7 @@ fn export_text(papers: &[&PaperState]) -> String {
                     Status::NotFound => "NOT FOUND",
                     Status::AuthorMismatch => "Author Mismatch",
                 };
-                let retracted = if is_retracted(r) {
-                    " [RETRACTED]"
-                } else {
-                    ""
-                };
+                let retracted = if is_retracted(r) { " [RETRACTED]" } else { "" };
                 let source = r.source.as_deref().unwrap_or("-");
                 out.push_str(&format!(
                     "  [{}] {} - {} ({}){}\n",
@@ -491,10 +478,7 @@ fn export_text(papers: &[&PaperState]) -> String {
                 if let Some(ret) = &r.retraction_info {
                     if ret.is_retracted {
                         if let Some(rdoi) = &ret.retraction_doi {
-                            out.push_str(&format!(
-                                "       Retraction DOI: {}\n",
-                                rdoi
-                            ));
+                            out.push_str(&format!("       Retraction DOI: {}\n", rdoi));
                         }
                         if let Some(src) = &ret.retraction_source {
                             out.push_str(&format!("       Retraction source: {}\n", src));
@@ -509,10 +493,7 @@ fn export_text(papers: &[&PaperState]) -> String {
 
                 // Failed DBs
                 if !r.failed_dbs.is_empty() {
-                    out.push_str(&format!(
-                        "       Timed out: {}\n",
-                        r.failed_dbs.join(", ")
-                    ));
+                    out.push_str(&format!("       Timed out: {}\n", r.failed_dbs.join(", ")));
                 }
 
                 // Raw citation
@@ -546,7 +527,8 @@ fn export_html(papers: &[&PaperState]) -> String {
         total_stats.skipped += p.stats.skipped;
     }
 
-    out.push_str(r#"<!DOCTYPE html>
+    out.push_str(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -708,7 +690,8 @@ footer {
 </head>
 <body>
 <h1>Hallucinator Report</h1>
-"#);
+"#,
+    );
 
     // Overall stats cards
     out.push_str("<div class=\"stats\">\n");
@@ -794,10 +777,7 @@ fn write_html_ref(out: &mut String, ri: usize, r: &ValidationResult) {
 
     out.push_str("<div class=\"ref-card\">\n");
     out.push_str("<div class=\"ref-header\">\n");
-    out.push_str(&format!(
-        "<span class=\"ref-num\">[{}]</span>\n",
-        ri + 1
-    ));
+    out.push_str(&format!("<span class=\"ref-num\">[{}]</span>\n", ri + 1));
     out.push_str(&format!(
         "<span class=\"ref-title\">{}</span>\n",
         html_escape(&r.title)
@@ -882,10 +862,7 @@ fn write_html_ref(out: &mut String, ri: usize, r: &ValidationResult) {
     // Links
     out.push_str("<div class=\"links\">");
     if let Some(url) = &r.paper_url {
-        out.push_str(&format!(
-            "<a href=\"{}\">Paper URL</a>",
-            html_escape(url)
-        ));
+        out.push_str(&format!("<a href=\"{}\">Paper URL</a>", html_escape(url)));
     }
     out.push_str(&format!(
         "<a href=\"{}\">Google Scholar</a>",

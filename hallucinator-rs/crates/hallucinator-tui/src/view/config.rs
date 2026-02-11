@@ -118,12 +118,18 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
 fn render_api_keys(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
     let items: Vec<(&str, String)> = vec![
         ("OpenAlex", ConfigState::mask_key(&config.openalex_key)),
-        ("Semantic Scholar", ConfigState::mask_key(&config.s2_api_key)),
-        ("CrossRef Mailto", if config.crossref_mailto.is_empty() {
-            "(not set)".to_string()
-        } else {
-            config.crossref_mailto.clone()
-        }),
+        (
+            "Semantic Scholar",
+            ConfigState::mask_key(&config.s2_api_key),
+        ),
+        (
+            "CrossRef Mailto",
+            if config.crossref_mailto.is_empty() {
+                "(not set)".to_string()
+            } else {
+                config.crossref_mailto.clone()
+            },
+        ),
     ];
     for (i, (label, display_default)) in items.iter().enumerate() {
         let cursor = if config.item_cursor == i { "> " } else { "  " };

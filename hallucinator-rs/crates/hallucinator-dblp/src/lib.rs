@@ -160,7 +160,7 @@ impl DblpDatabase {
             Some((now_secs.saturating_sub(build_secs)) / 86400)
         });
 
-        let is_stale = age_days.map_or(true, |days| days >= threshold_days);
+        let is_stale = age_days.is_none_or(|days| days >= threshold_days);
 
         Ok(StalenessCheck {
             is_stale,

@@ -33,7 +33,7 @@ const PUB_ELEMENTS: &[&[u8]] = &[
 ];
 
 fn is_pub_element(name: &[u8]) -> bool {
-    PUB_ELEMENTS.iter().any(|&e| e == name)
+    PUB_ELEMENTS.contains(&name)
 }
 
 /// Which field we're currently reading text for.

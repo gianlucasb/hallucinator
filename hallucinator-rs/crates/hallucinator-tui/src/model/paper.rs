@@ -5,6 +5,7 @@ use hallucinator_core::{Status, ValidationResult};
 pub enum RefPhase {
     Pending,
     Checking,
+    #[allow(dead_code)] // used in verdict_label display, constructed when retry tracking is wired
     Retrying,
     Done,
 }
@@ -34,10 +35,7 @@ impl RefState {
             },
             Some(r) => match r.status {
                 Status::Verified => {
-                    if r.retraction_info
-                        .as_ref()
-                        .map_or(false, |ri| ri.is_retracted)
-                    {
+                    if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
                         "\u{2620} RETRACTED"
                     } else {
                         "\u{2713} Verified"

@@ -55,8 +55,7 @@ pub fn expand_ligatures(text: &str) -> String {
         .replace('\u{FB02}', "fl")
         .replace('\u{FB03}', "ffi")
         .replace('\u{FB04}', "ffl")
-        .replace('\u{FB05}', "st")
-        .replace('\u{FB06}', "st")
+        .replace(['\u{FB05}', '\u{FB06}'], "st")
 }
 
 /// Fix hyphenation from PDF line breaks while preserving compound words.

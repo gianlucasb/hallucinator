@@ -23,6 +23,7 @@ pub enum Action {
     RetryAll,
     Export,
     AddFiles,
+    #[allow(dead_code)] // planned feature: remove paper from queue
     RemovePaper,
     CopyToClipboard,
     OpenConfig,

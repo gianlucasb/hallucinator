@@ -101,7 +101,7 @@ pub async fn check_references(
             progress(ProgressEvent::Result {
                 index: i,
                 total,
-                result: result.clone(),
+                result: Box::new(result.clone()),
             });
 
             (i, Some(result))
@@ -176,7 +176,7 @@ pub async fn check_references(
                     progress(ProgressEvent::Result {
                         index: i,
                         total,
-                        result: result.clone(),
+                        result: Box::new(result.clone()),
                     });
                     (i, Some(result))
                 } else {
@@ -195,7 +195,7 @@ pub async fn check_references(
         }
     }
 
-    results.into_iter().filter_map(|r| r).collect()
+    results.into_iter().flatten().collect()
 }
 
 /// Check a single reference against all databases.
@@ -227,7 +227,8 @@ async fn check_single_reference(
                 doi_authors,
             } => {
                 // Check retraction
-                let retraction = check_retraction(doi, client, timeout, config.crossref_mailto.as_deref()).await;
+                let retraction =
+                    check_retraction(doi, client, timeout, config.crossref_mailto.as_deref()).await;
                 let retraction_info = if retraction.retracted {
                     Some(RetractionInfo {
                         is_retracted: true,
@@ -242,11 +243,7 @@ async fn check_single_reference(
                     title: title.to_string(),
                     raw_citation: reference.raw_citation.clone(),
                     ref_authors: reference.authors.clone(),
-                    status: if retraction_info.is_some() {
-                        Status::Verified // Still verified, but flagged
-                    } else {
-                        Status::Verified
-                    },
+                    status: Status::Verified,
                     source: Some("DOI".into()),
                     found_authors: doi_authors,
                     paper_url: Some(format!("https://doi.org/{}", doi)),
@@ -308,7 +305,9 @@ async fn check_single_reference(
 
     // Step 3: Check retraction by title if verified
     let retraction_info = if db_result.status == Status::Verified {
-        let retraction = check_retraction_by_title(title, client, timeout, config.crossref_mailto.as_deref()).await;
+        let retraction =
+            check_retraction_by_title(title, client, timeout, config.crossref_mailto.as_deref())
+                .await;
         if retraction.retracted {
             Some(RetractionInfo {
                 is_retracted: true,

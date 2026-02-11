@@ -9,21 +9,6 @@ use hallucinator_pdf::ExtractionResult;
 
 use crate::tui_event::BackendEvent;
 
-/// Run batch validation of PDFs sequentially, sending events to the TUI.
-///
-/// Each paper is processed one at a time (extraction is blocking via mupdf,
-/// then check_references runs with its own internal concurrency).
-/// Uses unbounded-style channel (large buffer) to avoid dropping events
-/// from the sync progress callback.
-pub async fn run_batch(
-    pdfs: Vec<PathBuf>,
-    config: Config,
-    tx: mpsc::UnboundedSender<BackendEvent>,
-    cancel: CancellationToken,
-) {
-    run_batch_with_offset(pdfs, config, tx, cancel, 0, 1).await;
-}
-
 /// Run batch validation with paper indices starting at `offset`.
 ///
 /// Spawns `max_concurrent_papers` worker tasks that pull from a shared work
@@ -87,7 +72,7 @@ pub async fn run_batch_with_offset(
 /// Process a single paper: extract references, validate, send events.
 async fn process_single_paper(
     paper_index: usize,
-    pdf_path: &PathBuf,
+    pdf_path: &std::path::Path,
     config: &Config,
     tx: &mpsc::UnboundedSender<BackendEvent>,
     cancel: &CancellationToken,
@@ -96,11 +81,10 @@ async fn process_single_paper(
     let _ = tx.send(BackendEvent::ExtractionStarted { paper_index });
 
     // Extract references (blocking call)
-    let path = pdf_path.clone();
+    let path = pdf_path.to_path_buf();
     let is_bbl = path
         .extension()
-        .map(|e| e.eq_ignore_ascii_case("bbl"))
-        .unwrap_or(false);
+        .is_some_and(|e| e.eq_ignore_ascii_case("bbl"));
 
     let extraction: Result<ExtractionResult, String> = tokio::task::spawn_blocking(move || {
         if is_bbl {
@@ -151,7 +135,10 @@ async fn process_single_paper(
     // Bridge sync progress callback → async channel via unbounded send
     let tx_progress = tx.clone();
     let progress_cb = move |event: ProgressEvent| {
-        let _ = tx_progress.send(BackendEvent::Progress { paper_index, event });
+        let _ = tx_progress.send(BackendEvent::Progress {
+            paper_index,
+            event: Box::new(event),
+        });
     };
 
     let paper_cancel = cancel.clone();
@@ -165,7 +152,9 @@ async fn process_single_paper(
 }
 
 /// Open offline DBLP database if a path is configured, returning the Arc<Mutex<..>> handle.
-pub fn open_dblp_db(path: &PathBuf) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
+pub fn open_dblp_db(
+    path: &std::path::Path,
+) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline DBLP database not found at {}. Use hallucinator-cli --update-dblp={} to build it.",
@@ -178,7 +167,9 @@ pub fn open_dblp_db(path: &PathBuf) -> anyhow::Result<Arc<Mutex<hallucinator_dbl
 }
 
 /// Open offline ACL Anthology database if a path is configured, returning the Arc<Mutex<..>> handle.
-pub fn open_acl_db(path: &PathBuf) -> anyhow::Result<Arc<Mutex<hallucinator_acl::AclDatabase>>> {
+pub fn open_acl_db(
+    path: &std::path::Path,
+) -> anyhow::Result<Arc<Mutex<hallucinator_acl::AclDatabase>>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline ACL database not found at {}. Use 'hallucinator-tui update-acl' to build it.",

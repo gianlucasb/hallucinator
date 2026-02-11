@@ -31,7 +31,6 @@ impl ConfigSection {
 #[derive(Debug, Clone)]
 pub struct ConfigState {
     pub section: ConfigSection,
-    pub section_cursor: usize,
     pub item_cursor: usize,
     pub editing: bool,
     pub edit_buffer: String,
@@ -69,7 +68,6 @@ impl Default for ConfigState {
 
         Self {
             section: ConfigSection::ApiKeys,
-            section_cursor: 0,
             item_cursor: 0,
             editing: false,
             edit_buffer: String::new(),

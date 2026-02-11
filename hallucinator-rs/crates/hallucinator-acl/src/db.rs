@@ -260,12 +260,9 @@ mod tests {
         let mut batch = InsertBatch::new();
         batch.authors.push("Alice".to_string());
         batch.authors.push("Bob".to_string());
-        batch.publications.push((
-            "2024.acl-1".to_string(),
-            "Paper".to_string(),
-            None,
-            None,
-        ));
+        batch
+            .publications
+            .push(("2024.acl-1".to_string(), "Paper".to_string(), None, None));
         batch
             .publication_authors
             .push(("2024.acl-1".to_string(), "Alice".to_string(), 0));

@@ -89,13 +89,8 @@ pub fn query_fts(
 
         let score = rapidfuzz::fuzz::ratio(norm_query.chars(), norm_candidate.chars());
 
-        if score >= threshold {
-            if best_match
-                .as_ref()
-                .map_or(true, |(best, _, _)| score > *best)
-            {
-                best_match = Some((score, uri.clone(), candidate_title.clone()));
-            }
+        if score >= threshold && best_match.as_ref().is_none_or(|(best, _, _)| score > *best) {
+            best_match = Some((score, uri.clone(), candidate_title.clone()));
         }
     }
 

@@ -101,10 +101,8 @@ fn parse_arxiv_response(xml: &str, title: &str) -> Result<DbQueryResult, String>
             Ok(Event::Empty(ref e)) => {
                 if e.local_name().as_ref() == b"link" && in_entry {
                     for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"href" {
-                            if current_link.is_empty() {
-                                current_link = String::from_utf8_lossy(&attr.value).to_string();
-                            }
+                        if attr.key.as_ref() == b"href" && current_link.is_empty() {
+                            current_link = String::from_utf8_lossy(&attr.value).to_string();
                         }
                     }
                 }

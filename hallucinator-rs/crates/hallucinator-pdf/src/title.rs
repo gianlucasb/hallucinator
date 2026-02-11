@@ -161,11 +161,7 @@ fn try_quoted_title(ref_text: &str) -> Option<(String, bool)> {
                 let subtitle_text = if after_quote.starts_with(':') || after_quote.starts_with('-')
                 {
                     Some(after_quote[1..].trim())
-                } else if after_quote
-                    .chars()
-                    .next()
-                    .map_or(false, |c| c.is_uppercase())
-                {
+                } else if after_quote.chars().next().is_some_and(|c| c.is_uppercase()) {
                     Some(after_quote)
                 } else {
                     None
@@ -320,7 +316,11 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
     let mut title_end = after_year.len();
     for re in END_PATTERNS.iter() {
         if let Some(m) = re.find(after_year) {
-            let candidate = if after_year.as_bytes().get(m.start()).map_or(false, |&b| b == b'?' || b == b'!') {
+            let candidate = if after_year
+                .as_bytes()
+                .get(m.start())
+                .is_some_and(|&b| b == b'?' || b == b'!')
+            {
                 m.start() + 1
             } else {
                 m.start()
@@ -372,7 +372,11 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     for re in END_PATTERNS.iter() {
         if let Some(m) = re.find(after_year) {
             // For patterns anchored on ? or !, keep the punctuation mark
-            let candidate = if after_year.as_bytes().get(m.start()).map_or(false, |&b| b == b'?' || b == b'!') {
+            let candidate = if after_year
+                .as_bytes()
+                .get(m.start())
+                .is_some_and(|&b| b == b'?' || b == b'!')
+            {
                 m.start() + 1
             } else {
                 m.start()

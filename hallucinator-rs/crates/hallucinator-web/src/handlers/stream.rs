@@ -2,7 +2,6 @@ use axum::extract::{Multipart, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use std::convert::Infallible;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -330,8 +329,8 @@ async fn process_archive_file(
 }
 
 /// Extract references from a PDF using blocking I/O (MuPDF is not async).
-async fn extract_pdf_blocking(path: &PathBuf) -> Result<ExtractionResult, String> {
-    let path = path.clone();
+async fn extract_pdf_blocking(path: &std::path::Path) -> Result<ExtractionResult, String> {
+    let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         hallucinator_pdf::extract_references(&path)
             .map_err(|e| format!("PDF extraction failed: {}", e))
@@ -380,7 +379,7 @@ fn send_progress_event(
         } => sse_event(
             "result",
             &ResultEvent {
-                result: ResultJson::from(result),
+                result: ResultJson::from(result.as_ref()),
                 index: *index,
                 total: *total,
                 filename: filename.map(String::from),

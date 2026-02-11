@@ -156,10 +156,7 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
             } else {
                 match &rs.result {
                     Some(r) => {
-                        let color = if r
-                            .retraction_info
-                            .as_ref()
-                            .map_or(false, |ri| ri.is_retracted)
+                        let color = if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted)
                         {
                             theme.retracted
                         } else {

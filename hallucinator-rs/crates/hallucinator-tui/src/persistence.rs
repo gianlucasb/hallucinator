@@ -36,10 +36,7 @@ pub fn save_paper_results(
                 hallucinator_core::Status::NotFound => "not_found",
                 hallucinator_core::Status::AuthorMismatch => "author_mismatch",
             };
-            let retracted = r
-                .retraction_info
-                .as_ref()
-                .map_or(false, |ri| ri.is_retracted);
+            let retracted = r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted);
             out.push_str(&format!(
                 "    {{\"index\": {}, \"title\": {:?}, \"status\": {:?}, \"source\": {:?}, \"retracted\": {}}}",
                 i,

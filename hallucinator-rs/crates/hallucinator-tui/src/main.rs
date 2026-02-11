@@ -313,8 +313,7 @@ async fn main() -> anyhow::Result<()> {
     // Startup hints if no offline DBs configured (logged last so they show first)
     if app.config_state.acl_offline_path.is_empty() {
         app.activity.log_warn(
-            "No offline ACL DB. Run 'hallucinator-tui update-acl' for faster lookups."
-                .to_string(),
+            "No offline ACL DB. Run 'hallucinator-tui update-acl' for faster lookups.".to_string(),
         );
     }
     if app.config_state.dblp_offline_path.is_empty() {
@@ -400,7 +399,7 @@ async fn main() -> anyhow::Result<()> {
                     tokio::spawn(async move {
                         backend::run_batch_with_offset(
                             files,
-                            config,
+                            *config,
                             tx,
                             cancel,
                             starting_index,

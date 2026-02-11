@@ -83,11 +83,7 @@ impl PaperState {
                     self.stats.author_mismatch = self.stats.author_mismatch.saturating_sub(1)
                 }
             }
-            if old
-                .retraction_info
-                .as_ref()
-                .map_or(false, |r| r.is_retracted)
-            {
+            if old.retraction_info.as_ref().is_some_and(|r| r.is_retracted) {
                 self.stats.retracted = self.stats.retracted.saturating_sub(1);
             }
         }
@@ -101,7 +97,7 @@ impl PaperState {
         if result
             .retraction_info
             .as_ref()
-            .map_or(false, |r| r.is_retracted)
+            .is_some_and(|r| r.is_retracted)
         {
             self.stats.retracted += 1;
         }

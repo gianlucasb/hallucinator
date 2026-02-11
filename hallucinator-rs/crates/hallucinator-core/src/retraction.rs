@@ -2,23 +2,12 @@ use crate::matching::titles_match;
 use std::time::Duration;
 
 /// Result of a retraction check.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RetractionResult {
     pub retracted: bool,
     pub retraction_doi: Option<String>,
     pub retraction_type: Option<String>,
     pub error: Option<String>,
-}
-
-impl Default for RetractionResult {
-    fn default() -> Self {
-        Self {
-            retracted: false,
-            retraction_doi: None,
-            retraction_type: None,
-            error: None,
-        }
-    }
 }
 
 /// Check if a paper with the given DOI has been retracted via CrossRef.
@@ -34,7 +23,8 @@ pub async fn check_retraction(
 
     let user_agent = match mailto {
         Some(email) => format!("HallucinatedReferenceChecker/1.0 (mailto:{})", email),
-        None => "HallucinatedReferenceChecker/1.0 (mailto:hallucination-checker@example.com)".to_string(),
+        None => "HallucinatedReferenceChecker/1.0 (mailto:hallucination-checker@example.com)"
+            .to_string(),
     };
 
     let url = format!("https://api.crossref.org/works/{}", doi);
@@ -138,7 +128,8 @@ pub async fn check_retraction_by_title(
 
     let user_agent = match mailto {
         Some(email) => format!("HallucinatedReferenceChecker/1.0 (mailto:{})", email),
-        None => "HallucinatedReferenceChecker/1.0 (mailto:hallucination-checker@example.com)".to_string(),
+        None => "HallucinatedReferenceChecker/1.0 (mailto:hallucination-checker@example.com)"
+            .to_string(),
     };
 
     let resp = match client

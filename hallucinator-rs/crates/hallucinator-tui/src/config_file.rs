@@ -85,7 +85,11 @@ fn merge(base: ConfigFile, overlay: ConfigFile) -> ConfigFile {
                 .api_keys
                 .as_ref()
                 .and_then(|a| a.crossref_mailto.clone())
-                .or_else(|| base.api_keys.as_ref().and_then(|a| a.crossref_mailto.clone())),
+                .or_else(|| {
+                    base.api_keys
+                        .as_ref()
+                        .and_then(|a| a.crossref_mailto.clone())
+                }),
         }),
         databases: Some(DatabasesConfig {
             dblp_offline_path: overlay

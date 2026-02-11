@@ -18,8 +18,7 @@ use crate::{AclError, BuildProgress};
 const TARBALL_URL: &str = "https://api.github.com/repos/acl-org/acl-anthology/tarball/master";
 
 /// GitHub API URL for the latest commit SHA on master.
-const COMMITS_URL: &str =
-    "https://api.github.com/repos/acl-org/acl-anthology/commits/master";
+const COMMITS_URL: &str = "https://api.github.com/repos/acl-org/acl-anthology/commits/master";
 
 /// Batch size for database inserts.
 const BATCH_SIZE: usize = 10_000;
@@ -137,17 +136,14 @@ pub async fn build(
                 xml_files.push(dest);
                 files_extracted += 1;
 
-                if files_extracted % 100 == 0 {
-                    let _ = progress_tx.blocking_send(BuildProgress::Extracting {
-                        files_extracted,
-                    });
+                if files_extracted.is_multiple_of(100) {
+                    let _ =
+                        progress_tx.blocking_send(BuildProgress::Extracting { files_extracted });
                 }
             }
         }
 
-        let _ = progress_tx.blocking_send(BuildProgress::Extracting {
-            files_extracted,
-        });
+        let _ = progress_tx.blocking_send(BuildProgress::Extracting { files_extracted });
 
         let files_total = xml_files.len() as u64;
 
@@ -209,7 +205,7 @@ pub async fn build(
 
             files_processed += 1;
 
-            if files_processed % 50 == 0 {
+            if files_processed.is_multiple_of(50) {
                 let _ = progress_tx.blocking_send(BuildProgress::Parsing {
                     records_parsed,
                     records_inserted,

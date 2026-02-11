@@ -103,7 +103,7 @@ pub fn extract_from_zip(
         }
         if name
             .file_name()
-            .map_or(true, |f| f.to_string_lossy().starts_with('.'))
+            .is_none_or(|f| f.to_string_lossy().starts_with('.'))
         {
             continue;
         }
@@ -200,7 +200,7 @@ pub fn extract_from_tar_gz(
         }
         if path
             .file_name()
-            .map_or(true, |f| f.to_string_lossy().starts_with('.'))
+            .is_none_or(|f| f.to_string_lossy().starts_with('.'))
         {
             continue;
         }
@@ -279,9 +279,7 @@ pub fn extract_archive_streaming(
 
     if name.ends_with(".zip") || data.starts_with(b"PK") {
         extract_from_zip_streaming(&data, dir, max_size, tx)
-    } else if name.ends_with(".tar.gz")
-        || name.ends_with(".tgz")
-        || data.starts_with(&[0x1f, 0x8b])
+    } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") || data.starts_with(&[0x1f, 0x8b])
     {
         extract_from_tar_gz_streaming(&data, dir, max_size, tx)
     } else {
@@ -326,7 +324,7 @@ fn extract_from_zip_streaming(
         }
         if name
             .file_name()
-            .map_or(true, |f| f.to_string_lossy().starts_with('.'))
+            .is_none_or(|f| f.to_string_lossy().starts_with('.'))
         {
             continue;
         }
@@ -422,7 +420,7 @@ fn extract_from_tar_gz_streaming(
         }
         if path
             .file_name()
-            .map_or(true, |f| f.to_string_lossy().starts_with('.'))
+            .is_none_or(|f| f.to_string_lossy().starts_with('.'))
         {
             continue;
         }

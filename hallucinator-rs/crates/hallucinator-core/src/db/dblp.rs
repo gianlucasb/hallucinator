@@ -93,10 +93,8 @@ impl DatabaseBackend for DblpOnline {
                             .filter_map(|a| {
                                 if let Some(text) = a["text"].as_str() {
                                     Some(text.to_string())
-                                } else if let Some(s) = a.as_str() {
-                                    Some(s.to_string())
                                 } else {
-                                    None
+                                    a.as_str().map(|s| s.to_string())
                                 }
                             })
                             .collect(),

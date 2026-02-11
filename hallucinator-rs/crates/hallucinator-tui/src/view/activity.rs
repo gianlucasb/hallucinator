@@ -1,9 +1,9 @@
+use crate::app::App;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
-use crate::app::App;
 
 /// Render the activity panel in the given area.
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
@@ -56,10 +56,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             name.clone()
         };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {} ", indicator),
-                Style::default().fg(theme.text),
-            ),
+            Span::styled(format!(" {} ", indicator), Style::default().fg(theme.text)),
             Span::styled(
                 format!("{:<14} ", display_name),
                 Style::default().fg(theme.text),
@@ -72,10 +69,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 format!("{:>4} ", health.hits),
                 Style::default().fg(theme.active),
             ),
-            Span::styled(
-                format!("{:>6}", avg),
-                Style::default().fg(theme.dim),
-            ),
+            Span::styled(format!("{:>6}", avg), Style::default().fg(theme.dim)),
         ]));
     }
 

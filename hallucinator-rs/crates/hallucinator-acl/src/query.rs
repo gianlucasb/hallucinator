@@ -89,18 +89,17 @@ pub fn query_fts(
 
         let score = rapidfuzz::fuzz::ratio(norm_query.chars(), norm_candidate.chars());
 
-        if score >= threshold {
-            if best_match
+        if score >= threshold
+            && best_match
                 .as_ref()
-                .map_or(true, |(best, _, _, _)| score > *best)
-            {
-                best_match = Some((
-                    score,
-                    anthology_id.clone(),
-                    candidate_title.clone(),
-                    url.clone(),
-                ));
-            }
+                .is_none_or(|(best, _, _, _)| score > *best)
+        {
+            best_match = Some((
+                score,
+                anthology_id.clone(),
+                candidate_title.clone(),
+                url.clone(),
+            ));
         }
     }
 
@@ -144,11 +143,9 @@ mod tests {
             Some("https://aclanthology.org/2023.emnlp-main.5".to_string()),
             None,
         ));
-        batch.publication_authors.push((
-            "2024.acl-long.1".to_string(),
-            "Matt Post".to_string(),
-            0,
-        ));
+        batch
+            .publication_authors
+            .push(("2024.acl-long.1".to_string(), "Matt Post".to_string(), 0));
         batch.publication_authors.push((
             "2024.acl-long.1".to_string(),
             "David Vilar".to_string(),
