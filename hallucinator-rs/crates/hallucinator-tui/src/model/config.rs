@@ -59,7 +59,6 @@ impl Default for ConfigState {
             ("arXiv".to_string(), true),
             ("DBLP".to_string(), true),
             ("Semantic Scholar".to_string(), true),
-            ("SSRN".to_string(), true),
             ("ACL Anthology".to_string(), true),
             ("Europe PMC".to_string(), true),
             ("PubMed".to_string(), true),
