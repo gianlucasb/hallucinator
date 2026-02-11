@@ -31,7 +31,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let header = Line::from(vec![
         Span::styled(" HALLUCINATOR ", theme.header_style()),
         Span::styled(
-            " > Select PDFs / Archives",
+            " > Select PDFs / .bbl / Archives",
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -61,7 +61,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         .map(|entry| {
             let (icon, style) = if entry.is_dir {
                 ("\u{1F4C1} ", Style::default().fg(theme.active))
-            } else if entry.is_pdf || entry.is_archive {
+            } else if entry.is_pdf || entry.is_bbl || entry.is_archive {
                 let selected = picker.is_selected(&entry.path);
                 if selected {
                     (
@@ -109,7 +109,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(theme.dim),
             )),
             Line::from(Span::styled(
-                "  Navigate to PDFs or archives and press Space to select",
+                "  Navigate to PDFs, .bbl files, or archives and press Space to select",
                 Style::default().fg(theme.dim),
             )),
         ]

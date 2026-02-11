@@ -95,11 +95,21 @@ async fn process_single_paper(
     // Signal extraction start
     let _ = tx.send(BackendEvent::ExtractionStarted { paper_index });
 
-    // Extract references (blocking MuPDF call)
+    // Extract references (blocking call)
     let path = pdf_path.clone();
+    let is_bbl = path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("bbl"))
+        .unwrap_or(false);
+
     let extraction: Result<ExtractionResult, String> = tokio::task::spawn_blocking(move || {
-        hallucinator_pdf::extract_references(&path)
-            .map_err(|e| format!("PDF extraction failed: {}", e))
+        if is_bbl {
+            hallucinator_bbl::extract_references_from_bbl(&path)
+                .map_err(|e| format!("BBL extraction failed: {}", e))
+        } else {
+            hallucinator_pdf::extract_references(&path)
+                .map_err(|e| format!("PDF extraction failed: {}", e))
+        }
     })
     .await
     .unwrap_or_else(|e| Err(format!("Task join error: {}", e)));

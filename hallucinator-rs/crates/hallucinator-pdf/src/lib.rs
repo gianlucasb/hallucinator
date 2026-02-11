@@ -1,11 +1,16 @@
+#[cfg(feature = "pdf")]
 use std::path::Path;
 
+#[cfg(feature = "pdf")]
 use once_cell::sync::Lazy;
+#[cfg(feature = "pdf")]
 use regex::Regex;
 use thiserror::Error;
 
+#[cfg(feature = "pdf")]
 pub mod archive;
 pub mod authors;
+#[cfg(feature = "pdf")]
 pub mod extract;
 pub mod identifiers;
 pub mod section;
@@ -60,6 +65,7 @@ pub struct ExtractionResult {
 /// 4. For each reference, extract DOI, arXiv ID, title, and authors
 /// 5. Handle em-dash "same authors" convention
 /// 6. Skip non-academic URL-only refs and short/missing titles
+#[cfg(feature = "pdf")]
 pub fn extract_references(pdf_path: &Path) -> Result<ExtractionResult, PdfError> {
     let text = extract::extract_text_from_pdf(pdf_path)?;
 

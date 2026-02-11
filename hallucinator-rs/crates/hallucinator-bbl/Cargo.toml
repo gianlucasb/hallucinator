@@ -1,0 +1,12 @@
+[package]
+name = "hallucinator-bbl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BibTeX .bbl file parser for hallucinated reference detection"
+
+[dependencies]
+hallucinator-pdf.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+thiserror.workspace = true

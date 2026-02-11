@@ -59,6 +59,7 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub is_dir: bool,
     pub is_pdf: bool,
+    pub is_bbl: bool,
     pub is_archive: bool,
 }
 
@@ -87,6 +88,7 @@ impl FilePickerState {
                 path: parent.to_path_buf(),
                 is_dir: true,
                 is_pdf: false,
+                is_bbl: false,
                 is_archive: false,
             });
         }
@@ -110,12 +112,16 @@ impl FilePickerState {
                         path,
                         is_dir: true,
                         is_pdf: false,
+                        is_bbl: false,
                         is_archive: false,
                     });
                 } else {
-                    let is_pdf = path
-                        .extension()
-                        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+                    let ext = path.extension().and_then(|e| e.to_str());
+                    let is_pdf = ext
+                        .map(|e| e.eq_ignore_ascii_case("pdf"))
+                        .unwrap_or(false);
+                    let is_bbl = ext
+                        .map(|e| e.eq_ignore_ascii_case("bbl"))
                         .unwrap_or(false);
                     let is_archive = hallucinator_pdf::archive::is_archive_path(&path);
                     files.push(FileEntry {
@@ -123,6 +129,7 @@ impl FilePickerState {
                         path,
                         is_dir: false,
                         is_pdf,
+                        is_bbl,
                         is_archive,
                     });
                 }
@@ -140,10 +147,10 @@ impl FilePickerState {
         self.scroll_offset = 0;
     }
 
-    /// Toggle selection of the current entry (PDFs and archives).
+    /// Toggle selection of the current entry (PDFs, .bbl files, and archives).
     pub fn toggle_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_pdf || entry.is_archive {
+            if entry.is_pdf || entry.is_bbl || entry.is_archive {
                 if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
                     self.selected.remove(pos);
                 } else {
@@ -219,8 +226,8 @@ pub struct App {
     pub processing_started: bool,
     /// Channel to send commands to the backend listener.
     pub backend_cmd_tx: Option<mpsc::UnboundedSender<BackendCommand>>,
-    /// PDF file paths (kept for deferred processing).
-    pub pdf_paths: Vec<PathBuf>,
+    /// Input file paths — PDF or .bbl (kept for deferred processing).
+    pub file_paths: Vec<PathBuf>,
     /// Last table area rendered (for mouse click → row mapping).
     pub last_table_area: Option<Rect>,
     /// Throughput counter: refs completed since last throughput bucket push.
@@ -289,7 +296,7 @@ impl App {
             pending_bell: false,
             processing_started: false,
             backend_cmd_tx: None,
-            pdf_paths: Vec::new(),
+            file_paths: Vec::new(),
             last_table_area: None,
             throughput_since_last: 0,
             last_throughput_tick: 0,
@@ -379,7 +386,7 @@ impl App {
 
     /// Send a start command to the backend if not already started.
     pub fn start_processing(&mut self) {
-        if self.processing_started || self.pdf_paths.is_empty() {
+        if self.processing_started || self.file_paths.is_empty() {
             return;
         }
         self.processing_started = true;
@@ -408,7 +415,7 @@ impl App {
         if let Some(tx) = &self.backend_cmd_tx {
             let config = self.build_config();
             let _ = tx.send(BackendCommand::ProcessFiles {
-                files: self.pdf_paths.clone(),
+                files: self.file_paths.clone(),
                 starting_index: 0,
                 max_concurrent_papers: self.config_state.max_concurrent_papers,
                 config,
@@ -494,7 +501,7 @@ impl App {
                 self.papers.push(PaperState::new(filename));
                 self.ref_states.push(Vec::new());
                 self.paper_refs.push(Vec::new());
-                self.pdf_paths.push(path);
+                self.file_paths.push(path);
             }
         }
         self.recompute_sorted_indices();
@@ -577,7 +584,7 @@ impl App {
                     self.ref_states.push(Vec::new());
                     self.paper_refs.push(Vec::new());
                     new_pdfs.push(pdf.path.clone());
-                    self.pdf_paths.push(pdf.path);
+                    self.file_paths.push(pdf.path);
                 }
                 Ok(ArchiveItem::Warning(msg)) => {
                     self.activity.log_warn(msg);
@@ -612,7 +619,7 @@ impl App {
         // If processing is already started, send newly extracted PDFs to backend
         if self.processing_started && got_new {
             if let Some(tx) = &self.backend_cmd_tx {
-                let starting_index = self.pdf_paths.len() - new_pdfs.len();
+                let starting_index = self.file_paths.len() - new_pdfs.len();
                 let config = self.build_config();
                 let _ = tx.send(BackendCommand::ProcessFiles {
                     files: new_pdfs,

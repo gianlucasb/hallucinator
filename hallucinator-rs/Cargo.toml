@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/hallucinator-pdf",
+    "crates/hallucinator-bbl",
     "crates/hallucinator-core",
     "crates/hallucinator-dblp",
     "crates/hallucinator-acl",
@@ -17,7 +18,8 @@ license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 # Internal crates
-hallucinator-pdf = { path = "crates/hallucinator-pdf" }
+hallucinator-pdf = { path = "crates/hallucinator-pdf", default-features = false }
+hallucinator-bbl = { path = "crates/hallucinator-bbl" }
 hallucinator-core = { path = "crates/hallucinator-core" }
 hallucinator-dblp = { path = "crates/hallucinator-dblp" }
 hallucinator-acl = { path = "crates/hallucinator-acl" }

@@ -1087,6 +1087,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-bbl"
+version = "0.1.0"
+dependencies = [
+ "hallucinator-pdf",
+ "once_cell",
+ "regex",
+ "thiserror",
+]
+
+[[package]]
 name = "hallucinator-cli"
 version = "0.1.0"
 dependencies = [
@@ -1094,6 +1104,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "hallucinator-acl",
+ "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
  "hallucinator-pdf",
@@ -1167,6 +1178,7 @@ dependencies = [
  "dirs",
  "dotenvy",
  "hallucinator-acl",
+ "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
  "hallucinator-pdf",

@@ -7,7 +7,7 @@ description = "Axum web server with SSE streaming for hallucinated reference det
 
 [dependencies]
 hallucinator-core.workspace = true
-hallucinator-pdf.workspace = true
+hallucinator-pdf = { workspace = true, features = ["pdf"] }
 hallucinator-dblp.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

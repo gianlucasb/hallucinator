@@ -319,7 +319,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     ];
 
     // Show [Space] Start/Stop indicator
-    if !app.processing_started && !app.pdf_paths.is_empty() {
+    if !app.processing_started && !app.file_paths.is_empty() {
         spans.push(Span::styled(
             " [Space] Start ",
             Style::default()

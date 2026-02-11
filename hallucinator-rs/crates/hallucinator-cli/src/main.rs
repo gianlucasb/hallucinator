@@ -19,10 +19,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Check a PDF for hallucinated references
+    /// Check a PDF or .bbl file for hallucinated references
     Check {
-        /// Path to the PDF file to check
-        pdf_path: PathBuf,
+        /// Path to the PDF or .bbl file to check
+        file_path: PathBuf,
 
         /// Disable colored output
         #[arg(long)]
@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
         Command::UpdateDblp { path } => update_dblp(&path).await,
         Command::UpdateAcl { path } => update_acl(&path).await,
         Command::Check {
-            pdf_path,
+            file_path,
             no_color,
             openalex_key,
             s2_api_key,
@@ -95,10 +95,10 @@ async fn main() -> anyhow::Result<()> {
             dry_run,
         } => {
             if dry_run {
-                dry_run_check(pdf_path, no_color, output).await
+                dry_run_check(file_path, no_color, output).await
             } else {
                 check(
-                    pdf_path,
+                    file_path,
                     no_color,
                     openalex_key,
                     s2_api_key,
@@ -115,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn check(
-    pdf_path: PathBuf,
+    file_path: PathBuf,
     no_color: bool,
     openalex_key: Option<String>,
     s2_api_key: Option<String>,
@@ -232,20 +232,31 @@ async fn check(
         None
     };
 
-    // Extract references from PDF
-    if !pdf_path.exists() {
-        anyhow::bail!("PDF file not found: {}", pdf_path.display());
+    // Extract references from input file
+    if !file_path.exists() {
+        anyhow::bail!("File not found: {}", file_path.display());
     }
 
-    let extraction = hallucinator_pdf::extract_references(&pdf_path)?;
-    let pdf_name = pdf_path
+    let is_bbl = file_path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("bbl"))
+        .unwrap_or(false);
+
+    let extraction = if is_bbl {
+        hallucinator_bbl::extract_references_from_bbl(&file_path)
+            .map_err(|e| anyhow::anyhow!("BBL extraction failed: {}", e))?
+    } else {
+        hallucinator_pdf::extract_references(&file_path)?
+    };
+
+    let file_name = file_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| pdf_path.display().to_string());
+        .unwrap_or_else(|| file_path.display().to_string());
 
     output::print_extraction_summary(
         &mut writer,
-        &pdf_name,
+        &file_name,
         extraction.references.len(),
         &extraction.skip_stats,
         color,
@@ -318,12 +329,10 @@ async fn check(
 }
 
 async fn dry_run_check(
-    pdf_path: PathBuf,
+    file_path: PathBuf,
     no_color: bool,
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    use owo_colors::OwoColorize;
-
     let use_color = !no_color && output.is_none();
 
     let mut writer: Box<dyn Write> = if let Some(ref output_path) = output {
@@ -332,33 +341,53 @@ async fn dry_run_check(
         Box::new(std::io::stdout())
     };
 
-    if !pdf_path.exists() {
-        anyhow::bail!("PDF file not found: {}", pdf_path.display());
+    if !file_path.exists() {
+        anyhow::bail!("File not found: {}", file_path.display());
     }
 
-    let text = hallucinator_pdf::extract::extract_text_from_pdf(&pdf_path)?;
+    let file_name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.display().to_string());
+
+    let is_bbl = file_path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("bbl"))
+        .unwrap_or(false);
+
+    if is_bbl {
+        dry_run_bbl(&file_path, &file_name, use_color, &mut writer)
+    } else {
+        dry_run_pdf(&file_path, &file_name, use_color, &mut writer)
+    }
+}
+
+fn dry_run_pdf(
+    file_path: &PathBuf,
+    file_name: &str,
+    use_color: bool,
+    writer: &mut Box<dyn Write>,
+) -> anyhow::Result<()> {
+    use owo_colors::OwoColorize;
+
+    let text = hallucinator_pdf::extract::extract_text_from_pdf(file_path)?;
     let ref_section = hallucinator_pdf::section::find_references_section(&text)
         .ok_or_else(|| anyhow::anyhow!("No references section found"))?;
     let raw_refs = hallucinator_pdf::section::segment_references(&ref_section);
-
-    let pdf_name = pdf_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| pdf_path.display().to_string());
 
     if use_color {
         writeln!(
             writer,
             "{} {} ({} raw references segmented)\n",
             "DRY RUN:".bold().cyan(),
-            pdf_name.bold(),
+            file_name.bold(),
             raw_refs.len()
         )?;
     } else {
         writeln!(
             writer,
             "DRY RUN: {} ({} raw references segmented)\n",
-            pdf_name,
+            file_name,
             raw_refs.len()
         )?;
     }
@@ -434,6 +463,99 @@ async fn dry_run_check(
     }
 
     writeln!(writer, "Total: {} raw references", raw_refs.len())?;
+
+    Ok(())
+}
+
+fn dry_run_bbl(
+    file_path: &PathBuf,
+    file_name: &str,
+    use_color: bool,
+    writer: &mut Box<dyn Write>,
+) -> anyhow::Result<()> {
+    use owo_colors::OwoColorize;
+
+    let extraction = hallucinator_bbl::extract_references_from_bbl(file_path)
+        .map_err(|e| anyhow::anyhow!("BBL extraction failed: {}", e))?;
+
+    let total = extraction.skip_stats.total_raw;
+    let kept = extraction.references.len();
+
+    if use_color {
+        writeln!(
+            writer,
+            "{} {} ({} entries, {} after filtering)\n",
+            "DRY RUN:".bold().cyan(),
+            file_name.bold(),
+            total,
+            kept
+        )?;
+    } else {
+        writeln!(
+            writer,
+            "DRY RUN: {} ({} entries, {} after filtering)\n",
+            file_name, total, kept
+        )?;
+    }
+
+    for (i, reference) in extraction.references.iter().enumerate() {
+        let title = reference.title.as_deref().unwrap_or("");
+
+        if use_color {
+            writeln!(
+                writer,
+                "{}",
+                format!("[{}]", i + 1).bold().yellow()
+            )?;
+        } else {
+            writeln!(writer, "[{}]", i + 1)?;
+        }
+
+        writeln!(writer, "  Title:   {}", title)?;
+        writeln!(
+            writer,
+            "  Authors: {}",
+            if reference.authors.is_empty() {
+                "(none)".to_string()
+            } else {
+                reference.authors.join("; ")
+            }
+        )?;
+
+        if let Some(ref d) = reference.doi {
+            writeln!(writer, "  DOI:     {}", d)?;
+        }
+        if let Some(ref a) = reference.arxiv_id {
+            writeln!(writer, "  arXiv:   {}", a)?;
+        }
+
+        // Truncate raw citation for display
+        let raw_display = if reference.raw_citation.len() > 200 {
+            format!("{}...", &reference.raw_citation[..200])
+        } else {
+            reference.raw_citation.clone()
+        };
+
+        if use_color {
+            writeln!(writer, "  Raw:     {}", raw_display.dimmed())?;
+        } else {
+            writeln!(writer, "  Raw:     {}", raw_display)?;
+        }
+
+        writeln!(writer)?;
+    }
+
+    let stats = &extraction.skip_stats;
+    writeln!(
+        writer,
+        "Total: {} raw entries ({} kept, {} skipped: {} URL-only, {} short title, {} no title)",
+        stats.total_raw,
+        kept,
+        stats.url_only + stats.short_title + stats.no_title,
+        stats.url_only,
+        stats.short_title,
+        stats.no_title
+    )?;
 
     Ok(())
 }

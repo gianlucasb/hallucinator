@@ -5,11 +5,15 @@ edition.workspace = true
 license.workspace = true
 description = "PDF extraction and reference parsing for hallucinated reference detection"
 
+[features]
+default = ["pdf"]
+pdf = ["dep:mupdf", "dep:zip", "dep:tar", "dep:flate2"]
+
 [dependencies]
-mupdf.workspace = true
+mupdf = { workspace = true, optional = true }
 regex.workspace = true
 once_cell.workspace = true
 thiserror.workspace = true
-zip.workspace = true
-tar.workspace = true
-flate2.workspace = true
+zip = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }

@@ -36,8 +36,8 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// PDF files to check
-    pdf_paths: Vec<PathBuf>,
+    /// PDF or .bbl files to check
+    file_paths: Vec<PathBuf>,
 
     /// OpenAlex API key
     #[arg(long)]
@@ -111,10 +111,10 @@ async fn main() -> anyhow::Result<()> {
 
     // --- TUI mode (default, no subcommand) ---
 
-    // Validate any PDF paths provided on the command line
-    for path in &cli.pdf_paths {
+    // Validate any file paths provided on the command line
+    for path in &cli.file_paths {
         if !path.exists() {
-            anyhow::bail!("PDF file not found: {}", path.display());
+            anyhow::bail!("File not found: {}", path.display());
         }
     }
 
@@ -252,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build filenames for display
     let filenames: Vec<String> = cli
-        .pdf_paths
+        .file_paths
         .iter()
         .map(|p| {
             p.file_name()
@@ -293,8 +293,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = App::new(filenames, theme);
 
-    // Store PDF paths for deferred processing
-    app.pdf_paths = cli.pdf_paths.clone();
+    // Store file paths for deferred processing
+    app.file_paths = cli.file_paths.clone();
 
     // Apply the fully-resolved config state
     app.config_state = config_state;
@@ -334,7 +334,7 @@ async fn main() -> anyhow::Result<()> {
     let run_dir = persistence::run_dir();
 
     // Single-paper mode: if exactly one PDF, skip the queue and go directly to paper view
-    if cli.pdf_paths.len() == 1 {
+    if cli.file_paths.len() == 1 {
         app.screen = Screen::Paper(0);
         app.single_paper_mode = true;
     }

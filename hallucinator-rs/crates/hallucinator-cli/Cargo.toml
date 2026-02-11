@@ -7,7 +7,8 @@ description = "CLI binary for hallucinated reference detection"
 
 [dependencies]
 hallucinator-core.workspace = true
-hallucinator-pdf.workspace = true
+hallucinator-pdf = { workspace = true, features = ["pdf"] }
+hallucinator-bbl.workspace = true
 hallucinator-dblp.workspace = true
 hallucinator-acl.workspace = true
 tokio.workspace = true
