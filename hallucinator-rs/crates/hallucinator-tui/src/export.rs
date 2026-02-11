@@ -3,7 +3,7 @@ use std::path::Path;
 
 use hallucinator_core::{CheckStats, DbStatus, Status, ValidationResult};
 
-use crate::model::queue::PaperState;
+use crate::model::queue::{PaperState, PaperVerdict};
 use crate::view::export::ExportFormat;
 
 /// Export results for a set of papers to the given path.
@@ -32,6 +32,14 @@ fn status_str(s: &Status) -> &'static str {
         Status::Verified => "verified",
         Status::NotFound => "not_found",
         Status::AuthorMismatch => "author_mismatch",
+    }
+}
+
+fn verdict_str(v: Option<PaperVerdict>) -> &'static str {
+    match v {
+        Some(PaperVerdict::Safe) => "safe",
+        Some(PaperVerdict::Questionable) => "questionable",
+        None => "",
     }
 }
 
@@ -87,9 +95,14 @@ fn export_json(papers: &[&PaperState]) -> String {
     let mut out = String::from("[\n");
     for (pi, paper) in papers.iter().enumerate() {
         let s = &paper.stats;
+        let verdict_json = match paper.verdict {
+            Some(_) => json_str(verdict_str(paper.verdict)),
+            None => "null".to_string(),
+        };
         out.push_str(&format!(
-            "  {{\n    \"filename\": {},\n    \"stats\": {{\n      \"total\": {},\n      \"verified\": {},\n      \"not_found\": {},\n      \"author_mismatch\": {},\n      \"retracted\": {},\n      \"skipped\": {},\n      \"problematic_pct\": {:.1}\n    }},\n    \"references\": [\n",
+            "  {{\n    \"filename\": {},\n    \"verdict\": {},\n    \"stats\": {{\n      \"total\": {},\n      \"verified\": {},\n      \"not_found\": {},\n      \"author_mismatch\": {},\n      \"retracted\": {},\n      \"skipped\": {},\n      \"problematic_pct\": {:.1}\n    }},\n    \"references\": [\n",
             json_str(&paper.filename),
+            verdict_json,
             s.total, s.verified, s.not_found, s.author_mismatch, s.retracted, s.skipped,
             problematic_pct(s),
         ));
@@ -219,9 +232,10 @@ fn csv_escape(s: &str) -> String {
 
 fn export_csv(papers: &[&PaperState]) -> String {
     let mut out = String::from(
-        "Filename,Ref#,Title,Status,Source,Retracted,Authors,FoundAuthors,PaperURL,DOI,ArxivID,FailedDBs\n",
+        "Filename,Verdict,Ref#,Title,Status,Source,Retracted,Authors,FoundAuthors,PaperURL,DOI,ArxivID,FailedDBs\n",
     );
     for paper in papers {
+        let verdict = verdict_str(paper.verdict);
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
                 let retracted = is_retracted(r);
@@ -236,8 +250,9 @@ fn export_csv(papers: &[&PaperState]) -> String {
                     .unwrap_or("");
                 let failed = r.failed_dbs.join("; ");
                 out.push_str(&format!(
-                    "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     csv_escape(&paper.filename),
+                    csv_escape(verdict),
                     ri + 1,
                     csv_escape(&r.title),
                     status_str(&r.status),
@@ -272,7 +287,12 @@ fn export_markdown(papers: &[&PaperState]) -> String {
 
     for paper in papers {
         let s = &paper.stats;
-        out.push_str(&format!("## {}\n\n", paper.filename));
+        let verdict_badge = match paper.verdict {
+            Some(PaperVerdict::Safe) => " **[SAFE]**",
+            Some(PaperVerdict::Questionable) => " **[?!]**",
+            None => "",
+        };
+        out.push_str(&format!("## {}{}\n\n", paper.filename, verdict_badge));
 
         // Stats summary
         out.push_str(&format!(
@@ -423,8 +443,14 @@ fn export_text(papers: &[&PaperState]) -> String {
 
     for paper in papers {
         let s = &paper.stats;
-        out.push_str(&format!("\n{}\n", paper.filename));
-        out.push_str(&"-".repeat(paper.filename.len()));
+        let verdict_badge = match paper.verdict {
+            Some(PaperVerdict::Safe) => " [SAFE]",
+            Some(PaperVerdict::Questionable) => " [?!]",
+            None => "",
+        };
+        let title = format!("{}{}", paper.filename, verdict_badge);
+        out.push_str(&format!("\n{}\n", title));
+        out.push_str(&"-".repeat(title.len()));
         out.push('\n');
         out.push_str(&format!(
             "  {} total | {} verified | {} not found | {} mismatch | {} retracted | {} skipped | {:.1}% problematic\n\n",
@@ -716,9 +742,15 @@ footer {
     for paper in papers {
         let s = &paper.stats;
         let pp = problematic_pct(s);
+        let verdict_html = match paper.verdict {
+            Some(PaperVerdict::Safe) => " <span class=\"badge verified\">SAFE</span>",
+            Some(PaperVerdict::Questionable) => " <span class=\"badge not-found\">?!</span>",
+            None => "",
+        };
         out.push_str(&format!(
-            "<details open>\n<summary>{}</summary>\n<div class=\"paper-content\">\n",
+            "<details open>\n<summary>{}{}</summary>\n<div class=\"paper-content\">\n",
             html_escape(&paper.filename),
+            verdict_html,
         ));
         out.push_str(&format!(
             "<div class=\"paper-stats\">{} total &middot; {} verified &middot; {} not found &middot; {} mismatch &middot; {} retracted &middot; {} skipped &middot; {:.1}% problematic</div>\n",

@@ -22,11 +22,16 @@ pub fn save_paper_results(
     paper_index: usize,
     filename: &str,
     results: &[Option<ValidationResult>],
+    verdict: Option<&str>,
 ) {
     let out_path = run_dir.join(format!("paper_{}.json", paper_index));
 
     let mut out = String::from("{\n");
     out.push_str(&format!("  \"filename\": {:?},\n", filename));
+    match verdict {
+        Some(v) => out.push_str(&format!("  \"verdict\": {:?},\n", v)),
+        None => out.push_str("  \"verdict\": null,\n"),
+    }
     out.push_str("  \"references\": [\n");
 
     for (i, result) in results.iter().enumerate() {

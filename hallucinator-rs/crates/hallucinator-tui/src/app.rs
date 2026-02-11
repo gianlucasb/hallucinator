@@ -13,7 +13,9 @@ use crate::action::Action;
 use crate::model::activity::{ActiveQuery, ActivityState};
 use crate::model::config::ConfigState;
 use crate::model::paper::{PaperFilter, PaperSortOrder, RefPhase, RefState};
-use crate::model::queue::{filtered_indices, PaperPhase, PaperState, QueueFilter, SortOrder};
+use crate::model::queue::{
+    filtered_indices, PaperPhase, PaperState, PaperVerdict, QueueFilter, SortOrder,
+};
 use crate::theme::Theme;
 use crate::tui_event::{BackendCommand, BackendEvent};
 use crate::view::export::ExportState;
@@ -848,7 +850,7 @@ impl App {
                 Action::GoBottom => {
                     self.file_picker.cursor = self.file_picker.entries.len().saturating_sub(1);
                 }
-                Action::StartProcessing => {
+                Action::ToggleSafe => {
                     // Space: toggle selection of current entry
                     self.file_picker.toggle_selected();
                 }
@@ -1111,18 +1113,29 @@ impl App {
                 self.export_state.message = None;
             }
             Action::StartProcessing => {
+                if self.screen == Screen::Queue {
+                    if !self.processing_started {
+                        self.start_processing();
+                    } else if !self.batch_complete {
+                        // Cancel the active batch
+                        if let Some(tx) = &self.backend_cmd_tx {
+                            let _ = tx.send(BackendCommand::CancelProcessing);
+                        }
+                        self.frozen_elapsed = Some(self.elapsed());
+                        self.batch_complete = true;
+                        self.processing_started = false;
+                    }
+                }
+            }
+            Action::ToggleSafe => {
                 match &self.screen {
                     Screen::Queue => {
-                        if !self.processing_started {
-                            self.start_processing();
-                        } else if !self.batch_complete {
-                            // Cancel the active batch
-                            if let Some(tx) = &self.backend_cmd_tx {
-                                let _ = tx.send(BackendCommand::CancelProcessing);
+                        // Space on queue: cycle paper verdict (None → Safe → Questionable → None)
+                        if self.queue_cursor < self.queue_sorted.len() {
+                            let paper_idx = self.queue_sorted[self.queue_cursor];
+                            if let Some(paper) = self.papers.get_mut(paper_idx) {
+                                paper.verdict = PaperVerdict::cycle(paper.verdict);
                             }
-                            self.frozen_elapsed = Some(self.elapsed());
-                            self.batch_complete = true;
-                            self.processing_started = false;
                         }
                     }
                     Screen::Paper(idx) => {

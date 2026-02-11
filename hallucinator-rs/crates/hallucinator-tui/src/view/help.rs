@@ -9,7 +9,7 @@ use crate::theme::Theme;
 /// Render the help overlay as a centered popup.
 pub fn render(f: &mut Frame, theme: &Theme) {
     let area = f.area();
-    let popup = centered_rect(72, 38, area);
+    let popup = centered_rect(72, 39, area);
 
     let lines = vec![
         Line::from(Span::styled(
@@ -40,8 +40,9 @@ pub fn render(f: &mut Frame, theme: &Theme) {
         Line::from(""),
         // Actions
         section_header("Actions", theme),
-        key_line("Space", "Start processing / toggle safe", theme),
-        key_line("r", "Retry failed reference", theme),
+        key_line("r", "Start/stop processing", theme),
+        key_line("Space", "Mark paper safe/?!/ref safe", theme),
+        key_line("Ctrl+r", "Retry failed reference", theme),
         key_line("R", "Retry all failed references", theme),
         key_line("e", "Export results", theme),
         key_line("o / a", "Open file picker (add files)", theme),

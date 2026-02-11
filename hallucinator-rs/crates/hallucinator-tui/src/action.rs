@@ -30,6 +30,7 @@ pub enum Action {
     ToggleActivityPanel,
     SaveConfig,
     StartProcessing,
+    ToggleSafe,
     ClickAt(u16, u16),
     CycleConfigSection,
     Tick,

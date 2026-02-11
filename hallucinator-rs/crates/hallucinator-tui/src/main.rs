@@ -462,11 +462,13 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(ref dir) = run_dir {
                                 let pi = *paper_index;
                                 if let Some(paper) = app.papers.get(pi) {
+                                    let verdict_str = paper.verdict.map(|v| v.label());
                                     persistence::save_paper_results(
                                         dir,
                                         pi,
                                         &paper.filename,
                                         &paper.results,
+                                        verdict_str,
                                     );
                                 }
                             }

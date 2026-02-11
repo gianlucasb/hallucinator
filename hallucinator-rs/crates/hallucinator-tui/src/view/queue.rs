@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::app::{App, InputMode};
-use crate::model::queue::PaperPhase;
+use crate::model::queue::{PaperPhase, PaperVerdict};
 use crate::theme::Theme;
 use crate::view::{spinner_char, truncate};
 
@@ -165,7 +165,19 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
         .map(|(display_idx, &paper_idx)| {
             let paper = &app.papers[paper_idx];
             let num = format!("{}", display_idx + 1);
-            let name = truncate(&paper.filename, (area.width as usize).saturating_sub(40));
+            let verdict_badge = match paper.verdict {
+                Some(PaperVerdict::Safe) => "[SAFE] ",
+                Some(PaperVerdict::Questionable) => "[?!] ",
+                None => "",
+            };
+            let raw_name = format!("{}{}", verdict_badge, paper.filename);
+            let name = truncate(&raw_name, (area.width as usize).saturating_sub(40));
+
+            let name_style = match paper.verdict {
+                Some(PaperVerdict::Safe) => Style::default().fg(theme.verified),
+                Some(PaperVerdict::Questionable) => Style::default().fg(theme.not_found),
+                None => Style::default(),
+            };
 
             let phase_style = Style::default().fg(theme.paper_phase_color(&paper.phase));
 
@@ -211,7 +223,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                 };
                 Row::new(vec![
                     Cell::from(num),
-                    Cell::from(name),
+                    Cell::from(name).style(name_style),
                     Cell::from(refs),
                     Cell::from(format!("{}", paper.stats.verified))
                         .style(Style::default().fg(theme.verified)),
@@ -233,7 +245,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                 };
                 Row::new(vec![
                     Cell::from(num),
-                    Cell::from(name),
+                    Cell::from(name).style(name_style),
                     Cell::from(if paper.total_refs > 0 {
                         format!("{}", paper.total_refs)
                     } else {
@@ -316,34 +328,34 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         ),
     ];
 
-    // Show [Space] Start/Stop indicator
+    // Show [r] Start/Stop indicator
     if !app.processing_started && !app.file_paths.is_empty() {
         spans.push(Span::styled(
-            " [Space] Start ",
+            " [r] Start ",
             Style::default()
                 .fg(theme.header_fg)
                 .bg(theme.active)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " j/k:nav  Enter:open  o:add  ,:config  ?:help  q:quit",
+            " Space:mark  j/k:nav  Enter:open  o:add  ,:config  ?:help  q:quit",
             theme.footer_style(),
         ));
     } else if app.processing_started && !app.batch_complete {
         spans.push(Span::styled(
-            " [Space] Stop ",
+            " [r] Stop ",
             Style::default()
                 .fg(theme.header_fg)
                 .bg(theme.not_found)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " j/k:nav  Enter:open  s:sort  f:filter  /:search  ?:help",
+            " Space:mark  j/k:nav  Enter:open  s:sort  f:filter  /:search  ?:help",
             theme.footer_style(),
         ));
     } else {
         spans.push(Span::styled(
-            " | j/k:nav  Enter:open  s:sort  f:filter  /:search  o:add  ?:help  q:quit",
+            " | Space:mark  j/k:nav  Enter:open  s:sort  f:filter  /:search  o:add  ?:help  q:quit",
             theme.footer_style(),
         ));
     }

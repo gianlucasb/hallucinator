@@ -1,5 +1,30 @@
 use hallucinator_core::{CheckStats, Status, ValidationResult};
 
+/// User-assigned verdict for an entire paper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaperVerdict {
+    Safe,
+    Questionable,
+}
+
+impl PaperVerdict {
+    /// Cycle: None → Safe → Questionable → None.
+    pub fn cycle(current: Option<Self>) -> Option<Self> {
+        match current {
+            None => Some(Self::Safe),
+            Some(Self::Safe) => Some(Self::Questionable),
+            Some(Self::Questionable) => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Safe => "SAFE",
+            Self::Questionable => "?!",
+        }
+    }
+}
+
 /// Processing phase of a paper in the queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaperPhase {
@@ -42,6 +67,8 @@ pub struct PaperState {
     pub retry_total: usize,
     /// Completed retry count.
     pub retry_done: usize,
+    /// User-assigned verdict for the entire paper.
+    pub verdict: Option<PaperVerdict>,
 }
 
 impl PaperState {
@@ -55,6 +82,7 @@ impl PaperState {
             error: None,
             retry_total: 0,
             retry_done: 0,
+            verdict: None,
         }
     }
 
