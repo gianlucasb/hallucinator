@@ -62,7 +62,6 @@ impl Default for ConfigState {
             ("Semantic Scholar".to_string(), true),
             ("SSRN".to_string(), true),
             ("ACL Anthology".to_string(), true),
-            ("NeurIPS".to_string(), true),
             ("Europe PMC".to_string(), true),
             ("PubMed".to_string(), true),
             ("OpenAlex".to_string(), true),

@@ -191,9 +191,9 @@ fn print_not_found_block(
     }
 
     let dbs = if searched_openalex {
-        "Searched: OpenAlex, CrossRef, arXiv, DBLP, Semantic Scholar, ACL, NeurIPS, Europe PMC, PubMed"
+        "Searched: OpenAlex, CrossRef, arXiv, DBLP, Semantic Scholar, ACL, Europe PMC, PubMed"
     } else {
-        "Searched: CrossRef, arXiv, DBLP, Semantic Scholar, ACL, NeurIPS, Europe PMC, PubMed"
+        "Searched: CrossRef, arXiv, DBLP, Semantic Scholar, ACL, Europe PMC, PubMed"
     };
     if color.enabled() {
         writeln!(w, "{}", dbs.dimmed())?;

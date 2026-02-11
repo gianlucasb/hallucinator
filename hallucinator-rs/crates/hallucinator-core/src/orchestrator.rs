@@ -260,9 +260,11 @@ fn build_database_list(
             databases.push(Box::new(acl::AclAnthology));
         }
     }
-    if should_include("NeurIPS") {
-        databases.push(Box::new(neurips::NeurIPS));
-    }
+    // NeurIPS disabled: papers.nips.cc returns 404 and the HTML structure has changed.
+    // DBLP already indexes NeurIPS papers, so this source is redundant for now.
+    // if should_include("NeurIPS") {
+    //     databases.push(Box::new(neurips::NeurIPS));
+    // }
     if should_include("Europe PMC") {
         databases.push(Box::new(europe_pmc::EuropePmc));
     }

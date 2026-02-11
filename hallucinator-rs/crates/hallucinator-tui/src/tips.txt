@@ -21,7 +21,7 @@ Pro-tip: Press o to add more PDFs to the queue without restarting
 
 # === How It Works ===
 Pro-tip: Each reference is checked against up to 11 databases simultaneously
-Pro-tip: Databases: CrossRef, arXiv, DBLP, Semantic Scholar, ACL, NeurIPS, PubMed, and more
+Pro-tip: Databases: CrossRef, arXiv, DBLP, Semantic Scholar, ACL, PubMed, and more
 Pro-tip: Title matching uses fuzzy comparison at 95% similarity (rapidfuzz)
 Pro-tip: Author verification catches cases where a title exists but authors don't match
 Pro-tip: Retraction checking queries CrossRef for retraction notices on found papers
