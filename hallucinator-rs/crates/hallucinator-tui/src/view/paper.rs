@@ -270,7 +270,7 @@ fn render_footer(
     }
 
     spans.push(Span::styled(
-        " | j/k:nav  Space:safe  Enter:detail  s:sort  f:filter  /:search  Esc:back",
+        " | j/k:nav  Space:safe  Enter:detail  Ctrl+r:retry  R:retry all  s:sort  f:filter  /:search  Esc:back",
         theme.footer_style(),
     ));
 

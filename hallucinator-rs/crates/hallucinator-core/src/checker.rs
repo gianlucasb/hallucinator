@@ -199,7 +199,7 @@ pub async fn check_references(
 }
 
 /// Check a single reference against all databases.
-async fn check_single_reference(
+pub async fn check_single_reference(
     reference: &Reference,
     config: &Config,
     client: &reqwest::Client,
@@ -342,7 +342,7 @@ async fn check_single_reference(
 }
 
 /// Retry a reference check targeting only the previously failed databases.
-async fn check_single_reference_retry(
+pub async fn check_single_reference_retry(
     reference: &Reference,
     config: &Config,
     client: &reqwest::Client,

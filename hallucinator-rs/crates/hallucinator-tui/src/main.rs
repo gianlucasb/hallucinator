@@ -408,6 +408,23 @@ async fn main() -> anyhow::Result<()> {
                         .await;
                     });
                 }
+                tui_event::BackendCommand::RetryReferences {
+                    paper_index,
+                    refs_to_retry,
+                    mut config,
+                } => {
+                    // Inject cached DB handles
+                    config.dblp_offline_path = cached_dblp_path.clone();
+                    config.dblp_offline_db = cached_dblp_db.clone();
+                    config.acl_offline_path = cached_acl_path.clone();
+                    config.acl_offline_db = cached_acl_db.clone();
+                    config.check_openalex_authors = check_openalex_authors;
+
+                    let tx = event_tx_for_backend.clone();
+                    tokio::spawn(async move {
+                        backend::retry_references(paper_index, refs_to_retry, *config, tx).await;
+                    });
+                }
                 tui_event::BackendCommand::CancelProcessing => {
                     batch_cancel.cancel();
                 }

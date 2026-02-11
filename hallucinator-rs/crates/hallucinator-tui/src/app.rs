@@ -1203,7 +1203,13 @@ impl App {
                     }
                 }
             }
-            Action::Retry | Action::RetryAll | Action::RemovePaper => {
+            Action::Retry => {
+                self.handle_retry_single();
+            }
+            Action::RetryAll => {
+                self.handle_retry_all();
+            }
+            Action::RemovePaper => {
                 // Placeholder for future implementation
             }
             Action::Tick => {
@@ -1630,6 +1636,131 @@ impl App {
                 Some(rs.title.clone())
             }
             _ => None,
+        }
+    }
+
+    /// Handle Ctrl+r: retry the currently selected reference.
+    fn handle_retry_single(&mut self) {
+        let (paper_idx, ref_idx) = match &self.screen {
+            Screen::Paper(idx) => {
+                let idx = *idx;
+                let indices = self.paper_ref_indices(idx);
+                if self.paper_cursor >= indices.len() {
+                    return;
+                }
+                (idx, indices[self.paper_cursor])
+            }
+            Screen::RefDetail(paper_idx, ref_idx) => (*paper_idx, *ref_idx),
+            _ => return,
+        };
+
+        let rs = match self.ref_states.get(paper_idx).and_then(|r| r.get(ref_idx)) {
+            Some(rs) => rs,
+            None => return,
+        };
+
+        // Determine what to retry
+        let failed_dbs = match &rs.result {
+            Some(r) => {
+                if r.status == hallucinator_core::Status::Verified && r.failed_dbs.is_empty() {
+                    self.activity.log("Already verified".to_string());
+                    return;
+                }
+                r.failed_dbs.clone()
+            }
+            None => {
+                self.activity.log("No result to retry".to_string());
+                return;
+            }
+        };
+
+        let reference = match self.paper_refs.get(paper_idx).and_then(|r| r.get(ref_idx)) {
+            Some(r) => r.clone(),
+            None => return,
+        };
+
+        // Mark as retrying
+        if let Some(refs) = self.ref_states.get_mut(paper_idx) {
+            if let Some(rs) = refs.get_mut(ref_idx) {
+                rs.phase = RefPhase::Retrying;
+            }
+        }
+
+        self.activity
+            .log(format!("Retrying ref #{}...", ref_idx + 1));
+
+        if let Some(tx) = &self.backend_cmd_tx {
+            let config = self.build_config();
+            let _ = tx.send(BackendCommand::RetryReferences {
+                paper_index: paper_idx,
+                refs_to_retry: vec![(ref_idx, reference, failed_dbs)],
+                config: Box::new(config),
+            });
+        }
+    }
+
+    /// Handle R: retry all failed/not-found references for the current paper.
+    fn handle_retry_all(&mut self) {
+        let paper_idx = match &self.screen {
+            Screen::Paper(idx) => *idx,
+            Screen::RefDetail(idx, _) => *idx,
+            Screen::Queue => {
+                if self.queue_cursor < self.queue_sorted.len() {
+                    self.queue_sorted[self.queue_cursor]
+                } else {
+                    return;
+                }
+            }
+            _ => return,
+        };
+
+        let refs = match self.ref_states.get(paper_idx) {
+            Some(r) => r,
+            None => return,
+        };
+        let paper_refs = match self.paper_refs.get(paper_idx) {
+            Some(r) => r,
+            None => return,
+        };
+
+        // Collect retryable refs: NotFound with failed_dbs, or NotFound for full re-check
+        let mut to_retry: Vec<(usize, hallucinator_core::Reference, Vec<String>)> = Vec::new();
+        for (i, rs) in refs.iter().enumerate() {
+            if let Some(result) = &rs.result {
+                if result.status == hallucinator_core::Status::NotFound {
+                    if let Some(reference) = paper_refs.get(i) {
+                        to_retry.push((i, reference.clone(), result.failed_dbs.clone()));
+                    }
+                }
+            }
+        }
+
+        if to_retry.is_empty() {
+            self.activity.log("No references to retry".to_string());
+            return;
+        }
+
+        let count = to_retry.len();
+
+        // Mark all as retrying
+        if let Some(refs) = self.ref_states.get_mut(paper_idx) {
+            for &(ref_idx, _, _) in &to_retry {
+                if let Some(rs) = refs.get_mut(ref_idx) {
+                    rs.phase = RefPhase::Retrying;
+                }
+            }
+        }
+
+        self.activity
+            .log(format!("Retrying {} references...", count));
+
+        if let Some(tx) = &self.backend_cmd_tx {
+            let config = self.build_config();
+            let _ = tx.send(BackendCommand::RetryReferences {
+                paper_index: paper_idx,
+                refs_to_retry: to_retry,
+                config: Box::new(config),
+            });
         }
     }
 

@@ -151,6 +151,76 @@ async fn process_single_paper(
     });
 }
 
+/// Retry specific references for a paper, re-checking against failed (or all) databases.
+pub async fn retry_references(
+    paper_index: usize,
+    refs_to_retry: Vec<(usize, hallucinator_core::Reference, Vec<String>)>,
+    config: Config,
+    tx: mpsc::UnboundedSender<BackendEvent>,
+) {
+    let client = reqwest::Client::new();
+    let config = Arc::new(config);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_refs));
+    let total = refs_to_retry.len();
+
+    let mut handles = Vec::new();
+
+    for (ref_index, reference, failed_dbs) in refs_to_retry {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let client = client.clone();
+        let config = Arc::clone(&config);
+        let tx = tx.clone();
+
+        let handle = tokio::spawn(async move {
+            let _permit = permit;
+
+            let title = reference.title.as_deref().unwrap_or("").to_string();
+            let _ = tx.send(BackendEvent::Progress {
+                paper_index,
+                event: Box::new(hallucinator_core::ProgressEvent::Checking {
+                    index: ref_index,
+                    total,
+                    title,
+                }),
+            });
+
+            let result = if failed_dbs.is_empty() {
+                // Full re-check against all databases
+                hallucinator_core::checker::check_single_reference(
+                    &reference, &config, &client, true, // longer timeout
+                    None,
+                )
+                .await
+            } else {
+                // Retry only against previously failed databases
+                hallucinator_core::checker::check_single_reference_retry(
+                    &reference,
+                    &config,
+                    &client,
+                    &failed_dbs,
+                    None,
+                )
+                .await
+            };
+
+            let _ = tx.send(BackendEvent::Progress {
+                paper_index,
+                event: Box::new(hallucinator_core::ProgressEvent::Result {
+                    index: ref_index,
+                    total,
+                    result: Box::new(result),
+                }),
+            });
+        });
+
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+}
+
 /// Open offline DBLP database if a path is configured, returning the Arc<Mutex<..>> handle.
 pub fn open_dblp_db(
     path: &std::path::Path,

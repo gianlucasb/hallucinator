@@ -1184,6 +1184,7 @@ dependencies = [
  "hallucinator-pdf",
  "indicatif",
  "ratatui",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

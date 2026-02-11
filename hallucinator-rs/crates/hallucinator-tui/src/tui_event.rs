@@ -12,6 +12,14 @@ pub enum BackendCommand {
         max_concurrent_papers: usize,
         config: Box<hallucinator_core::Config>,
     },
+    /// Retry specific references for a paper.
+    /// Each tuple is (ref_index, Reference, failed_dbs). If failed_dbs is empty,
+    /// the reference is re-checked against all databases.
+    RetryReferences {
+        paper_index: usize,
+        refs_to_retry: Vec<(usize, Reference, Vec<String>)>,
+        config: Box<hallucinator_core::Config>,
+    },
     /// Cancel the current batch.
     CancelProcessing,
 }

@@ -15,6 +15,7 @@ hallucinator-pdf = { workspace = true, features = ["pdf"] }
 hallucinator-bbl.workspace = true
 hallucinator-dblp.workspace = true
 hallucinator-acl.workspace = true
+reqwest.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 clap.workspace = true
