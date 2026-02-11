@@ -10,7 +10,28 @@ Created by Gianluca Stringhini with Claude Code and ChatGPT.
 
 ---
 
-## Quick Start
+## Rust TUI (Recommended)
+
+If you're willing to install Rust, the **[hallucinator-rs](hallucinator-rs/)** version is recommended. It includes a full terminal UI for batch-processing PDFs and archives interactively, with real-time progress, sorting/filtering, result export, and persistent configuration.
+
+[Install Rust](https://rust-lang.org/tools/install/), then:
+
+```bash
+cd hallucinator-rs
+cargo build --release
+
+# CLI
+./target/release/hallucinator-cli check paper.pdf
+
+# Interactive TUI
+./target/release/hallucinator-tui
+```
+
+See **[hallucinator-rs/README.md](hallucinator-rs/README.md)** for full documentation.
+
+---
+
+## Python Quick Start
 
 ```bash
 # 1. Clone and setup
