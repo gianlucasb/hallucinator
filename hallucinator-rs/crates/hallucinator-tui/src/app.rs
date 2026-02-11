@@ -63,6 +63,7 @@ pub struct FileEntry {
     pub is_pdf: bool,
     pub is_bbl: bool,
     pub is_archive: bool,
+    pub is_json: bool,
 }
 
 impl FilePickerState {
@@ -92,6 +93,7 @@ impl FilePickerState {
                 is_pdf: false,
                 is_bbl: false,
                 is_archive: false,
+                is_json: false,
             });
         }
 
@@ -116,12 +118,14 @@ impl FilePickerState {
                         is_pdf: false,
                         is_bbl: false,
                         is_archive: false,
+                        is_json: false,
                     });
                 } else {
                     let ext = path.extension().and_then(|e| e.to_str());
                     let is_pdf = ext.map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false);
                     let is_bbl = ext.map(|e| e.eq_ignore_ascii_case("bbl")).unwrap_or(false);
                     let is_archive = hallucinator_pdf::archive::is_archive_path(&path);
+                    let is_json = ext.map(|e| e.eq_ignore_ascii_case("json")).unwrap_or(false);
                     files.push(FileEntry {
                         name,
                         path,
@@ -129,6 +133,7 @@ impl FilePickerState {
                         is_pdf,
                         is_bbl,
                         is_archive,
+                        is_json,
                     });
                 }
             }
@@ -145,10 +150,10 @@ impl FilePickerState {
         self.scroll_offset = 0;
     }
 
-    /// Toggle selection of the current entry (PDFs, .bbl files, and archives).
+    /// Toggle selection of the current entry (PDFs, .bbl files, archives, and .json results).
     pub fn toggle_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_pdf || entry.is_bbl || entry.is_archive {
+            if entry.is_pdf || entry.is_bbl || entry.is_archive || entry.is_json {
                 if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
                     self.selected.remove(pos);
                 } else {
@@ -382,9 +387,22 @@ impl App {
 
     /// Send a start command to the backend if not already started.
     pub fn start_processing(&mut self) {
-        if self.processing_started || self.file_paths.is_empty() {
+        if self.processing_started {
             return;
         }
+
+        // Filter out placeholder paths (from loaded results)
+        let real_files: Vec<PathBuf> = self
+            .file_paths
+            .iter()
+            .filter(|p| p.as_os_str() != "")
+            .cloned()
+            .collect();
+
+        if real_files.is_empty() {
+            return;
+        }
+
         self.processing_started = true;
         self.batch_complete = false;
         self.start_time = Some(Instant::now());
@@ -411,7 +429,7 @@ impl App {
         if let Some(tx) = &self.backend_cmd_tx {
             let config = self.build_config();
             let _ = tx.send(BackendCommand::ProcessFiles {
-                files: self.file_paths.clone(),
+                files: real_files,
                 starting_index: 0,
                 max_concurrent_papers: self.config_state.max_concurrent_papers,
                 config: Box::new(config),
@@ -471,7 +489,8 @@ impl App {
 
     /// Add files from file picker to the paper queue.
     /// PDFs are added directly. Archives are queued for deferred extraction
-    /// (one per tick) so the UI can show progress.
+    /// (one per tick) so the UI can show progress. JSON result files are loaded
+    /// and their papers added as already-complete entries.
     pub fn add_files_from_picker(&mut self) {
         let new_files: Vec<PathBuf> = self.file_picker.selected.drain(..).collect();
         if new_files.is_empty() {
@@ -479,7 +498,39 @@ impl App {
         }
 
         for path in new_files {
-            if hallucinator_pdf::archive::is_archive_path(&path) {
+            let is_json = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("json"))
+                .unwrap_or(false);
+
+            if is_json {
+                match crate::load::load_results_file(&path) {
+                    Ok(loaded) => {
+                        let count = loaded.len();
+                        for (paper, refs, paper_refs) in loaded {
+                            self.papers.push(paper);
+                            self.ref_states.push(refs);
+                            self.paper_refs.push(paper_refs);
+                            self.file_paths.push(PathBuf::new()); // placeholder
+                        }
+                        self.batch_complete = true;
+                        self.processing_started = true;
+                        self.activity.log(format!(
+                            "Loaded {} paper{} from {}",
+                            count,
+                            if count == 1 { "" } else { "s" },
+                            path.file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| path.display().to_string()),
+                        ));
+                    }
+                    Err(e) => {
+                        self.activity
+                            .log_warn(format!("Failed to load {}: {}", path.display(), e));
+                    }
+                }
+            } else if hallucinator_pdf::archive::is_archive_path(&path) {
                 // Set extracting indicator for the first archive so it shows immediately
                 if self.extracting_archive.is_none() {
                     let name = path

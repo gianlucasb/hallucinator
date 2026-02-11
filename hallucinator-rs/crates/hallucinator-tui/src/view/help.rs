@@ -9,7 +9,7 @@ use crate::theme::Theme;
 /// Render the help overlay as a centered popup.
 pub fn render(f: &mut Frame, theme: &Theme) {
     let area = f.area();
-    let popup = centered_rect(72, 39, area);
+    let popup = centered_rect(72, 43, area);
 
     let lines = vec![
         Line::from(Span::styled(
@@ -58,6 +58,10 @@ pub fn render(f: &mut Frame, theme: &Theme) {
         Line::from(""),
         section_header("Mouse", theme),
         key_line("Shift+click", "Select text / click links (terminal)", theme),
+        Line::from(""),
+        section_header("Loading Results", theme),
+        key_line("--load FILE", "Load saved results JSON at startup", theme),
+        key_line("File picker", "Select .json to load saved results", theme),
     ];
 
     let paragraph = Paragraph::new(lines)

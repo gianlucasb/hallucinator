@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use hallucinator_core::ValidationResult;
+use crate::model::queue::PaperState;
 
 /// Get the run directory for persisting results.
 /// Creates `~/.cache/hallucinator/runs/<timestamp>/` if it doesn't exist.
@@ -17,52 +17,14 @@ pub fn run_dir() -> Option<PathBuf> {
 }
 
 /// Persist results for a single paper to the run directory.
-pub fn save_paper_results(
-    run_dir: &std::path::Path,
-    paper_index: usize,
-    filename: &str,
-    results: &[Option<ValidationResult>],
-    verdict: Option<&str>,
-) {
+///
+/// Uses the same rich JSON format as the export module so that saved results
+/// can be loaded back via `--load` or the file picker.
+pub fn save_paper_results(run_dir: &std::path::Path, paper_index: usize, paper: &PaperState) {
     let out_path = run_dir.join(format!("paper_{}.json", paper_index));
-
-    let mut out = String::from("{\n");
-    out.push_str(&format!("  \"filename\": {:?},\n", filename));
-    match verdict {
-        Some(v) => out.push_str(&format!("  \"verdict\": {:?},\n", v)),
-        None => out.push_str("  \"verdict\": null,\n"),
-    }
-    out.push_str("  \"references\": [\n");
-
-    for (i, result) in results.iter().enumerate() {
-        if let Some(r) = result {
-            let status = match r.status {
-                hallucinator_core::Status::Verified => "verified",
-                hallucinator_core::Status::NotFound => "not_found",
-                hallucinator_core::Status::AuthorMismatch => "author_mismatch",
-            };
-            let retracted = r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted);
-            out.push_str(&format!(
-                "    {{\"index\": {}, \"title\": {:?}, \"status\": {:?}, \"source\": {:?}, \"retracted\": {}}}",
-                i,
-                r.title,
-                status,
-                r.source.as_deref().unwrap_or(""),
-                retracted,
-            ));
-        } else {
-            out.push_str(&format!("    {{\"index\": {}, \"title\": null, \"status\": \"pending\", \"source\": \"\", \"retracted\": false}}", i));
-        }
-
-        if i + 1 < results.len() {
-            out.push(',');
-        }
-        out.push('\n');
-    }
-
-    out.push_str("  ]\n}\n");
+    let json = crate::export::export_json(&[paper]);
 
     if let Ok(mut file) = std::fs::File::create(&out_path) {
-        let _ = file.write_all(out.as_bytes());
+        let _ = file.write_all(json.as_bytes());
     }
 }

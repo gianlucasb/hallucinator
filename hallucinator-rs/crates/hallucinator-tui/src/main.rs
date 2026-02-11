@@ -21,6 +21,7 @@ mod backend;
 mod config_file;
 mod export;
 mod input;
+mod load;
 mod model;
 mod persistence;
 mod theme;
@@ -66,6 +67,10 @@ struct Cli {
     /// Color theme: hacker (default) or modern
     #[arg(long, default_value = "hacker")]
     theme: String,
+
+    /// Load previously saved results (.json) instead of processing PDFs
+    #[arg(long)]
+    load: Option<PathBuf>,
 
     /// Enable mouse support (click to select rows, scroll)
     #[arg(long)]
@@ -332,8 +337,40 @@ async fn main() -> anyhow::Result<()> {
     // Initialize results persistence directory
     let run_dir = persistence::run_dir();
 
+    // Load previously saved results if --load is provided
+    if let Some(ref load_path) = cli.load {
+        match load::load_results_file(load_path) {
+            Ok(loaded) => {
+                let count = loaded.len();
+                for (paper, refs, paper_refs) in loaded {
+                    app.papers.push(paper);
+                    app.ref_states.push(refs);
+                    app.paper_refs.push(paper_refs);
+                    app.file_paths.push(PathBuf::new()); // placeholder
+                }
+                app.batch_complete = true;
+                app.processing_started = true;
+                app.recompute_sorted_indices();
+                app.activity.log(format!(
+                    "Loaded {} paper{} from {}",
+                    count,
+                    if count == 1 { "" } else { "s" },
+                    load_path.display()
+                ));
+                if count == 1 {
+                    app.single_paper_mode = true;
+                    app.screen = Screen::Paper(0);
+                }
+            }
+            Err(e) => {
+                app.activity
+                    .log_warn(format!("Failed to load results: {}", e));
+            }
+        }
+    }
+
     // Single-paper mode: if exactly one PDF, skip the queue and go directly to paper view
-    if cli.file_paths.len() == 1 {
+    if cli.file_paths.len() == 1 && cli.load.is_none() {
         app.screen = Screen::Paper(0);
         app.single_paper_mode = true;
     }
@@ -479,14 +516,7 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(ref dir) = run_dir {
                                 let pi = *paper_index;
                                 if let Some(paper) = app.papers.get(pi) {
-                                    let verdict_str = paper.verdict.map(|v| v.label());
-                                    persistence::save_paper_results(
-                                        dir,
-                                        pi,
-                                        &paper.filename,
-                                        &paper.results,
-                                        verdict_str,
-                                    );
+                                    persistence::save_paper_results(dir, pi, paper);
                                 }
                             }
                         }

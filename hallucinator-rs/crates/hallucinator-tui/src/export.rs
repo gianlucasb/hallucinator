@@ -91,7 +91,7 @@ fn json_str_array(v: &[String]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-fn export_json(papers: &[&PaperState]) -> String {
+pub fn export_json(papers: &[&PaperState]) -> String {
     let mut out = String::from("[\n");
     for (pi, paper) in papers.iter().enumerate() {
         let s = &paper.stats;
