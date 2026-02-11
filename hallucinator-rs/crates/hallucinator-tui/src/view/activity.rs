@@ -3,7 +3,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
-
 use crate::app::App;
 
 /// Render the activity panel in the given area.
@@ -22,21 +21,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     )));
     lines.push(Line::from(""));
 
-    // Column header
+    // Column header + data rows.
+    // Both use identical Span structure with a Unicode indicator char so that
+    // ratatui computes the same cell widths and positions columns identically.
+    let hdr_style = Style::default().fg(theme.dim).add_modifier(Modifier::BOLD);
+
     if !activity.db_health.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("   {:<18}", "Database"),
-                Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:>5}", "Qry"),
-                Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:>7}", "Avg ms"),
-                Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(" \u{25CB} ", hdr_style), // ○ placeholder indicator
+            Span::styled(format!("{:<14} ", "Database"), hdr_style),
+            Span::styled(format!("{:>4} ", "Qry"), hdr_style),
+            Span::styled(format!("{:>4} ", "Hits"), hdr_style),
+            Span::styled(format!("{:>6}", "Avg"), hdr_style),
         ]));
     }
 
@@ -46,21 +42,40 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     for name in db_names {
         let health = &activity.db_health[name];
         let indicator = health.indicator();
-        let avg_ms = if health.total_queries > 0 {
-            format!("{:.0}ms", health.avg_response_ms)
-        } else {
+        let avg = if health.total_queries == 0 {
             "\u{2014}".to_string()
+        } else if health.avg_response_ms >= 1000.0 {
+            format!("{:.1}s", health.avg_response_ms / 1000.0)
+        } else {
+            format!("{:.0}ms", health.avg_response_ms)
+        };
+        let display_name: String = if name.chars().count() > 14 {
+            let truncated: String = name.chars().take(13).collect();
+            format!("{}\u{2026}", truncated)
+        } else {
+            name.clone()
         };
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {} {:<18}", indicator, name),
+                format!(" {} ", indicator),
                 Style::default().fg(theme.text),
             ),
             Span::styled(
-                format!("{:>4}", health.total_queries),
+                format!("{:<14} ", display_name),
+                Style::default().fg(theme.text),
+            ),
+            Span::styled(
+                format!("{:>4} ", health.total_queries),
                 Style::default().fg(theme.dim),
             ),
-            Span::styled(format!("{:>7}", avg_ms), Style::default().fg(theme.dim)),
+            Span::styled(
+                format!("{:>4} ", health.hits),
+                Style::default().fg(theme.active),
+            ),
+            Span::styled(
+                format!("{:>6}", avg),
+                Style::default().fg(theme.dim),
+            ),
         ]));
     }
 
@@ -190,7 +205,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme.border_style())
-                .title(" Activity "),
+                .title(" Activity (Tab to hide) "),
         )
         .wrap(Wrap { trim: true });
 

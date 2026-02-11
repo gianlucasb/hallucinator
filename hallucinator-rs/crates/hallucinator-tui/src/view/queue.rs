@@ -98,12 +98,22 @@ fn render_progress_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
     // Show archive extraction indicator if active
     if let Some(archive_name) = &app.extracting_archive {
-        spans.push(Span::styled(
+        let label = if app.extracted_count > 0 {
+            format!(
+                " {} Extracting {} ({} extracted)...",
+                spinner_char(app.tick),
+                archive_name,
+                app.extracted_count,
+            )
+        } else {
             format!(
                 " {} Extracting {}...",
                 spinner_char(app.tick),
                 archive_name,
-            ),
+            )
+        };
+        spans.push(Span::styled(
+            label,
             Style::default()
                 .fg(theme.active)
                 .add_modifier(Modifier::BOLD),

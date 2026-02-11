@@ -151,18 +151,40 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let mut footer_idx = 4;
     if let Some(archive_name) = &app.extracting_archive {
         let remaining = app.pending_archive_extractions.len();
-        let label = if remaining > 1 {
-            format!(
-                " {} Extracting {} ({} more queued)...",
-                spinner_char(app.tick),
-                archive_name,
-                remaining - 1,
-            )
+        let count_part = if app.extracted_count > 0 {
+            format!("{} extracted", app.extracted_count)
         } else {
+            String::new()
+        };
+        let label = if remaining > 1 {
+            if count_part.is_empty() {
+                format!(
+                    " {} Extracting {} ({} more queued)...",
+                    spinner_char(app.tick),
+                    archive_name,
+                    remaining - 1,
+                )
+            } else {
+                format!(
+                    " {} Extracting {} ({}, {} more queued)...",
+                    spinner_char(app.tick),
+                    archive_name,
+                    count_part,
+                    remaining - 1,
+                )
+            }
+        } else if count_part.is_empty() {
             format!(
                 " {} Extracting {}...",
                 spinner_char(app.tick),
                 archive_name,
+            )
+        } else {
+            format!(
+                " {} Extracting {} ({})...",
+                spinner_char(app.tick),
+                archive_name,
+                count_part,
             )
         };
         let line = Line::from(Span::styled(

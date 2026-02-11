@@ -13,6 +13,7 @@ Pro-tip: Use s to cycle sort order, f to filter by status on queue/paper views
 Pro-tip: The Semantic Scholar API key improves rate limits (--s2-api-key)
 Pro-tip: Press e to export results as Markdown, JSON, or CSV
 Pro-tip: References with < 5 words are auto-skipped (too short for reliable matching)
+Pro-tip: Press Tab to toggle the activity panel and get more room for the paper queue
 Pro-tip: Press ? anywhere for a full keybinding reference
 Pro-tip: You can set API keys via environment variables or a .env file
 Pro-tip: Run 'hallucinator-tui update-dblp' to build a local DBLP database (~1 GB compressed XML)

@@ -5,6 +5,8 @@ use std::time::Instant;
 use ratatui::layout::{Constraint, Layout, Rect};
 use tokio::sync::mpsc;
 
+use hallucinator_pdf::archive::ArchiveItem;
+
 use hallucinator_core::{DbStatus, ProgressEvent, Reference};
 
 use crate::action::Action;
@@ -233,6 +235,12 @@ pub struct App {
     pub pending_archive_extractions: Vec<PathBuf>,
     /// Name of the archive currently being extracted (shown in UI).
     pub extracting_archive: Option<String>,
+    /// Receiver for streaming archive extraction (PDFs arrive one at a time).
+    archive_rx: Option<std::sync::mpsc::Receiver<ArchiveItem>>,
+    /// Name of the archive being streamed (for display name prefix).
+    archive_streaming_name: Option<String>,
+    /// Number of PDFs extracted so far from the current archive.
+    pub extracted_count: usize,
     /// Frame counter for FPS measurement.
     frame_count: u32,
     /// Last time FPS was sampled.
@@ -289,6 +297,9 @@ impl App {
             temp_dir: None,
             pending_archive_extractions: Vec::new(),
             extracting_archive: None,
+            archive_rx: None,
+            archive_streaming_name: None,
+            extracted_count: 0,
             frame_count: 0,
             last_fps_instant: Instant::now(),
             measured_fps: 0.0,
@@ -484,9 +495,10 @@ impl App {
         self.recompute_sorted_indices();
     }
 
-    /// Process one pending archive extraction. Called from the tick handler
-    /// so the UI can render "Extracting..." between archives.
-    fn process_next_pending_archive(&mut self) {
+    /// Start streaming extraction for the next pending archive.
+    /// Spawns a background thread that extracts PDFs one-by-one,
+    /// sending them through a channel that the tick handler drains.
+    fn start_next_archive_extraction(&mut self) {
         let path = match self.pending_archive_extractions.first() {
             Some(p) => p.clone(),
             None => {
@@ -500,6 +512,8 @@ impl App {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         self.extracting_archive = Some(archive_name.clone());
+        self.archive_streaming_name = Some(archive_name.clone());
+        self.extracted_count = 0;
 
         // Ensure temp_dir exists
         if self.temp_dir.is_none() {
@@ -514,40 +528,110 @@ impl App {
                 }
             }
         }
-        let dir = self.temp_dir.as_ref().unwrap().path();
+        let dir = self.temp_dir.as_ref().unwrap().path().to_path_buf();
 
         let max_size = self.config_state.max_archive_size_mb as u64 * 1024 * 1024;
-        match hallucinator_pdf::archive::extract_archive(&path, dir, max_size) {
-            Ok(result) => {
-                let count = result.pdfs.len();
-                for pdf in result.pdfs {
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.archive_rx = Some(rx);
+
+        // Spawn blocking extraction in a background thread
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) =
+                hallucinator_pdf::archive::extract_archive_streaming(&path, &dir, max_size, &tx)
+            {
+                // Send the error as a warning so the UI can display it;
+                // Done{0} signals no PDFs were found.
+                let _ = tx.send(ArchiveItem::Warning(e));
+                let _ = tx.send(ArchiveItem::Done { total: 0 });
+            }
+        });
+    }
+
+    /// Drain the archive streaming channel, adding extracted PDFs to the queue.
+    /// Returns true if the current archive finished (Done received or channel closed).
+    fn drain_archive_channel(&mut self) -> bool {
+        let rx = match &self.archive_rx {
+            Some(rx) => rx,
+            None => return false,
+        };
+
+        let archive_name = self
+            .archive_streaming_name
+            .clone()
+            .unwrap_or_default();
+        let mut finished = false;
+        let mut new_pdfs: Vec<PathBuf> = Vec::new();
+
+        loop {
+            match rx.try_recv() {
+                Ok(ArchiveItem::Pdf(pdf)) => {
+                    self.extracted_count += 1;
                     let display_name = format!("{}/{}", archive_name, pdf.filename);
                     self.papers.push(PaperState::new(display_name));
                     self.ref_states.push(Vec::new());
                     self.paper_refs.push(Vec::new());
+                    new_pdfs.push(pdf.path.clone());
                     self.pdf_paths.push(pdf.path);
                 }
-                self.activity.log(format!(
-                    "Extracted {} PDF{} from {}",
-                    count,
-                    if count == 1 { "" } else { "s" },
-                    archive_name,
-                ));
-                for warning in result.warnings {
-                    self.activity.log_warn(warning);
+                Ok(ArchiveItem::Warning(msg)) => {
+                    self.activity.log_warn(msg);
                 }
-            }
-            Err(e) => {
-                self.activity
-                    .log(format!("Archive error ({}): {}", archive_name, e));
+                Ok(ArchiveItem::Done { total }) => {
+                    self.activity.log(format!(
+                        "Extracted {} PDF{} from {}",
+                        total,
+                        if total == 1 { "" } else { "s" },
+                        archive_name,
+                    ));
+                    finished = true;
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Sender dropped without Done — extraction thread panicked or errored
+                    if self.extracted_count == 0 {
+                        self.activity.log(format!(
+                            "Archive error ({}): extraction failed",
+                            archive_name
+                        ));
+                    }
+                    finished = true;
+                    break;
+                }
             }
         }
 
-        self.pending_archive_extractions.remove(0);
-        if self.pending_archive_extractions.is_empty() {
-            self.extracting_archive = None;
+        let got_new = !new_pdfs.is_empty();
+
+        // If processing is already started, send newly extracted PDFs to backend
+        if self.processing_started && got_new {
+            if let Some(tx) = &self.backend_cmd_tx {
+                let starting_index = self.pdf_paths.len() - new_pdfs.len();
+                let config = self.build_config();
+                let _ = tx.send(BackendCommand::ProcessFiles {
+                    files: new_pdfs,
+                    starting_index,
+                    max_concurrent_papers: self.config_state.max_concurrent_papers,
+                    config,
+                });
+            }
         }
-        self.recompute_sorted_indices();
+
+        if got_new {
+            self.recompute_sorted_indices();
+        }
+
+        if finished {
+            self.archive_rx = None;
+            self.archive_streaming_name = None;
+            self.pending_archive_extractions.remove(0);
+            if self.pending_archive_extractions.is_empty() {
+                self.extracting_archive = None;
+            }
+        }
+
+        finished
     }
 
     /// Process a user action and update state. Returns true if the app should quit.
@@ -1118,9 +1202,13 @@ impl App {
                     self.last_fps_instant = Instant::now();
                 }
 
-                // Process one pending archive extraction per tick
-                if !self.pending_archive_extractions.is_empty() {
-                    self.process_next_pending_archive();
+                // Drain streaming archive channel (if active)
+                if self.archive_rx.is_some() {
+                    self.drain_archive_channel();
+                }
+                // Start next archive extraction if none in progress
+                if self.archive_rx.is_none() && !self.pending_archive_extractions.is_empty() {
+                    self.start_next_archive_extraction();
                 }
 
                 if self.screen == Screen::Queue {
@@ -1453,9 +1541,11 @@ impl App {
                         status,
                         DbStatus::Match | DbStatus::NoMatch | DbStatus::AuthorMismatch
                     );
+                    let is_match = status == DbStatus::Match;
                     self.activity.record_db_complete(
                         &db_name,
                         success,
+                        is_match,
                         elapsed.as_secs_f64() * 1000.0,
                     );
 

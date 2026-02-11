@@ -299,6 +299,9 @@ async fn main() -> anyhow::Result<()> {
     // Apply the fully-resolved config state
     app.config_state = config_state;
 
+    // Auto-dismiss the splash banner after 2 seconds (fps * 2 ticks)
+    app.banner_dismiss_tick = Some(app.config_state.fps.max(1) as usize * 2);
+
     // Show config file path if one was loaded
     if let Some(path) = config_file::config_path() {
         if path.exists() {

@@ -7,6 +7,7 @@ pub struct DbHealth {
     pub total_queries: usize,
     pub successful: usize,
     pub failed: usize,
+    pub hits: usize,
     pub avg_response_ms: f64,
 }
 
@@ -17,16 +18,20 @@ impl DbHealth {
             total_queries: 0,
             successful: 0,
             failed: 0,
+            hits: 0,
             avg_response_ms: 0.0,
         }
     }
 
-    pub fn record(&mut self, success: bool, elapsed_ms: f64) {
+    pub fn record(&mut self, success: bool, is_match: bool, elapsed_ms: f64) {
         self.total_queries += 1;
         if success {
             self.successful += 1;
         } else {
             self.failed += 1;
+        }
+        if is_match {
+            self.hits += 1;
         }
         // Running average
         self.avg_response_ms =
@@ -101,12 +106,18 @@ impl ActivityState {
         self.messages.push_back((msg, true));
     }
 
-    pub fn record_db_complete(&mut self, db_name: &str, success: bool, elapsed_ms: f64) {
+    pub fn record_db_complete(
+        &mut self,
+        db_name: &str,
+        success: bool,
+        is_match: bool,
+        elapsed_ms: f64,
+    ) {
         let health = self
             .db_health
             .entry(db_name.to_string())
             .or_insert_with(|| DbHealth::new(db_name.to_string()));
-        health.record(success, elapsed_ms);
+        health.record(success, is_match, elapsed_ms);
     }
 
     pub fn push_throughput(&mut self, count: u16) {
