@@ -41,7 +41,7 @@ pub fn render(f: &mut Frame, theme: &Theme) {
         // Actions
         section_header("Actions", theme),
         key_line("r", "Start/stop processing", theme),
-        key_line("Space", "Mark paper safe/?!/ref safe", theme),
+        key_line("Space", "Paper verdict / cycle FP reason", theme),
         key_line("Ctrl+r", "Retry failed reference", theme),
         key_line("R", "Retry all failed references", theme),
         key_line("e", "Export results", theme),
