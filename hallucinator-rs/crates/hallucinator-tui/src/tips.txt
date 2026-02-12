@@ -8,7 +8,7 @@ Pro-tip: Press , to open config -- set API keys, concurrency, timeouts
 Pro-tip: Set an OpenAlex key for broader coverage (--openalex-key or config)
 Pro-tip: Build an offline DBLP database for instant local lookups (hallucinator-tui update-dblp)
 Pro-tip: Increase concurrent papers in config to process batches faster
-Pro-tip: Press Space on a reference to mark false positives as safe
+Pro-tip: Press Space on a reference to cycle FP reasons (parse/GS/timeout/known)
 Pro-tip: Use s to cycle sort order, f to filter by status on queue/paper views
 Pro-tip: The Semantic Scholar API key improves rate limits (--s2-api-key)
 Pro-tip: Press e to export results as Markdown, JSON, or CSV

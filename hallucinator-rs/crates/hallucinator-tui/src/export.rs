@@ -3,21 +3,26 @@ use std::path::Path;
 
 use hallucinator_core::{CheckStats, DbStatus, Status, ValidationResult};
 
+use crate::model::paper::RefState;
 use crate::model::queue::{PaperState, PaperVerdict};
 use crate::view::export::ExportFormat;
 
 /// Export results for a set of papers to the given path.
+///
+/// `ref_states` is a parallel slice to `papers` — `ref_states[i]` are the RefStates
+/// for `papers[i]`. This is used to include FP reason overrides in the output.
 pub fn export_results(
     papers: &[&PaperState],
+    ref_states: &[&[RefState]],
     format: ExportFormat,
     path: &Path,
 ) -> Result<(), String> {
     let content = match format {
-        ExportFormat::Json => export_json(papers),
-        ExportFormat::Csv => export_csv(papers),
-        ExportFormat::Markdown => export_markdown(papers),
-        ExportFormat::Text => export_text(papers),
-        ExportFormat::Html => export_html(papers),
+        ExportFormat::Json => export_json(papers, ref_states),
+        ExportFormat::Csv => export_csv(papers, ref_states),
+        ExportFormat::Markdown => export_markdown(papers, ref_states),
+        ExportFormat::Text => export_text(papers, ref_states),
+        ExportFormat::Html => export_html(papers, ref_states),
     };
 
     let mut file =
@@ -91,7 +96,7 @@ fn json_str_array(v: &[String]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-pub fn export_json(papers: &[&PaperState]) -> String {
+pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
     let mut out = String::from("[\n");
     for (pi, paper) in papers.iter().enumerate() {
         let s = &paper.stats;
@@ -106,11 +111,17 @@ pub fn export_json(papers: &[&PaperState]) -> String {
             s.total, s.verified, s.not_found, s.author_mismatch, s.retracted, s.skipped,
             problematic_pct(s),
         ));
+        let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
         let ref_count = paper.results.iter().filter(|r| r.is_some()).count();
         let mut written = 0;
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
                 written += 1;
+                let fp_json = paper_refs
+                    .get(ri)
+                    .and_then(|rs| rs.fp_reason)
+                    .map(|fp| json_str(fp.as_str()))
+                    .unwrap_or_else(|| "null".to_string());
                 out.push_str("      {\n");
                 out.push_str(&format!("        \"index\": {},\n", ri));
                 out.push_str(&format!("        \"title\": {},\n", json_str(&r.title)));
@@ -122,6 +133,7 @@ pub fn export_json(papers: &[&PaperState]) -> String {
                     "        \"status\": {},\n",
                     json_str(status_str(&r.status))
                 ));
+                out.push_str(&format!("        \"fp_reason\": {},\n", fp_json));
                 out.push_str(&format!(
                     "        \"source\": {},\n",
                     json_opt_str(&r.source)
@@ -230,15 +242,21 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-fn export_csv(papers: &[&PaperState]) -> String {
+fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
     let mut out = String::from(
-        "Filename,Verdict,Ref#,Title,Status,Source,Retracted,Authors,FoundAuthors,PaperURL,DOI,ArxivID,FailedDBs\n",
+        "Filename,Verdict,Ref#,Title,Status,FpReason,Source,Retracted,Authors,FoundAuthors,PaperURL,DOI,ArxivID,FailedDBs\n",
     );
-    for paper in papers {
+    for (pi, paper) in papers.iter().enumerate() {
         let verdict = verdict_str(paper.verdict);
+        let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
                 let retracted = is_retracted(r);
+                let fp = paper_refs
+                    .get(ri)
+                    .and_then(|rs| rs.fp_reason)
+                    .map(|fp| fp.as_str())
+                    .unwrap_or("");
                 let authors = r.ref_authors.join("; ");
                 let found = r.found_authors.join("; ");
                 let url = r.paper_url.as_deref().unwrap_or("");
@@ -250,12 +268,13 @@ fn export_csv(papers: &[&PaperState]) -> String {
                     .unwrap_or("");
                 let failed = r.failed_dbs.join("; ");
                 out.push_str(&format!(
-                    "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     csv_escape(&paper.filename),
                     csv_escape(verdict),
                     ri + 1,
                     csv_escape(&r.title),
                     status_str(&r.status),
+                    csv_escape(fp),
                     csv_escape(r.source.as_deref().unwrap_or("")),
                     retracted,
                     csv_escape(&authors),
@@ -282,10 +301,11 @@ fn scholar_url(title: &str) -> String {
     )
 }
 
-fn export_markdown(papers: &[&PaperState]) -> String {
+fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
     let mut out = String::from("# Hallucinator Results\n\n");
 
-    for paper in papers {
+    for (pi, paper) in papers.iter().enumerate() {
+        let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
         let s = &paper.stats;
         let verdict_badge = match paper.verdict {
             Some(PaperVerdict::Safe) => " **[SAFE]**",
@@ -318,13 +338,19 @@ fn export_markdown(papers: &[&PaperState]) -> String {
             out.push_str("### Problematic References\n\n");
             for (ri, r) in &problems {
                 write_md_ref(&mut out, *ri, r);
+                if let Some(fp) = paper_refs.get(*ri).and_then(|rs| rs.fp_reason) {
+                    out.push_str(&format!(
+                        "- **User override:** Marked safe ({})\n\n",
+                        fp.description()
+                    ));
+                }
             }
         }
 
         if !verified.is_empty() {
             out.push_str("### Verified References\n\n");
-            out.push_str("| # | Title | Source | URL |\n");
-            out.push_str("|---|-------|--------|-----|\n");
+            out.push_str("| # | Title | Source | URL | FP Override |\n");
+            out.push_str("|---|-------|--------|-----|-------------|\n");
             for (ri, r) in &verified {
                 let source = r.source.as_deref().unwrap_or("\u{2014}");
                 let url = r
@@ -332,12 +358,18 @@ fn export_markdown(papers: &[&PaperState]) -> String {
                     .as_ref()
                     .map(|u| format!("[link]({})", u))
                     .unwrap_or_default();
+                let fp_col = paper_refs
+                    .get(*ri)
+                    .and_then(|rs| rs.fp_reason)
+                    .map(|fp| fp.short_label().to_string())
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "| {} | {} | {} | {} |\n",
+                    "| {} | {} | {} | {} | {} |\n",
                     ri + 1,
                     md_escape(&r.title),
                     source,
                     url,
+                    fp_col,
                 ));
             }
             out.push('\n');
@@ -436,12 +468,13 @@ fn write_md_ref(out: &mut String, ri: usize, r: &ValidationResult) {
     out.push('\n');
 }
 
-fn export_text(papers: &[&PaperState]) -> String {
+fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
     let mut out = String::from("Hallucinator Results\n");
     out.push_str(&"=".repeat(60));
     out.push('\n');
 
-    for paper in papers {
+    for (pi, paper) in papers.iter().enumerate() {
+        let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
         let s = &paper.stats;
         let verdict_badge = match paper.verdict {
             Some(PaperVerdict::Safe) => " [SAFE]",
@@ -526,6 +559,14 @@ fn export_text(papers: &[&PaperState]) -> String {
                 if !r.raw_citation.is_empty() {
                     out.push_str(&format!("       Citation: {}\n", r.raw_citation));
                 }
+
+                // FP override
+                if let Some(fp) = paper_refs.get(ri).and_then(|rs| rs.fp_reason) {
+                    out.push_str(&format!(
+                        "       FP override: {}\n",
+                        fp.description()
+                    ));
+                }
             }
         }
     }
@@ -539,7 +580,7 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn export_html(papers: &[&PaperState]) -> String {
+fn export_html(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
     let mut out = String::with_capacity(16384);
 
     // Aggregate stats across all papers
@@ -739,7 +780,8 @@ footer {
     out.push_str("</div>\n");
 
     // Per-paper sections
-    for paper in papers {
+    for (pi, paper) in papers.iter().enumerate() {
+        let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
         let s = &paper.stats;
         let pp = problematic_pct(s);
         let verdict_html = match paper.verdict {
@@ -759,7 +801,8 @@ footer {
 
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
-                write_html_ref(&mut out, ri, r);
+                let fp = paper_refs.get(ri).and_then(|rs| rs.fp_reason);
+                write_html_ref(&mut out, ri, r, fp);
             }
         }
 
@@ -795,7 +838,12 @@ fn write_stat_card(out: &mut String, class: &str, value: usize, label: &str) {
     ));
 }
 
-fn write_html_ref(out: &mut String, ri: usize, r: &ValidationResult) {
+fn write_html_ref(
+    out: &mut String,
+    ri: usize,
+    r: &ValidationResult,
+    fp: Option<crate::model::paper::FpReason>,
+) {
     let retracted = is_retracted(r);
     let (badge_class, badge_text) = if retracted {
         ("retracted", "RETRACTED")
@@ -818,6 +866,12 @@ fn write_html_ref(out: &mut String, ri: usize, r: &ValidationResult) {
         "<span class=\"badge {}\">{}</span>\n",
         badge_class, badge_text
     ));
+    if let Some(reason) = fp {
+        out.push_str(&format!(
+            "<span class=\"badge verified\" style=\"margin-left:0.3rem\">FP: {}</span>\n",
+            html_escape(reason.short_label())
+        ));
+    }
     out.push_str("</div>\n");
 
     // Source

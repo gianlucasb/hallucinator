@@ -149,7 +149,7 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
             let phase_style = theme.ref_phase_style(&rs.phase);
 
             let verdict = rs.verdict_label();
-            let verdict_style = if rs.marked_safe {
+            let verdict_style = if rs.is_marked_safe() {
                 Style::default()
                     .fg(theme.verified)
                     .add_modifier(Modifier::DIM)
@@ -186,14 +186,14 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
         vec![
             Constraint::Length(4),
             Constraint::Min(20),
-            Constraint::Length(14),
+            Constraint::Length(16),
             Constraint::Length(18),
         ]
     } else {
         vec![
             Constraint::Length(4),
             Constraint::Min(15),
-            Constraint::Length(14),
+            Constraint::Length(16),
         ]
     };
 
@@ -270,7 +270,7 @@ fn render_footer(
     }
 
     spans.push(Span::styled(
-        " | j/k:nav  Space:safe  Enter:detail  Ctrl+r:retry  R:retry all  s:sort  f:filter  /:search  Esc:back",
+        " | j/k:nav  Space:FP reason  Enter:detail  Ctrl+r:retry  R:retry all  s:sort  f:filter  /:search  Esc:back",
         theme.footer_style(),
     ));
 

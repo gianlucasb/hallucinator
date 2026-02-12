@@ -7,7 +7,7 @@ use hallucinator_core::{
     ArxivInfo, DbResult, DbStatus, DoiInfo, Reference, RetractionInfo, Status, ValidationResult,
 };
 
-use crate::model::paper::{RefPhase, RefState};
+use crate::model::paper::{FpReason, RefPhase, RefState};
 use crate::model::queue::{PaperPhase, PaperState, PaperVerdict};
 
 // ---------------------------------------------------------------------------
@@ -48,6 +48,10 @@ struct LoadedRef {
     arxiv_info: Option<LoadedArxivInfo>,
     retraction_info: Option<LoadedRetractionInfo>,
     db_results: Option<Vec<LoadedDbResult>>,
+    /// FP reason string (new format).
+    fp_reason: Option<String>,
+    /// Legacy boolean field — if true and no fp_reason, maps to KnownGood.
+    marked_safe: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -113,6 +117,18 @@ fn convert_db_status(s: &str) -> DbStatus {
     }
 }
 
+/// Parse fp_reason from loaded JSON fields, with backward compat for marked_safe bool.
+fn parse_fp_reason(loaded_ref: &LoadedRef) -> Option<FpReason> {
+    if let Some(reason_str) = &loaded_ref.fp_reason {
+        FpReason::from_str(reason_str)
+    } else if loaded_ref.marked_safe == Some(true) {
+        // Legacy backward compat: marked_safe: true → KnownGood
+        Some(FpReason::KnownGood)
+    } else {
+        None
+    }
+}
+
 fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Reference>) {
     let ref_count = loaded.references.len();
     let mut paper = PaperState::new(loaded.filename);
@@ -126,6 +142,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
 
     for loaded_ref in &loaded.references {
         let title = loaded_ref.title.clone().unwrap_or_default();
+        let fp_reason = parse_fp_reason(loaded_ref);
 
         // Parse status — skip pending/unknown entries (no result to reconstruct)
         let status = match parse_status(&loaded_ref.status) {
@@ -136,7 +153,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
                     title: title.clone(),
                     phase: RefPhase::Done,
                     result: None,
-                    marked_safe: false,
+                    fp_reason,
                 });
                 references.push(Reference {
                     raw_citation: loaded_ref.raw_citation.clone().unwrap_or_default(),
@@ -226,7 +243,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
             title: title.clone(),
             phase: RefPhase::Done,
             result: Some(result),
-            marked_safe: false,
+            fp_reason,
         });
 
         references.push(Reference {
