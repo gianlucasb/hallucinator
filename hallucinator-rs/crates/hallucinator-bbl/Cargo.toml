@@ -7,6 +7,7 @@ description = "BibTeX .bbl file parser for hallucinated reference detection"
 
 [dependencies]
 hallucinator-pdf.workspace = true
+biblatex.workspace = true
 regex.workspace = true
 once_cell.workspace = true
 thiserror.workspace = true

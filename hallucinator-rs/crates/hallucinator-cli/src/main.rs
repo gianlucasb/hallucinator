@@ -19,9 +19,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Check a PDF or .bbl file for hallucinated references
+    /// Check a PDF, .bbl, or .bib file for hallucinated references
     Check {
-        /// Path to the PDF or .bbl file to check
+        /// Path to the PDF, .bbl, or .bib file to check
         file_path: PathBuf,
 
         /// Disable colored output
@@ -242,10 +242,17 @@ async fn check(
         .extension()
         .map(|e| e.eq_ignore_ascii_case("bbl"))
         .unwrap_or(false);
+    let is_bib = file_path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("bib"))
+        .unwrap_or(false);
 
     let extraction = if is_bbl {
         hallucinator_bbl::extract_references_from_bbl(&file_path)
             .map_err(|e| anyhow::anyhow!("BBL extraction failed: {}", e))?
+    } else if is_bib {
+        hallucinator_bbl::extract_references_from_bib(&file_path)
+            .map_err(|e| anyhow::anyhow!("BIB extraction failed: {}", e))?
     } else {
         hallucinator_pdf::extract_references(&file_path)?
     };
@@ -355,8 +362,12 @@ async fn dry_run_check(
         .extension()
         .map(|e| e.eq_ignore_ascii_case("bbl"))
         .unwrap_or(false);
+    let is_bib = file_path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("bib"))
+        .unwrap_or(false);
 
-    if is_bbl {
+    if is_bbl || is_bib {
         dry_run_bbl(&file_path, &file_name, use_color, &mut writer)
     } else {
         dry_run_pdf(&file_path, &file_name, use_color, &mut writer)
@@ -468,8 +479,17 @@ fn dry_run_bbl(
 ) -> anyhow::Result<()> {
     use owo_colors::OwoColorize;
 
-    let extraction = hallucinator_bbl::extract_references_from_bbl(file_path)
-        .map_err(|e| anyhow::anyhow!("BBL extraction failed: {}", e))?;
+    let is_bib = file_path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("bib"))
+        .unwrap_or(false);
+    let extraction = if is_bib {
+        hallucinator_bbl::extract_references_from_bib(file_path)
+            .map_err(|e| anyhow::anyhow!("BIB extraction failed: {}", e))?
+    } else {
+        hallucinator_bbl::extract_references_from_bbl(file_path)
+            .map_err(|e| anyhow::anyhow!("BBL extraction failed: {}", e))?
+    };
 
     let total = extraction.skip_stats.total_raw;
     let kept = extraction.references.len();

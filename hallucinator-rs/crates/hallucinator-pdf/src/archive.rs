@@ -35,19 +35,19 @@ pub fn is_archive_path(path: &Path) -> bool {
     name.ends_with(".zip") || name.ends_with(".tar.gz") || name.ends_with(".tgz")
 }
 
-/// Returns true if the filename is a supported extractable type (PDF or BBL).
+/// Returns true if the filename is a supported extractable type (PDF, BBL, or BIB).
 fn is_extractable(name: &str) -> bool {
     let lower = name.to_lowercase();
-    lower.ends_with(".pdf") || lower.ends_with(".bbl")
+    lower.ends_with(".pdf") || lower.ends_with(".bbl") || lower.ends_with(".bib")
 }
 
 /// Returns true if the file content looks valid for its extension.
-/// PDFs must start with `%PDF-`; BBL files are plain text and skip the check.
+/// PDFs must start with `%PDF-`; BBL and BIB files are plain text and skip the check.
 fn passes_magic_check(name: &str, data: &[u8]) -> bool {
     if name.to_lowercase().ends_with(".pdf") {
         data.starts_with(b"%PDF-")
     } else {
-        true // .bbl files are plain text, no magic bytes to check
+        true // .bbl/.bib files are plain text, no magic bytes to check
     }
 }
 
@@ -124,7 +124,7 @@ pub fn extract_from_zip(
             continue;
         }
 
-        // Only process PDFs and BBL files
+        // Only process PDFs, BBL, and BIB files
         if !is_extractable(&name_str) {
             continue;
         }
@@ -170,7 +170,7 @@ pub fn extract_from_zip(
     }
 
     if pdfs.is_empty() {
-        return Err("No PDF or BBL files found in archive".to_string());
+        return Err("No PDF, BBL, or BIB files found in archive".to_string());
     }
 
     Ok(ExtractionResult { pdfs, warnings })
@@ -221,7 +221,7 @@ pub fn extract_from_tar_gz(
             continue;
         }
 
-        // Only process PDFs and BBL files
+        // Only process PDFs, BBL, and BIB files
         if !is_extractable(&name_str) {
             continue;
         }
@@ -268,13 +268,13 @@ pub fn extract_from_tar_gz(
     }
 
     if pdfs.is_empty() {
-        return Err("No PDF or BBL files found in archive".to_string());
+        return Err("No PDF, BBL, or BIB files found in archive".to_string());
     }
 
     Ok(ExtractionResult { pdfs, warnings })
 }
 
-/// Stream-extract PDFs and BBL files from an archive, sending each one through `tx` as it's extracted.
+/// Stream-extract PDFs, BBL, and BIB files from an archive, sending each one through `tx` as it's extracted.
 ///
 /// This is the streaming counterpart of [`extract_archive`]. Instead of collecting all
 /// PDFs into a Vec, each extracted PDF is sent immediately via the channel so the caller
@@ -392,7 +392,7 @@ fn extract_from_zip_streaming(
     }
 
     if total == 0 {
-        return Err("No PDF or BBL files found in archive".to_string());
+        return Err("No PDF, BBL, or BIB files found in archive".to_string());
     }
 
     let _ = tx.send(ArchiveItem::Done { total });
@@ -489,7 +489,7 @@ fn extract_from_tar_gz_streaming(
     }
 
     if total == 0 {
-        return Err("No PDF or BBL files found in archive".to_string());
+        return Err("No PDF, BBL, or BIB files found in archive".to_string());
     }
 
     let _ = tx.send(ArchiveItem::Done { total });

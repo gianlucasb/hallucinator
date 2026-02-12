@@ -85,11 +85,17 @@ async fn process_single_paper(
     let is_bbl = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("bbl"));
+    let is_bib = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("bib"));
 
     let extraction: Result<ExtractionResult, String> = tokio::task::spawn_blocking(move || {
         if is_bbl {
             hallucinator_bbl::extract_references_from_bbl(&path)
                 .map_err(|e| format!("BBL extraction failed: {}", e))
+        } else if is_bib {
+            hallucinator_bbl::extract_references_from_bib(&path)
+                .map_err(|e| format!("BIB extraction failed: {}", e))
         } else {
             hallucinator_pdf::extract_references(&path)
                 .map_err(|e| format!("PDF extraction failed: {}", e))

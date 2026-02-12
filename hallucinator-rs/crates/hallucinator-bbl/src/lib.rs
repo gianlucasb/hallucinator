@@ -12,6 +12,8 @@ pub enum BblError {
     Io(#[from] std::io::Error),
     #[error("no \\bibitem entries found")]
     NoBibItems,
+    #[error("no BibTeX entries found")]
+    NoBibEntries,
 }
 
 /// Extract references from a .bbl file (BibTeX-generated bibliography).
@@ -97,6 +99,242 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
         references,
         skip_stats: stats,
     })
+}
+
+/// Extract references from a .bib file (BibTeX bibliography database).
+///
+/// Uses the `biblatex` crate for robust parsing with LaTeX accent decoding
+/// and structured field extraction.
+pub fn extract_references_from_bib(path: &Path) -> Result<ExtractionResult, BblError> {
+    let content = std::fs::read_to_string(path)?;
+    extract_references_from_bib_str(&content)
+}
+
+/// Parse .bib content from a string.
+pub fn extract_references_from_bib_str(content: &str) -> Result<ExtractionResult, BblError> {
+    // Try parsing the whole file first (fast path)
+    match biblatex::Bibliography::parse(content) {
+        Ok(bibliography) => {
+            let entries: Vec<_> = bibliography.iter().collect();
+            if entries.is_empty() {
+                return Err(BblError::NoBibEntries);
+            }
+            Ok(process_bib_entries(&entries))
+        }
+        Err(_) => {
+            // Fallback: split by @ entries and parse each individually.
+            // Real .bib files often have minor syntax errors (extra braces,
+            // missing @ prefix, non-standard entry types, raw text separators)
+            // that cause the whole-file parse to fail. By splitting and parsing
+            // each entry independently, we recover whatever we can.
+            parse_bib_entries_individually(content)
+        }
+    }
+}
+
+/// Split .bib content into individual entry strings and parse each one.
+fn parse_bib_entries_individually(content: &str) -> Result<ExtractionResult, BblError> {
+    // Find positions of @ followed by a word character (entry type)
+    static ENTRY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^@[a-zA-Z]").unwrap());
+
+    let positions: Vec<usize> = ENTRY_RE.find_iter(content).map(|m| m.start()).collect();
+    if positions.is_empty() {
+        return Err(BblError::NoBibEntries);
+    }
+
+    let mut all_entries = Vec::new();
+    // We need to own the parsed bibliographies so entries live long enough
+    let mut parsed_bibs = Vec::new();
+
+    for i in 0..positions.len() {
+        let start = positions[i];
+        let end = if i + 1 < positions.len() {
+            positions[i + 1]
+        } else {
+            content.len()
+        };
+        let chunk = &content[start..end];
+
+        if let Ok(bib) = biblatex::Bibliography::parse(chunk) {
+            parsed_bibs.push(bib);
+        }
+    }
+
+    for bib in &parsed_bibs {
+        for entry in bib.iter() {
+            all_entries.push(entry);
+        }
+    }
+
+    if all_entries.is_empty() {
+        return Err(BblError::NoBibEntries);
+    }
+
+    Ok(process_bib_entries(&all_entries))
+}
+
+/// Process parsed biblatex entries into References.
+fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
+    let mut stats = SkipStats {
+        total_raw: entries.len(),
+        ..Default::default()
+    };
+    let mut references = Vec::new();
+
+    for entry in entries {
+        // Extract title (convert chunks → string, then strip residual LaTeX)
+        let title = entry
+            .title()
+            .ok()
+            .map(|c| chunks_to_string(c))
+            .map(|t| strip_latex(&t));
+
+        // Same skip logic as BBL: no title, short title (<4 words)
+        let title = match title {
+            Some(t) if !t.is_empty() && t.split_whitespace().count() >= 4 => t,
+            Some(t) if t.is_empty() => {
+                stats.no_title += 1;
+                continue;
+            }
+            Some(_) => {
+                stats.short_title += 1;
+                continue;
+            }
+            None => {
+                stats.no_title += 1;
+                continue;
+            }
+        };
+
+        // Extract authors via biblatex's Person parser
+        let authors: Vec<String> = entry
+            .author()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.name != "others")
+            .filter(|p| !p.name.is_empty() || !p.given_name.is_empty())
+            .map(|p| format_bib_person(&p))
+            .collect();
+
+        if authors.is_empty() {
+            stats.no_authors += 1;
+            // Still include (tracked only, like BBL)
+        }
+
+        // Extract DOI (normalize URL-form DOIs like "https://doi.org/10.xxxx" → "10.xxxx")
+        let doi = entry
+            .get("doi")
+            .map(chunks_to_string)
+            .filter(|d| !d.is_empty())
+            .and_then(|d| hallucinator_pdf::identifiers::extract_doi(&d));
+
+        // Extract arXiv ID from eprint field or journal field
+        let arxiv_id = extract_arxiv_from_bib_entry(entry);
+
+        // Build raw citation for display
+        let mut raw_parts = Vec::new();
+        if !authors.is_empty() {
+            raw_parts.push(authors.join(", "));
+        }
+        raw_parts.push(title.clone());
+        if let Some(journal) = entry.get("journal").map(chunks_to_string) {
+            if !journal.is_empty() {
+                raw_parts.push(journal);
+            }
+        }
+        if let Some(booktitle) = entry.get("booktitle").map(chunks_to_string) {
+            if !booktitle.is_empty() {
+                raw_parts.push(booktitle);
+            }
+        }
+        if let Some(year) = entry.get("year").map(chunks_to_string) {
+            if !year.is_empty() {
+                raw_parts.push(year);
+            }
+        }
+        let raw_citation = raw_parts.join(". ");
+
+        references.push(Reference {
+            raw_citation,
+            title: Some(title),
+            authors,
+            doi,
+            arxiv_id,
+        });
+    }
+
+    ExtractionResult {
+        references,
+        skip_stats: stats,
+    }
+}
+
+/// Convert biblatex chunks to a plain string.
+fn chunks_to_string(chunks: &[biblatex::Spanned<biblatex::Chunk>]) -> String {
+    chunks
+        .iter()
+        .map(|c| match &c.v {
+            biblatex::Chunk::Normal(s) => s.as_str(),
+            biblatex::Chunk::Verbatim(s) => s.as_str(),
+            biblatex::Chunk::Math(s) => s.as_str(),
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Format a biblatex Person as "Given Family" (western name order).
+fn format_bib_person(p: &biblatex::Person) -> String {
+    let mut parts = Vec::new();
+    if !p.given_name.is_empty() {
+        parts.push(p.given_name.as_str());
+    }
+    if !p.prefix.is_empty() {
+        parts.push(p.prefix.as_str());
+    }
+    if !p.name.is_empty() {
+        parts.push(p.name.as_str());
+    }
+    if !p.suffix.is_empty() {
+        parts.push(p.suffix.as_str());
+    }
+    parts.join(" ")
+}
+
+/// Extract arXiv ID from a .bib entry's `eprint` or `journal` field.
+fn extract_arxiv_from_bib_entry(entry: &biblatex::Entry) -> Option<String> {
+    // Check eprint field
+    if let Some(eprint_chunks) = entry.get("eprint") {
+        let eprint = chunks_to_string(eprint_chunks);
+        // Skip URL-style eprints (some .bib files put publisher PDF URLs here)
+        if !eprint.is_empty() && !eprint.starts_with("http") {
+            // Verify archiveprefix is arXiv (or absent — many .bib files omit it)
+            let prefix = entry
+                .get("archiveprefix")
+                .map(chunks_to_string)
+                .unwrap_or_default();
+            if prefix.is_empty() || prefix.eq_ignore_ascii_case("arxiv") {
+                if let Some(id) = hallucinator_pdf::identifiers::extract_arxiv_id(&eprint) {
+                    return Some(id);
+                }
+                // Some .bib files have bare IDs like "2403.10573"
+                static BARE_ARXIV: Lazy<Regex> =
+                    Lazy::new(|| Regex::new(r"^\d{4}\.\d{4,5}(v\d+)?$").unwrap());
+                if BARE_ARXIV.is_match(&eprint) {
+                    return Some(eprint);
+                }
+            }
+        }
+    }
+
+    // Check journal field for "arXiv preprint arXiv:XXXX.XXXXX"
+    if let Some(journal_chunks) = entry.get("journal") {
+        let journal = chunks_to_string(journal_chunks);
+        if let Some(id) = hallucinator_pdf::identifiers::extract_arxiv_id(&journal) {
+            return Some(id);
+        }
+    }
+
+    None
 }
 
 /// Segment .bbl content into individual `\bibitem` entries.
@@ -562,6 +800,240 @@ Second entry content.
             assert!(
                 mamie_ref.title.as_ref().unwrap().contains("Anti-Feminist"),
                 "Mamié entry should have correct title"
+            );
+        }
+    }
+
+    // ── .bib parser tests ──
+
+    #[test]
+    fn test_bib_basic_extraction() {
+        let bib = r#"
+@article{doe2023,
+  title={A Very Important Research Paper Title},
+  author={Doe, John and Smith, Jane},
+  journal={Journal of Testing},
+  year={2023},
+  doi={10.1234/test.2023}
+}
+"#;
+        let result = extract_references_from_bib_str(bib).unwrap();
+        assert_eq!(result.skip_stats.total_raw, 1);
+        assert_eq!(result.references.len(), 1);
+
+        let r = &result.references[0];
+        assert_eq!(
+            r.title.as_deref().unwrap(),
+            "A Very Important Research Paper Title"
+        );
+        assert_eq!(r.authors.len(), 2);
+        assert!(r.authors[0].contains("John"));
+        assert!(r.authors[0].contains("Doe"));
+        assert!(r.authors[1].contains("Jane"));
+        assert!(r.authors[1].contains("Smith"));
+        assert_eq!(r.doi.as_deref(), Some("10.1234/test.2023"));
+    }
+
+    #[test]
+    fn test_bib_accent_handling() {
+        let bib = r#"
+@inproceedings{jegou2020,
+  title={Radioactive data: tracing through training is very important},
+  author={Sablayrolles, Alexandre and Douze, Matthijs and Schmid, Cordelia and J{\'e}gou, Herv{\'e}},
+  booktitle={International Conference on Machine Learning},
+  year={2020}
+}
+"#;
+        let result = extract_references_from_bib_str(bib).unwrap();
+        assert_eq!(result.references.len(), 1);
+
+        let r = &result.references[0];
+        // biblatex should decode LaTeX accents
+        let jegou = r.authors.iter().find(|a| a.contains("gou"));
+        assert!(jegou.is_some(), "Should find Jégou author: {:?}", r.authors);
+        let jegou = jegou.unwrap();
+        assert!(
+            jegou.contains("é") || jegou.contains("e"),
+            "Should decode accent: {}",
+            jegou
+        );
+    }
+
+    #[test]
+    fn test_bib_arxiv_from_journal() {
+        let bib = r#"
+@article{sun2024,
+  title={Medical Unlearnable Examples: Securing Medical Data from Unauthorized Training},
+  author={Sun, Weixiang and others},
+  journal={arXiv preprint arXiv:2403.10573},
+  year={2024}
+}
+"#;
+        let result = extract_references_from_bib_str(bib).unwrap();
+        assert_eq!(result.references.len(), 1);
+
+        let r = &result.references[0];
+        assert_eq!(r.arxiv_id.as_deref(), Some("2403.10573"));
+        // "others" should be filtered out
+        assert!(
+            !r.authors.iter().any(|a| a.contains("others")),
+            "Should filter out 'others': {:?}",
+            r.authors
+        );
+    }
+
+    #[test]
+    fn test_bib_short_title_skipped() {
+        let bib = r#"
+@misc{short2023,
+  title={Short Title},
+  author={Author, Test},
+  year={2023}
+}
+
+@article{long2023,
+  title={This Is a Sufficiently Long Title for Testing},
+  author={Author, Test},
+  year={2023}
+}
+"#;
+        let result = extract_references_from_bib_str(bib).unwrap();
+        assert_eq!(result.skip_stats.total_raw, 2);
+        assert_eq!(result.skip_stats.short_title, 1);
+        assert_eq!(result.references.len(), 1);
+    }
+
+    #[test]
+    fn test_bib_no_entries() {
+        let result = extract_references_from_bib_str("not a bib file");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bib_integration_sample_file() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("test-data")
+            .join("arxiv")
+            .join("bbl-bib")
+            .join("2602.09284v1.bib");
+
+        if !path.exists() {
+            // Skip if test file not available
+            return;
+        }
+
+        let result = extract_references_from_bib(&path).unwrap();
+
+        // The file has 44 entries
+        assert!(
+            result.skip_stats.total_raw >= 40,
+            "Expected 40+ raw entries, got {}",
+            result.skip_stats.total_raw
+        );
+        assert!(
+            !result.references.is_empty(),
+            "Should have extracted some references"
+        );
+
+        // Spot-check: "Deep learning with differential privacy"
+        let dp = result.references.iter().find(|r| {
+            r.title
+                .as_ref()
+                .map(|t| t.contains("Deep learning with differential privacy"))
+                .unwrap_or(false)
+        });
+        assert!(dp.is_some(), "Should find differential privacy entry");
+        let dp = dp.unwrap();
+        assert!(
+            dp.authors.iter().any(|a| a.contains("Abadi")),
+            "Should have Abadi as author: {:?}",
+            dp.authors
+        );
+
+        // Spot-check: entry with arXiv in journal field
+        let arxiv_entry = result
+            .references
+            .iter()
+            .find(|r| r.arxiv_id.as_deref() == Some("2403.10573"));
+        assert!(
+            arxiv_entry.is_some(),
+            "Should extract arXiv ID from journal field"
+        );
+
+        // Spot-check: accented author (Jégou/Jegou)
+        let jegou = result.references.iter().find(|r| {
+            r.authors
+                .iter()
+                .any(|a| a.contains("gou") && (a.contains("é") || a.contains("e")))
+        });
+        assert!(jegou.is_some(), "Should find Jégou entry with accent");
+    }
+
+    #[test]
+    fn test_bib_cs_cy_all_files() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("test-data")
+            .join("arxiv")
+            .join("cs-cy-bbl-bib");
+
+        if !base.exists() {
+            return;
+        }
+
+        let bib_files: Vec<_> = std::fs::read_dir(&base)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("bib"))
+            })
+            .map(|e| e.path())
+            .collect();
+
+        assert!(
+            !bib_files.is_empty(),
+            "Should find .bib files in cs-cy-bbl-bib"
+        );
+
+        for path in &bib_files {
+            let filename = path.file_name().unwrap().to_string_lossy();
+            let result = extract_references_from_bib(path);
+            match &result {
+                Ok(res) => {
+                    eprintln!(
+                        "OK  {}: {} total, {} refs, {} skipped (no_title={}, short={}, no_authors={})",
+                        filename,
+                        res.skip_stats.total_raw,
+                        res.references.len(),
+                        res.skip_stats.no_title + res.skip_stats.short_title,
+                        res.skip_stats.no_title,
+                        res.skip_stats.short_title,
+                        res.skip_stats.no_authors,
+                    );
+                }
+                Err(e) => {
+                    eprintln!("ERR {}: {}", filename, e);
+                }
+            }
+            // All files should parse without error
+            assert!(
+                result.is_ok(),
+                "{} failed to parse: {:?}",
+                filename,
+                result.err()
             );
         }
     }

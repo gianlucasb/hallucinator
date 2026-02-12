@@ -62,6 +62,7 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub is_pdf: bool,
     pub is_bbl: bool,
+    pub is_bib: bool,
     pub is_archive: bool,
     pub is_json: bool,
 }
@@ -92,6 +93,7 @@ impl FilePickerState {
                 is_dir: true,
                 is_pdf: false,
                 is_bbl: false,
+                is_bib: false,
                 is_archive: false,
                 is_json: false,
             });
@@ -117,6 +119,7 @@ impl FilePickerState {
                         is_dir: true,
                         is_pdf: false,
                         is_bbl: false,
+                        is_bib: false,
                         is_archive: false,
                         is_json: false,
                     });
@@ -124,6 +127,7 @@ impl FilePickerState {
                     let ext = path.extension().and_then(|e| e.to_str());
                     let is_pdf = ext.map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false);
                     let is_bbl = ext.map(|e| e.eq_ignore_ascii_case("bbl")).unwrap_or(false);
+                    let is_bib = ext.map(|e| e.eq_ignore_ascii_case("bib")).unwrap_or(false);
                     let is_archive = hallucinator_pdf::archive::is_archive_path(&path);
                     let is_json = ext.map(|e| e.eq_ignore_ascii_case("json")).unwrap_or(false);
                     files.push(FileEntry {
@@ -132,6 +136,7 @@ impl FilePickerState {
                         is_dir: false,
                         is_pdf,
                         is_bbl,
+                        is_bib,
                         is_archive,
                         is_json,
                     });
@@ -150,10 +155,10 @@ impl FilePickerState {
         self.scroll_offset = 0;
     }
 
-    /// Toggle selection of the current entry (PDFs, .bbl files, archives, and .json results).
+    /// Toggle selection of the current entry (PDFs, .bbl, .bib files, archives, and .json results).
     pub fn toggle_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_pdf || entry.is_bbl || entry.is_archive || entry.is_json {
+            if entry.is_pdf || entry.is_bbl || entry.is_bib || entry.is_archive || entry.is_json {
                 if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
                     self.selected.remove(pos);
                 } else {

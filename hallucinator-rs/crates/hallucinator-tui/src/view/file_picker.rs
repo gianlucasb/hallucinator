@@ -31,7 +31,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let header = Line::from(vec![
         Span::styled(" HALLUCINATOR ", theme.header_style()),
         Span::styled(
-            " > Select PDFs / .bbl / Archives / Results (.json)",
+            " > Select PDFs / .bbl / .bib / Archives / Results (.json)",
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -61,7 +61,12 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         .map(|entry| {
             let (icon, style) = if entry.is_dir {
                 ("\u{1F4C1} ", Style::default().fg(theme.active))
-            } else if entry.is_pdf || entry.is_bbl || entry.is_archive || entry.is_json {
+            } else if entry.is_pdf
+                || entry.is_bbl
+                || entry.is_bib
+                || entry.is_archive
+                || entry.is_json
+            {
                 let selected = picker.is_selected(&entry.path);
                 if selected {
                     (
@@ -111,7 +116,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(theme.dim),
             )),
             Line::from(Span::styled(
-                "  Navigate to PDFs, .bbl, archives, or .json results and press Space to select",
+                "  Navigate to PDFs, .bbl, .bib, archives, or .json results and press Space to select",
                 Style::default().fg(theme.dim),
             )),
         ]

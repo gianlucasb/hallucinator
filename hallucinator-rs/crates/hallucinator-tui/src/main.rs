@@ -37,7 +37,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// PDF or .bbl files to check
+    /// PDF, .bbl, or .bib files to check
     file_paths: Vec<PathBuf>,
 
     /// OpenAlex API key
