@@ -41,6 +41,11 @@ jobs:
         with:
           platforms: arm64
 
+      - uses: actions/setup-python@v5
+        if: runner.os != 'Linux'
+        with:
+          python-version: "3.12"
+
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
@@ -49,7 +54,7 @@ jobs:
           args: --release --out dist
           working-directory: hallucinator-rs
           manylinux: auto
-          before-script-linux: apt-get update && apt-get -y install libfontconfig1-dev
+          before-script-linux: apt-get update && apt-get -y install libfontconfig1-dev libssl-dev
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -76,6 +81,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: astral-sh/setup-uv@v5
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -89,8 +96,8 @@ jobs:
       - name: Install wheel + test deps
         shell: bash
         run: |
-          pip install pytest
-          pip install dist/*.whl
+          uv pip install --system pytest
+          uv pip install --system dist/*.whl
 
       - name: Run tests
         run: pytest hallucinator-rs/tests/ -m "not network" -v

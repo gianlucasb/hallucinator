@@ -43,16 +43,19 @@ jobs:
           submodules: recursive
           fetch-depth: 500
 
+      - uses: astral-sh/setup-uv@v5
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - run: sudo apt-get update && sudo apt-get -y install libfontconfig1-dev
 
-      - run: pip install pytest maturin
+      - name: Install deps
+        run: uv pip install --system pytest maturin
 
       - name: Build + install bindings
-        run: maturin develop --release
+        run: uv run --no-project maturin develop --release
         working-directory: hallucinator-rs
 
       - name: Run tests

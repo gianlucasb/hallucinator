@@ -1,9 +1,10 @@
 use regex::Regex;
 
 /// Controls how a list of patterns/values is overridden from its defaults.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ListOverride<T> {
     /// Use the built-in defaults.
+    #[default]
     Default,
     /// Completely replace the defaults with these values.
     Replace(Vec<T>),
@@ -23,12 +24,6 @@ impl<T: Clone> ListOverride<T> {
                 result
             }
         }
-    }
-}
-
-impl<T> Default for ListOverride<T> {
-    fn default() -> Self {
-        ListOverride::Default
     }
 }
 
