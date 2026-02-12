@@ -23,7 +23,19 @@ for r in results:
 
 ## Installation
 
-Requires Python 3.9+ and a Rust toolchain.
+### From PyPI (recommended)
+
+Pre-compiled wheels for Python 3.12 — no Rust toolchain needed:
+
+```bash
+pip install hallucinator
+```
+
+Available platforms: Linux (x86_64), macOS (x86_64 + Apple Silicon), Windows (x86_64).
+
+### From source
+
+Requires Python 3.9+ and a Rust toolchain ([rustup.rs](https://rustup.rs/)).
 
 ```bash
 cd hallucinator-rs
@@ -31,17 +43,14 @@ cd hallucinator-rs
 # Using uv (recommended)
 uv venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 uv pip install maturin
-maturin develop
+maturin develop --release
 
 # Or with pip
 pip install maturin
-maturin develop
-
-# Release build (slower to compile, faster at runtime)
 maturin develop --release
 ```
 
-After `maturin develop`, the `hallucinator` package is importable:
+After installation, the `hallucinator` package is importable:
 
 ```python
 >>> import hallucinator

@@ -1063,7 +1063,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "hallucinator-acl"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-bbl"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "biblatex",
  "hallucinator-pdf",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-cli"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "hallucinator-acl",
  "hallucinator-dblp",
@@ -1134,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-dblp"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-pdf"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "flate2",
  "mupdf",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-python"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "hallucinator-acl",
  "hallucinator-core",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-tui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-web"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",

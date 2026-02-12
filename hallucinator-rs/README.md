@@ -6,7 +6,33 @@ Same validation engine as the Python version — queries 10 academic databases i
 
 ---
 
-## Building
+## Python Bindings
+
+Pre-compiled wheels are available — no Rust toolchain needed:
+
+```bash
+pip install hallucinator
+```
+
+```python
+from hallucinator import PdfExtractor, Validator, ValidatorConfig
+
+ext = PdfExtractor()
+result = ext.extract("paper.pdf")
+
+config = ValidatorConfig()
+validator = Validator(config)
+results = validator.check(result.references)
+
+for r in results:
+    print(f"[{r.status}] {r.title}")
+```
+
+Available for Python 3.12 on Linux (x86_64), macOS (x86_64 + Apple Silicon), and Windows (x86_64). See **[PYTHON_BINDINGS.md](PYTHON_BINDINGS.md)** for full API docs.
+
+---
+
+## Building from Source
 
 Requires a Rust toolchain. Install from [rustup.rs](https://rustup.rs/) or [rust-lang.org/tools/install](https://rust-lang.org/tools/install/).
 
@@ -209,6 +235,7 @@ Each reference is checked against all enabled databases concurrently. First veri
 | `hallucinator-cli` | CLI binary |
 | `hallucinator-tui` | Terminal UI (Ratatui) |
 | `hallucinator-web` | Web interface |
+| `hallucinator-python` | Python bindings (PyO3) — the `pip install hallucinator` package |
 
 ### Concurrency Model
 
