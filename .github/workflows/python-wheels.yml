@@ -21,25 +21,21 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+            maturin-args: --release --out dist --find-interpreter
           - os: macos-latest
             target: x86_64-apple-darwin
+            maturin-args: --release --out dist -i python3.12
           - os: macos-latest
             target: aarch64-apple-darwin
+            maturin-args: --release --out dist -i python3.12
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            maturin-args: --release --out dist -i python3.12
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 500
-
-      - name: Set up QEMU (Linux aarch64 cross-compile)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - uses: actions/setup-python@v5
         if: runner.os != 'Linux'
@@ -53,19 +49,11 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
+          args: ${{ matrix.maturin-args }}
           working-directory: hallucinator-rs
-          manylinux: auto
+          manylinux: "2_28"
           before-script-linux: |
-            if command -v yum &> /dev/null; then
-              yum install -y fontconfig-devel clang-devel
-            elif command -v dnf &> /dev/null; then
-              dnf install -y fontconfig-devel clang-devel
-            elif command -v apk &> /dev/null; then
-              apk add fontconfig-dev clang-dev
-            else
-              apt-get update && apt-get -y install libfontconfig1-dev libclang-dev
-            fi
+            dnf install -y fontconfig-devel clang-devel
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
