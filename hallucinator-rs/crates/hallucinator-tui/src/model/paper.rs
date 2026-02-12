@@ -10,6 +10,73 @@ pub enum RefPhase {
     Done,
 }
 
+/// Reason a user marked a reference as a false positive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FpReason {
+    /// Citation parsing failed, title garbled.
+    BrokenParse,
+    /// Found on Google Scholar or another source not checked by the tool.
+    ExistsElsewhere,
+    /// All databases timed out; reference likely exists.
+    AllTimedOut,
+    /// User personally knows this reference is real.
+    KnownGood,
+}
+
+impl FpReason {
+    /// Cycle: None → BrokenParse → ExistsElsewhere → AllTimedOut → KnownGood → None.
+    pub fn cycle(current: Option<FpReason>) -> Option<FpReason> {
+        match current {
+            None => Some(FpReason::BrokenParse),
+            Some(FpReason::BrokenParse) => Some(FpReason::ExistsElsewhere),
+            Some(FpReason::ExistsElsewhere) => Some(FpReason::AllTimedOut),
+            Some(FpReason::AllTimedOut) => Some(FpReason::KnownGood),
+            Some(FpReason::KnownGood) => None,
+        }
+    }
+
+    /// Short label for the verdict column (e.g. "parse", "GS").
+    pub fn short_label(self) -> &'static str {
+        match self {
+            FpReason::BrokenParse => "parse",
+            FpReason::ExistsElsewhere => "GS",
+            FpReason::AllTimedOut => "timeout",
+            FpReason::KnownGood => "known",
+        }
+    }
+
+    /// Human-readable description for the detail banner.
+    pub fn description(self) -> &'static str {
+        match self {
+            FpReason::BrokenParse => "Broken citation parse",
+            FpReason::ExistsElsewhere => "Found on Google Scholar / other source",
+            FpReason::AllTimedOut => "All databases timed out",
+            FpReason::KnownGood => "User verified as real",
+        }
+    }
+
+    /// JSON-serializable string key.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FpReason::BrokenParse => "broken_parse",
+            FpReason::ExistsElsewhere => "exists_elsewhere",
+            FpReason::AllTimedOut => "all_timed_out",
+            FpReason::KnownGood => "known_good",
+        }
+    }
+
+    /// Parse from a JSON string key.
+    pub fn from_str(s: &str) -> Option<FpReason> {
+        match s {
+            "broken_parse" => Some(FpReason::BrokenParse),
+            "exists_elsewhere" => Some(FpReason::ExistsElsewhere),
+            "all_timed_out" => Some(FpReason::AllTimedOut),
+            "known_good" => Some(FpReason::KnownGood),
+            _ => None,
+        }
+    }
+}
+
 /// State of a single reference within a paper.
 #[derive(Debug, Clone)]
 pub struct RefState {
@@ -17,32 +84,37 @@ pub struct RefState {
     pub title: String,
     pub phase: RefPhase,
     pub result: Option<ValidationResult>,
-    /// User has marked this reference as safe (false positive override).
-    pub marked_safe: bool,
+    /// Why the user marked this reference as a false positive, or None if not overridden.
+    pub fp_reason: Option<FpReason>,
 }
 
 impl RefState {
-    pub fn verdict_label(&self) -> &str {
-        if self.marked_safe {
-            return "\u{2713} Safe (FP)";
+    /// Whether the user has marked this reference as safe (any FP reason).
+    pub fn is_marked_safe(&self) -> bool {
+        self.fp_reason.is_some()
+    }
+
+    pub fn verdict_label(&self) -> String {
+        if let Some(reason) = self.fp_reason {
+            return format!("\u{2713} Safe ({})", reason.short_label());
         }
         match &self.result {
             None => match self.phase {
-                RefPhase::Pending => "\u{2014}",
-                RefPhase::Checking => "...",
-                RefPhase::Retrying => "retrying...",
-                RefPhase::Done => "\u{2014}",
+                RefPhase::Pending => "\u{2014}".to_string(),
+                RefPhase::Checking => "...".to_string(),
+                RefPhase::Retrying => "retrying...".to_string(),
+                RefPhase::Done => "\u{2014}".to_string(),
             },
             Some(r) => match r.status {
                 Status::Verified => {
                     if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
-                        "\u{2620} RETRACTED"
+                        "\u{2620} RETRACTED".to_string()
                     } else {
-                        "\u{2713} Verified"
+                        "\u{2713} Verified".to_string()
                     }
                 }
-                Status::NotFound => "\u{2717} Not Found",
-                Status::AuthorMismatch => "\u{26A0} Mismatch",
+                Status::NotFound => "\u{2717} Not Found".to_string(),
+                Status::AuthorMismatch => "\u{26A0} Mismatch".to_string(),
             },
         }
     }

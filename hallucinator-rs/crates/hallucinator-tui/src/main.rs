@@ -516,7 +516,8 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(ref dir) = run_dir {
                                 let pi = *paper_index;
                                 if let Some(paper) = app.papers.get(pi) {
-                                    persistence::save_paper_results(dir, pi, paper);
+                                    let rs = app.ref_states.get(pi).map(|v| v.as_slice()).unwrap_or(&[]);
+                                    persistence::save_paper_results(dir, pi, paper, rs);
                                 }
                             }
                         }

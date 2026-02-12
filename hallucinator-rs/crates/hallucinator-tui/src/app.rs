@@ -12,7 +12,7 @@ use hallucinator_core::{DbStatus, ProgressEvent, Reference};
 use crate::action::Action;
 use crate::model::activity::{ActiveQuery, ActivityState};
 use crate::model::config::ConfigState;
-use crate::model::paper::{PaperFilter, PaperSortOrder, RefPhase, RefState};
+use crate::model::paper::{FpReason, PaperFilter, PaperSortOrder, RefPhase, RefState};
 use crate::model::queue::{
     filtered_indices, PaperPhase, PaperState, PaperVerdict, QueueFilter, SortOrder,
 };
@@ -833,8 +833,13 @@ impl App {
                             .iter()
                             .filter_map(|&i| self.papers.get(i))
                             .collect();
+                        let ref_states: Vec<&[RefState]> = paper_indices
+                            .iter()
+                            .filter_map(|&i| self.ref_states.get(i).map(|v| v.as_slice()))
+                            .collect();
                         match crate::export::export_results(
                             &papers,
+                            &ref_states,
                             self.export_state.format,
                             std::path::Path::new(&path),
                         ) {
@@ -1231,25 +1236,25 @@ impl App {
                         }
                     }
                     Screen::Paper(idx) => {
-                        // Space on paper: toggle marked_safe on current reference
+                        // Space on paper: cycle FP reason on current reference
                         let idx = *idx;
                         let indices = self.paper_ref_indices(idx);
                         if self.paper_cursor < indices.len() {
                             let ref_idx = indices[self.paper_cursor];
                             if let Some(refs) = self.ref_states.get_mut(idx) {
                                 if let Some(rs) = refs.get_mut(ref_idx) {
-                                    rs.marked_safe = !rs.marked_safe;
+                                    rs.fp_reason = FpReason::cycle(rs.fp_reason);
                                 }
                             }
                         }
                     }
                     Screen::RefDetail(paper_idx, ref_idx) => {
-                        // Space on detail: toggle marked_safe
+                        // Space on detail: cycle FP reason
                         let paper_idx = *paper_idx;
                         let ref_idx = *ref_idx;
                         if let Some(refs) = self.ref_states.get_mut(paper_idx) {
                             if let Some(rs) = refs.get_mut(ref_idx) {
-                                rs.marked_safe = !rs.marked_safe;
+                                rs.fp_reason = FpReason::cycle(rs.fp_reason);
                             }
                         }
                     }
@@ -1567,7 +1572,7 @@ impl App {
                             title,
                             phase: RefPhase::Pending,
                             result: None,
-                            marked_safe: false,
+                            fp_reason: None,
                         })
                         .collect();
                 }

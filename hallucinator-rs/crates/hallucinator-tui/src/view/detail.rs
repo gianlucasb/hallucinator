@@ -44,10 +44,10 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
     // --- Content ---
     let mut lines: Vec<Line> = Vec::new();
 
-    // Safe marker
-    if rs.marked_safe {
+    // Safe marker (FP reason)
+    if let Some(reason) = rs.fp_reason {
         lines.push(Line::from(Span::styled(
-            "  \u{2713} Marked as SAFE (false positive)",
+            format!("  \u{2713} Marked as SAFE \u{2014} {}", reason.description()),
             Style::default()
                 .fg(theme.verified)
                 .add_modifier(Modifier::BOLD),
@@ -351,7 +351,7 @@ fn url_line(lines: &mut Vec<Line<'_>>, label: &str, url: &str, theme: &Theme) {
 
 fn render_footer(f: &mut Frame, area: Rect, theme: &Theme) {
     let footer = Line::from(Span::styled(
-        " j/k:scroll  Space:toggle safe  Ctrl+r:retry  y:copy ref  Esc:back  ?:help",
+        " j/k:scroll  Space:cycle FP reason  Ctrl+r:retry  y:copy ref  Esc:back  ?:help",
         theme.footer_style(),
     ));
     f.render_widget(Paragraph::new(footer), area);
