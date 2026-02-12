@@ -804,17 +804,91 @@ def find_references_section(text):
         if match:
             ref_start = match.end()
             # Find end markers (Appendix, Acknowledgments, Ethics, etc.)
-            end_marker = r'\n\s*(?:Appendix|Acknowledge?ments?|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|Paper\s+Checklist|Checklist)\b'
+            # Also detect single-letter appendix markers (A Proofs, B Methods)
+            # and TOC dot leaders (. . . . . page numbers)
+            # End markers with appropriate flags
+            # Case-insensitive for keywords, case-sensitive for appendix letter pattern
+            end_markers_icase = [
+                r'\n\s*(?:Appendix|Acknowledge?ments?|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|Paper\s+Checklist|Checklist|Contents)\b',
+                r'(?:\.\s*){5,}',  # TOC dot leaders (5+ dots with optional spaces)
+            ]
+            # Case-sensitive: single letter + capitalized word (A Proofs, B Methods)
+            # Must NOT use IGNORECASE or it will match "A dataset..." etc.
+            end_markers_case = [
+                r'\n\s*[A-Z]\s+[A-Z][a-zA-Z-]+(?:\s+[a-zA-Z-]+)*\s*\n',
+            ]
             ref_end = len(text)
-            end_match = re.search(end_marker, text[ref_start:], re.IGNORECASE)
-            if end_match:
-                ref_end = ref_start + end_match.start()
+            for end_marker in end_markers_icase:
+                end_match = re.search(end_marker, text[ref_start:], re.IGNORECASE)
+                if end_match:
+                    ref_end = min(ref_end, ref_start + end_match.start())
+            for end_marker in end_markers_case:
+                end_match = re.search(end_marker, text[ref_start:])
+                if end_match:
+                    ref_end = min(ref_end, ref_start + end_match.start())
 
-            return text[ref_start:ref_end]
+            ref_text = text[ref_start:ref_end]
+            # Strip running headers (common in ACM papers)
+            ref_text = strip_running_headers(ref_text)
+            return ref_text
 
     # Fallback: try last 30% of document
     cutoff = int(len(text) * 0.7)
-    return text[cutoff:]
+    return strip_running_headers(text[cutoff:])
+
+
+def strip_running_headers(text):
+    """Remove running headers that appear at page boundaries in references.
+
+    ACM papers have headers like:
+    - "CONFERENCE 'YY, Month DD–DD, YYYY, City, Country"
+    - "Paper Title Here"
+    - "A. Author, B. Author, and C. Author"
+
+    These get mixed into references when they span page boundaries.
+    """
+    # Pattern for ACM-style venue headers
+    # e.g., "ASIA CCS '26, June 01–05, 2026, Bangalore, India"
+    # Matches: CONF_NAME 'YY, Month DD–DD, YYYY, Location
+    # Note: Uses Unicode right single quote (U+2019) and en-dash (U+2013)
+    venue_pattern = r"^[A-Z][A-Z\s&]+\s*['\u2019]\d{2},\s+[A-Z][a-z]+\s+\d{1,2}[\u2013\-]+\d{1,2},\s+\d{4},\s+[A-Z][A-Za-z\s,]+$"
+
+    # Pattern for abbreviated author headers
+    # e.g., "O.A Akanji, M. Egele, and G. Stringhini"
+    author_header_pattern = r'^[A-Z]\.?[A-Z]?\s+[A-Z][a-z]+(?:,\s+[A-Z]\.?\s*[A-Z]?\.?\s*[A-Z][a-z]+)*(?:,?\s+and\s+[A-Z]\.?\s*[A-Z]?\.?\s*[A-Z][a-z]+)?$'
+
+    lines = text.split('\n')
+    filtered_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Check if this line matches venue pattern
+        if re.match(venue_pattern, line):
+            # Skip this line and check adjacent lines for paper title/authors
+            # Check previous line (might be paper title)
+            if filtered_lines and len(filtered_lines[-1].strip()) > 20:
+                prev_line = filtered_lines[-1].strip()
+                # If previous line looks like a title (not a reference continuation), remove it
+                if not re.match(r'^\[\d+\]', prev_line) and not re.match(r'^\d+\.', prev_line):
+                    # Check if it's not a normal sentence (titles usually don't end with period followed by venue)
+                    if not prev_line.endswith('.') or 'doi:' not in lines[i-1] if i > 0 else True:
+                        filtered_lines.pop()
+            # Skip the venue line
+            i += 1
+            continue
+
+        # Check if this line matches author header pattern
+        if re.match(author_header_pattern, line) and len(line) < 100:
+            # This is likely a running header with authors, skip it
+            i += 1
+            continue
+
+        filtered_lines.append(lines[i])
+        i += 1
+
+    return '\n'.join(filtered_lines)
 
 
 def segment_references(ref_text):
@@ -828,6 +902,22 @@ def segment_references(ref_text):
         for i, match in enumerate(ieee_matches):
             start = match.end()
             end = ieee_matches[i + 1].start() if i + 1 < len(ieee_matches) else len(ref_text)
+            ref_content = ref_text[start:end].strip()
+            if ref_content:
+                refs.append(ref_content)
+        return refs
+
+    # Try alphabetic citation keys: [ACGH20], [CCY20], etc. (common in crypto/theory papers)
+    # Pattern: uppercase letters (author initials) followed by 2-4 digits (year)
+    # Also handles lowercase variants like [ABC+20] or [ABCea20]
+    alpha_cite_pattern = r'\n\s*\[([A-Za-z+]+\d{2,4}[a-z]?)\]\s*'
+    alpha_matches = list(re.finditer(alpha_cite_pattern, ref_text))
+
+    if len(alpha_matches) >= 3:
+        refs = []
+        for i, match in enumerate(alpha_matches):
+            start = match.end()
+            end = alpha_matches[i + 1].start() if i + 1 < len(alpha_matches) else len(ref_text)
             ref_content = ref_text[start:end].strip()
             if ref_content:
                 refs.append(ref_content)
@@ -927,6 +1017,38 @@ def segment_references(ref_text):
             end = ref_starts[i + 1] if i + 1 < len(ref_starts) else len(ref_text)
             ref_content = ref_text[start:end].strip()
             # Remove trailing page number if present (standalone number at end)
+            ref_content = re.sub(r'\n+\d+\s*$', '', ref_content).strip()
+            if ref_content and len(ref_content) > 20:
+                refs.append(ref_content)
+        return refs
+
+    # Try economics/math style: ", YYYY.\nAuthorName" (year at end, no parentheses)
+    # e.g., "...pages 619–636, 2015.\nDaron Acemoglu, Ali Makhdoumi..."
+    # Pattern: ends with ", YYYY." or "), YYYY." then new line starts with author name
+    # Author pattern: FirstName LastName, FirstName LastName, ... or single capitalized name
+    econ_pattern = r'[,)]\s*\d{4}[a-z]?\.\n+([A-Z][a-zA-Z\u00C0-\u024F]+(?:[ -][A-Za-z\u00C0-\u024F]+)*[,\s]+(?:[A-Z]\.?\s*)?[A-Z][a-zA-Z\u00C0-\u024F-]+)'
+    econ_matches = list(re.finditer(econ_pattern, ref_text))
+
+    if len(econ_matches) >= 5:
+        refs = []
+        # First reference: from start to first match
+        first_ref = ref_text[:econ_matches[0].start() + econ_matches[0].group().index('\n')].strip()
+        # Include up to the period after year
+        period_pos = first_ref.rfind('.')
+        if period_pos > 0:
+            first_ref = first_ref[:period_pos + 1].strip()
+        if first_ref and len(first_ref) > 20:
+            refs.append(first_ref)
+        # Remaining references: from author name to next match
+        for i, match in enumerate(econ_matches):
+            start = match.start(1)  # Start at the author name (group 1)
+            if i + 1 < len(econ_matches):
+                end_match = econ_matches[i + 1]
+                end = end_match.start() + end_match.group().index('\n') + 1
+            else:
+                end = len(ref_text)
+            ref_content = ref_text[start:end].strip()
+            # Remove trailing page numbers
             ref_content = re.sub(r'\n+\d+\s*$', '', ref_content).strip()
             if ref_content and len(ref_content) > 20:
                 refs.append(ref_content)
@@ -1296,9 +1418,13 @@ def extract_title_from_reference(ref_text):
     # === Format 1b: LNCS/Springer - "Authors, I.: Title. In: Venue" ===
     # Pattern: Authors end with initial + colon, then title
     # Example: "Allix, K., Bissyandé, T.F.: Androzoo: Collecting millions. In: Proceedings"
+    # Example: "Paulson, L.C.: Extending sledgehammer. Journal of..."
+    # Example: "Klein, G., et al.: sel4: Formal verification. In: Proceedings"
     # The colon after author initials marks the start of the title
     # Match: comma/space + Initial(s) + colon (not just any word + colon)
-    lncs_match = re.search(r'[,\s][A-Z]\.(?:[-–][A-Z]\.)?\s*:\s*(.+)', ref_text)
+    # Handles: X.: or X.Y.: or X.-Y.: or X.Y.Z.: (multiple consecutive initials)
+    # Also handles: "et al.:" pattern
+    lncs_match = re.search(r'(?:[,\s][A-Z]\.(?:[-–]?[A-Z]\.)*|et\s+al\.)\s*:\s*(.+)', ref_text)
     if lncs_match:
         after_colon = lncs_match.group(1).strip()
         # Find where title ends - at ". In:" or ". In " or journal patterns or (Year)
@@ -1306,7 +1432,9 @@ def extract_title_from_reference(ref_text):
             r'\.\s*[Ii]n:\s+',           # ". In: " (LNCS uses colon)
             r'\.\s*[Ii]n\s+[A-Z]',       # ". In Proceedings"
             r'\.\s*(?:Proceedings|IEEE|ACM|USENIX|NDSS|arXiv)',
-            r'\.\s*[A-Z][a-zA-Z\s]+(?:Access|Journal|Review|Transactions)',  # Journal name
+            r'\.\s*(?:Journal|Transactions|Review|Advances)\s+(?:of|on|in)\s+',  # ". Journal of X"
+            r'\.\s*[A-Z][a-zA-Z\s]+(?:Access|Journal|Review|Transactions)',  # "X Journal" ending
+            r'\.\s*[A-Z][a-z]+\s+\d+\s*\(',  # ". Nature 123(" - journal with volume
             r'\.\s*https?://',           # URL follows title
             r'\.\s*pp?\.\s*\d+',         # Page numbers
             r'\s+\((?:19|20)\d{2}\)\s*[,.]?\s*(?:https?://|$)',  # (Year) followed by URL or end
