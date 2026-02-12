@@ -2,8 +2,10 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 
+use crate::config::PdfParsingConfig;
+
 /// Common compound-word suffixes that should keep the hyphen.
-static COMPOUND_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+pub(crate) static COMPOUND_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         "centered",
         "based",
@@ -63,10 +65,20 @@ pub fn expand_ligatures(text: &str) -> String {
 /// - `"detec- tion"` or `"detec-\ntion"` → `"detection"` (syllable break)
 /// - `"human- centered"` → `"human-centered"` (compound word)
 pub fn fix_hyphenation(text: &str) -> String {
+    fix_hyphenation_with_config(text, &PdfParsingConfig::default())
+}
+
+/// Config-aware version of [`fix_hyphenation`].
+pub(crate) fn fix_hyphenation_with_config(text: &str, config: &PdfParsingConfig) -> String {
     static RE: Lazy<Regex> = Lazy::new(|| {
         // Match: word-char, hyphen, whitespace (including newlines), then word chars
         Regex::new(r"(\w)-\s+(\w)(\w*)").unwrap()
     });
+
+    // Resolve compound suffixes: convert defaults to owned Strings for uniform handling
+    let default_suffixes: Vec<String> = COMPOUND_SUFFIXES.iter().map(|s| s.to_string()).collect();
+    let resolved = config.compound_suffixes.resolve(&default_suffixes);
+    let suffix_set: HashSet<String> = resolved.into_iter().collect();
 
     RE.replace_all(text, |caps: &regex::Captures| {
         let before = &caps[1];
@@ -77,7 +89,7 @@ pub fn fix_hyphenation(text: &str) -> String {
         let after_lower = after_word.to_lowercase();
 
         // Check if the word after the hyphen is a common compound suffix
-        for suffix in COMPOUND_SUFFIXES.iter() {
+        for suffix in suffix_set.iter() {
             if after_lower == *suffix
                 || after_lower.starts_with(&format!("{} ", suffix))
                 || after_lower.starts_with(&format!("{},", suffix))
@@ -88,7 +100,7 @@ pub fn fix_hyphenation(text: &str) -> String {
 
         // Check if the full word (stripped of trailing punctuation) matches a suffix
         let stripped = after_lower.trim_end_matches(['.', ',', ';', ':']);
-        if COMPOUND_SUFFIXES.contains(stripped) {
+        if suffix_set.contains(stripped) {
             return format!("{}-{}", before, after_word);
         }
 
@@ -135,5 +147,51 @@ mod tests {
         let input = "We use a human- centered approach for detec- tion of data- driven models.";
         let expected = "We use a human-centered approach for detection of data-driven models.";
         assert_eq!(fix_hyphenation(input), expected);
+    }
+
+    // ── Config-aware tests ──
+
+    #[test]
+    fn test_fix_hyphenation_custom_suffix() {
+        use crate::PdfParsingConfigBuilder;
+        let config = PdfParsingConfigBuilder::new()
+            .add_compound_suffix("powered".to_string())
+            .build()
+            .unwrap();
+        // "AI- powered" should keep hyphen with custom suffix
+        assert_eq!(
+            fix_hyphenation_with_config("AI- powered", &config),
+            "AI-powered"
+        );
+        // Default behavior still works
+        assert_eq!(
+            fix_hyphenation_with_config("human- centered", &config),
+            "human-centered"
+        );
+        // Syllable break still works
+        assert_eq!(
+            fix_hyphenation_with_config("detec- tion", &config),
+            "detection"
+        );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_replace_suffixes() {
+        use crate::PdfParsingConfigBuilder;
+        // Replace ALL suffixes — only "powered" is a compound suffix now
+        let config = PdfParsingConfigBuilder::new()
+            .set_compound_suffixes(vec!["powered".to_string()])
+            .build()
+            .unwrap();
+        // "AI- powered" keeps hyphen
+        assert_eq!(
+            fix_hyphenation_with_config("AI- powered", &config),
+            "AI-powered"
+        );
+        // "human- centered" is NO LONGER a compound suffix (defaults replaced)
+        assert_eq!(
+            fix_hyphenation_with_config("human- centered", &config),
+            "humancentered"
+        );
     }
 }

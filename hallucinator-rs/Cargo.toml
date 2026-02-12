@@ -9,6 +9,7 @@ members = [
     "crates/hallucinator-cli",
     "crates/hallucinator-web",
     "crates/hallucinator-tui",
+    "crates/hallucinator-python",
 ]
 
 [workspace.package]
@@ -92,3 +93,6 @@ biblatex = "0.11"
 # Error handling
 thiserror = "2"
 anyhow = "1"
+
+# Python bindings
+pyo3 = { version = "0.23", features = ["extension-module"] }

@@ -1,17 +1,29 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+use crate::config::PdfParsingConfig;
+
 /// Locate the references section in the document text.
 ///
 /// Searches for common reference section headers (References, Bibliography, Works Cited)
 /// and returns the text between the header and any end markers (Appendix, Acknowledgments, etc.).
 /// Falls back to the last 30% of the document if no header is found.
 pub fn find_references_section(text: &str) -> Option<String> {
+    find_references_section_with_config(text, &PdfParsingConfig::default())
+}
+
+/// Config-aware version of [`find_references_section`].
+pub(crate) fn find_references_section_with_config(
+    text: &str,
+    config: &PdfParsingConfig,
+) -> Option<String> {
     static HEADER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)\n\s*(?:References|Bibliography|Works\s+Cited)\s*\n").unwrap()
     });
 
-    if let Some(m) = HEADER_RE.find(text) {
+    let header_re = config.section_header_re.as_ref().unwrap_or(&HEADER_RE);
+
+    if let Some(m) = header_re.find(text) {
         let ref_start = m.end();
         let rest = &text[ref_start..];
 
@@ -20,7 +32,9 @@ pub fn find_references_section(text: &str) -> Option<String> {
                 .unwrap()
         });
 
-        let ref_end = if let Some(end_m) = END_RE.find(rest) {
+        let end_re = config.section_end_re.as_ref().unwrap_or(&END_RE);
+
+        let ref_end = if let Some(end_m) = end_re.find(rest) {
             end_m.start()
         } else {
             rest.len()
@@ -32,8 +46,8 @@ pub fn find_references_section(text: &str) -> Option<String> {
         }
     }
 
-    // Fallback: last 30% of document
-    let cutoff = (text.len() as f64 * 0.7) as usize;
+    // Fallback: last N% of document (default 30%, i.e. fraction = 0.7)
+    let cutoff = (text.len() as f64 * config.fallback_fraction) as usize;
     // Don't split in the middle of a UTF-8 codepoint
     let cutoff = text
         .char_indices()
@@ -52,13 +66,21 @@ pub fn find_references_section(text: &str) -> Option<String> {
 /// 4. Springer/Nature: lines starting with uppercase + `(YYYY)` pattern
 /// 5. Fallback: double-newline splitting
 pub fn segment_references(ref_text: &str) -> Vec<String> {
+    segment_references_with_config(ref_text, &PdfParsingConfig::default())
+}
+
+/// Config-aware version of [`segment_references`].
+pub(crate) fn segment_references_with_config(
+    ref_text: &str,
+    config: &PdfParsingConfig,
+) -> Vec<String> {
     // Strategy 1: IEEE style [1], [2], ...
-    if let Some(refs) = try_ieee(ref_text) {
+    if let Some(refs) = try_ieee_with_config(ref_text, config) {
         return refs;
     }
 
     // Strategy 2: Numbered list 1., 2., ...
-    if let Some(refs) = try_numbered(ref_text) {
+    if let Some(refs) = try_numbered_with_config(ref_text, config) {
         return refs;
     }
 
@@ -73,13 +95,14 @@ pub fn segment_references(ref_text: &str) -> Vec<String> {
     }
 
     // Strategy 5: Fallback — split by double newlines
-    fallback_double_newline(ref_text)
+    fallback_double_newline_with_config(ref_text, config)
 }
 
-fn try_ieee(ref_text: &str) -> Option<Vec<String>> {
+fn try_ieee_with_config(ref_text: &str, config: &PdfParsingConfig) -> Option<Vec<String>> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\s*\[(\d+)\]\s*").unwrap());
 
-    let matches: Vec<_> = RE.find_iter(ref_text).collect();
+    let re = config.ieee_segment_re.as_ref().unwrap_or(&RE);
+    let matches: Vec<_> = re.find_iter(ref_text).collect();
     if matches.len() < 3 {
         return None;
     }
@@ -100,18 +123,18 @@ fn try_ieee(ref_text: &str) -> Option<Vec<String>> {
     Some(refs)
 }
 
-fn try_numbered(ref_text: &str) -> Option<Vec<String>> {
+fn try_numbered_with_config(ref_text: &str, config: &PdfParsingConfig) -> Option<Vec<String>> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)(?:^|\n)\s*(\d+)\.\s+").unwrap());
 
-    let matches: Vec<_> = RE.find_iter(ref_text).collect();
+    let re = config.numbered_segment_re.as_ref().unwrap_or(&RE);
+    let matches: Vec<_> = re.find_iter(ref_text).collect();
     if matches.len() < 3 {
         return None;
     }
 
     // Extract the captured numbers to check sequentiality
-    static RE_CAP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)(?:^|\n)\s*(\d+)\.\s+").unwrap());
-
-    let caps: Vec<_> = RE_CAP.captures_iter(ref_text).collect();
+    // When using a custom regex, we still need capture group 1 for numbers
+    let caps: Vec<_> = re.captures_iter(ref_text).collect();
     let first_nums: Vec<i64> = caps
         .iter()
         .take(5)
@@ -271,10 +294,11 @@ fn try_springer_nature(ref_text: &str) -> Option<Vec<String>> {
     Some(refs)
 }
 
-fn fallback_double_newline(ref_text: &str) -> Vec<String> {
+fn fallback_double_newline_with_config(ref_text: &str, config: &PdfParsingConfig) -> Vec<String> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\s*\n").unwrap());
 
-    RE.split(ref_text)
+    let re = config.fallback_segment_re.as_ref().unwrap_or(&RE);
+    re.split(ref_text)
         .map(|p| p.trim())
         .filter(|p| !p.is_empty() && p.len() > 20)
         .map(|p| p.to_string())
@@ -330,5 +354,67 @@ mod tests {
         let text = "Body.\n\nBibliography\n\nSome refs here.\n";
         let section = find_references_section(text).unwrap();
         assert!(section.contains("Some refs here."));
+    }
+
+    // ── Config-aware tests ──
+
+    #[test]
+    fn test_find_section_custom_header_re() {
+        let config = crate::PdfParsingConfigBuilder::new()
+            .section_header_regex(r"(?i)\n\s*Literatur\s*\n")
+            .build()
+            .unwrap();
+        let text = "Body.\n\nLiteratur\n\nRef A.\nRef B.\n";
+        let section = find_references_section_with_config(text, &config).unwrap();
+        assert!(section.contains("Ref A."));
+    }
+
+    #[test]
+    fn test_find_section_custom_end_re() {
+        let config = crate::PdfParsingConfigBuilder::new()
+            .section_end_regex(r"(?i)\n\s*Anhang")
+            .build()
+            .unwrap();
+        let text = "Body.\n\nReferences\n\nRef one.\n\nAnhang\n\nExtra.";
+        let section = find_references_section_with_config(text, &config).unwrap();
+        assert!(section.contains("Ref one."));
+        assert!(!section.contains("Extra"));
+    }
+
+    #[test]
+    fn test_find_section_custom_fallback_fraction() {
+        let config = crate::PdfParsingConfigBuilder::new()
+            .fallback_fraction(0.5)
+            .build()
+            .unwrap();
+        // No header → fallback returns last 50%
+        let text = "AAAA BBBB CCCC DDDD";
+        let section = find_references_section_with_config(text, &config).unwrap();
+        // Should get roughly the last half
+        assert!(section.len() <= text.len() / 2 + 2);
+    }
+
+    #[test]
+    fn test_segment_custom_ieee_regex() {
+        let config = crate::PdfParsingConfigBuilder::new()
+            .ieee_segment_regex(r"\n\s*<<(\d+)>>\s*")
+            .build()
+            .unwrap();
+        let text = "\n<<1>> First ref text.\n<<2>> Second ref text.\n<<3>> Third ref.\n";
+        let refs = segment_references_with_config(text, &config);
+        assert_eq!(refs.len(), 3);
+        assert!(refs[0].starts_with("First"));
+    }
+
+    #[test]
+    fn test_segment_custom_fallback_regex() {
+        let config = crate::PdfParsingConfigBuilder::new()
+            .fallback_segment_regex(r"---+")
+            .build()
+            .unwrap();
+        let text = "First long enough reference text here.---Second long enough reference text here.---Third long enough reference text.";
+        // None of the numbered strategies will match, so fallback fires
+        let refs = segment_references_with_config(text, &config);
+        assert_eq!(refs.len(), 3);
     }
 }

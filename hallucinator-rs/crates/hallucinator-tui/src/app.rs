@@ -1206,8 +1206,7 @@ impl App {
                 self.export_state.active = true;
                 self.export_state.cursor = 0;
                 self.export_state.message = None;
-                self.export_state.output_path =
-                    self.export_default_path(self.export_state.scope);
+                self.export_state.output_path = self.export_default_path(self.export_state.scope);
             }
             Action::StartProcessing => {
                 if self.screen == Screen::Queue {

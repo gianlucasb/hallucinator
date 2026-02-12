@@ -1,6 +1,8 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+use crate::config::PdfParsingConfig;
+
 /// Special sentinel value indicating the reference uses em-dashes to
 /// indicate "same authors as previous entry."
 pub const SAME_AS_PREVIOUS: &str = "__SAME_AS_PREVIOUS__";
@@ -17,6 +19,14 @@ pub const SAME_AS_PREVIOUS: &str = "__SAME_AS_PREVIOUS__";
 /// Returns a list of author names, or `["__SAME_AS_PREVIOUS__"]` if the
 /// reference uses em-dashes.
 pub fn extract_authors_from_reference(ref_text: &str) -> Vec<String> {
+    extract_authors_from_reference_with_config(ref_text, &PdfParsingConfig::default())
+}
+
+/// Config-aware version of [`extract_authors_from_reference`].
+pub(crate) fn extract_authors_from_reference_with_config(
+    ref_text: &str,
+    config: &PdfParsingConfig,
+) -> Vec<String> {
     // Normalize whitespace
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
     let ref_text = WS_RE.replace_all(ref_text, " ");
@@ -75,11 +85,11 @@ pub fn extract_authors_from_reference(ref_text: &str) -> Vec<String> {
     // Check for AAAI format (semicolon-separated)
     static AAAI_CHECK: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Z][a-z]+,\s+[A-Z]\.").unwrap());
     if author_section.contains("; ") && AAAI_CHECK.is_match(author_section) {
-        return parse_aaai_authors(author_section);
+        return parse_aaai_authors_with_max(author_section, config.max_authors);
     }
 
     // General parsing
-    parse_general_authors(author_section)
+    parse_general_authors_with_max(author_section, config.max_authors)
 }
 
 /// Find the first "real" period — one that's not after an author initial like "M." or "J."
@@ -103,8 +113,7 @@ fn find_first_real_period(text: &str) -> Option<usize> {
     None
 }
 
-/// Parse AAAI-format authors: `"Surname, I.; Surname, I.; and Surname, I."`
-fn parse_aaai_authors(section: &str) -> Vec<String> {
+fn parse_aaai_authors_with_max(section: &str, max_authors: usize) -> Vec<String> {
     // Replace "; and " with "; "
     static AND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i);\s+and\s+").unwrap());
     let section = AND_RE.replace_all(section, "; ");
@@ -117,12 +126,11 @@ fn parse_aaai_authors(section: &str) -> Vec<String> {
         }
     }
 
-    authors.truncate(15);
+    authors.truncate(max_authors);
     authors
 }
 
-/// Parse general author format (comma-separated names with "and" / "&").
-fn parse_general_authors(section: &str) -> Vec<String> {
+fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<String> {
     // Normalize "and" and "&"
     static AND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i),?\s+and\s+").unwrap());
     let section = AND_RE.replace_all(section, ", ");
@@ -180,7 +188,7 @@ fn parse_general_authors(section: &str) -> Vec<String> {
         }
     }
 
-    authors.truncate(15);
+    authors.truncate(max_authors);
     authors
 }
 

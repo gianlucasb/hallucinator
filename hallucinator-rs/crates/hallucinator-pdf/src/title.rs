@@ -2,6 +2,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 
+use crate::config::PdfParsingConfig;
 use crate::text_processing::fix_hyphenation;
 
 /// Abbreviations that should NEVER be sentence boundaries (mid-title abbreviations).
@@ -26,6 +27,14 @@ static MID_SENTENCE_ABBREVIATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 ///
 /// Returns `(title, from_quotes)` where `from_quotes` indicates if the title was in quotes.
 pub fn extract_title_from_reference(ref_text: &str) -> (String, bool) {
+    extract_title_from_reference_with_config(ref_text, &PdfParsingConfig::default())
+}
+
+/// Config-aware version of [`extract_title_from_reference`].
+pub(crate) fn extract_title_from_reference_with_config(
+    ref_text: &str,
+    config: &PdfParsingConfig,
+) -> (String, bool) {
     // Normalize whitespace and fix hyphenation
     let ref_text = fix_hyphenation(ref_text);
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
@@ -33,7 +42,7 @@ pub fn extract_title_from_reference(ref_text: &str) -> (String, bool) {
     let ref_text = ref_text.trim();
 
     // === Format 1: IEEE/USENIX - Quoted titles ===
-    if let Some(result) = try_quoted_title(ref_text) {
+    if let Some(result) = try_quoted_title_with_config(ref_text, config) {
         return result;
     }
 
@@ -87,6 +96,15 @@ pub fn extract_title_from_reference(ref_text: &str) -> (String, bool) {
 
 /// Clean extracted title by removing trailing venue/metadata.
 pub fn clean_title(title: &str, from_quotes: bool) -> String {
+    clean_title_with_config(title, from_quotes, &PdfParsingConfig::default())
+}
+
+/// Config-aware version of [`clean_title`].
+pub(crate) fn clean_title_with_config(
+    title: &str,
+    from_quotes: bool,
+    config: &PdfParsingConfig,
+) -> String {
     if title.is_empty() {
         return String::new();
     }
@@ -117,7 +135,7 @@ pub fn clean_title(title: &str, from_quotes: bool) -> String {
     }
 
     // Apply cutoff patterns to remove trailing venue/metadata
-    title = apply_cutoff_patterns(&title);
+    title = apply_cutoff_patterns_with_config(&title, config);
 
     title = title.trim().to_string();
     static TRAILING_PUNCT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.,;:]+$").unwrap());
@@ -128,8 +146,11 @@ pub fn clean_title(title: &str, from_quotes: bool) -> String {
 
 // ───────────────── Format-specific extractors ─────────────────
 
-fn try_quoted_title(ref_text: &str) -> Option<(String, bool)> {
-    static QUOTE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+fn try_quoted_title_with_config(
+    ref_text: &str,
+    config: &PdfParsingConfig,
+) -> Option<(String, bool)> {
+    static DEFAULT_QUOTE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
             // Smart quotes (any combo of \u201c, \u201d, \u201c)
             Regex::new(r#"[\u{201c}\u{201d}"]([^\u{201c}\u{201d}"]+)[\u{201c}\u{201d}"]"#).unwrap(),
@@ -143,7 +164,9 @@ fn try_quoted_title(ref_text: &str) -> Option<(String, bool)> {
         ]
     });
 
-    for re in QUOTE_PATTERNS.iter() {
+    let resolved = config.quote_patterns.resolve(&DEFAULT_QUOTE_PATTERNS);
+
+    for re in resolved.iter() {
         if let Some(caps) = re.captures(ref_text) {
             let quoted_part = caps.get(1).unwrap().as_str().trim();
             let after_quote = ref_text[caps.get(0).unwrap().end()..].trim();
@@ -692,46 +715,51 @@ fn truncate_at_sentence_end(title: &str) -> String {
     title.to_string()
 }
 
-fn apply_cutoff_patterns(title: &str) -> String {
-    static CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
-        let j = r"[a-zA-Z&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars (no \s)
-        vec![
-            Regex::new(r"(?i)\.\s*[Ii]n:\s+[A-Z].*$").unwrap(),
-            Regex::new(r"(?i)\.\s*[Ii]n\s+[A-Z].*$").unwrap(),
-            Regex::new(r"(?i)[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR|PACM[- ]\w+).*$").unwrap(),
-            Regex::new(r"(?i)[.?!]\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$").unwrap(),
-            Regex::new(r"(?i)[.?!]\s+International\s+Journal\b.*$").unwrap(),
-            Regex::new(r"(?i)\.\s*[A-Z][a-z]+\s+(?:Journal|Review|Transactions|Letters|advances|Processing|medica|Intelligenz)\b.*$").unwrap(),
-            Regex::new(r"(?i)\.\s*(?:Patterns|Data\s+&\s+Knowledge).*$").unwrap(),
-            Regex::new(r"[.,]\s+[A-Z][a-z]+\s+\d+[,\s].*$").unwrap(),
-            Regex::new(r"(?i),\s*volume\s+\d+.*$").unwrap(),
-            Regex::new(r",\s*\d+\s*\(\d+\).*$").unwrap(),
-            Regex::new(r",\s*\d+\s*$").unwrap(),
-            Regex::new(r"\.\s*\d+\s*$").unwrap(),
-            Regex::new(r"\.\s*https?://.*$").unwrap(),
-            Regex::new(r"\.\s*ht\s*tps?://.*$").unwrap(),
-            Regex::new(r"(?i),\s*(?:vol\.|pp\.|pages).*$").unwrap(),
-            Regex::new(r"(?i)\.\s*Data\s+in\s+brief.*$").unwrap(),
-            Regex::new(r"(?i)\.\s*Biochemia\s+medica.*$").unwrap(),
-            Regex::new(r"(?i)\.\s*KI-K\u{00FC}nstliche.*$").unwrap(),
-            Regex::new(r"\s+arXiv\s+preprint.*$").unwrap(),
-            Regex::new(r"\s+arXiv:\d+.*$").unwrap(),
-            Regex::new(r"\s+CoRR\s+abs/.*$").unwrap(),
-            Regex::new(r"(?i),?\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}.*$").unwrap(),
-            Regex::new(r"(?i)[.,]\s*[Aa]ccessed\s+.*$").unwrap(),
-            Regex::new(r"\s*\(\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
-            Regex::new(r"\s*\(pp\.?\s*\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
-            Regex::new(r",?\s+\d+[\u{2013}\-]\d+\s*$").unwrap(),
-            // Journal + volume/pages with expanded char class for &, +, ®, dashes
-            Regex::new(&format!(r"\.\s*[A-Z](?:{}|\s)+,\s*\d+\s*[,:\s]\s*\d+[\u{{2013}}\-]?\d*.*$", j)).unwrap(),
-            // Journal name after period with no volume (just ends): ". Big Data & Society, 1(1)"
-            // These are caught by the volume/issue patterns above; this handles standalone names
-            Regex::new(&format!(r"\.\s+(?:[A-Z](?:{}|\s)+[&+](?:{}|\s)+)\s*$", j, j)).unwrap(),
-        ]
-    });
+/// The built-in default cutoff patterns. Exposed as `pub(crate)` so config resolution can use them.
+pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    let j = r"[a-zA-Z&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars (no \s)
+    vec![
+        Regex::new(r"(?i)\.\s*[Ii]n:\s+[A-Z].*$").unwrap(),
+        Regex::new(r"(?i)\.\s*[Ii]n\s+[A-Z].*$").unwrap(),
+        Regex::new(r"(?i)[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR|PACM[- ]\w+).*$").unwrap(),
+        Regex::new(r"(?i)[.?!]\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$").unwrap(),
+        Regex::new(r"(?i)[.?!]\s+International\s+Journal\b.*$").unwrap(),
+        Regex::new(r"(?i)\.\s*[A-Z][a-z]+\s+(?:Journal|Review|Transactions|Letters|advances|Processing|medica|Intelligenz)\b.*$").unwrap(),
+        Regex::new(r"(?i)\.\s*(?:Patterns|Data\s+&\s+Knowledge).*$").unwrap(),
+        Regex::new(r"[.,]\s+[A-Z][a-z]+\s+\d+[,\s].*$").unwrap(),
+        Regex::new(r"(?i),\s*volume\s+\d+.*$").unwrap(),
+        Regex::new(r",\s*\d+\s*\(\d+\).*$").unwrap(),
+        Regex::new(r",\s*\d+\s*$").unwrap(),
+        Regex::new(r"\.\s*\d+\s*$").unwrap(),
+        Regex::new(r"\.\s*https?://.*$").unwrap(),
+        Regex::new(r"\.\s*ht\s*tps?://.*$").unwrap(),
+        Regex::new(r"(?i),\s*(?:vol\.|pp\.|pages).*$").unwrap(),
+        Regex::new(r"(?i)\.\s*Data\s+in\s+brief.*$").unwrap(),
+        Regex::new(r"(?i)\.\s*Biochemia\s+medica.*$").unwrap(),
+        Regex::new(r"(?i)\.\s*KI-K\u{00FC}nstliche.*$").unwrap(),
+        Regex::new(r"\s+arXiv\s+preprint.*$").unwrap(),
+        Regex::new(r"\s+arXiv:\d+.*$").unwrap(),
+        Regex::new(r"\s+CoRR\s+abs/.*$").unwrap(),
+        Regex::new(r"(?i),?\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}.*$").unwrap(),
+        Regex::new(r"(?i)[.,]\s*[Aa]ccessed\s+.*$").unwrap(),
+        Regex::new(r"\s*\(\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
+        Regex::new(r"\s*\(pp\.?\s*\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
+        Regex::new(r",?\s+\d+[\u{2013}\-]\d+\s*$").unwrap(),
+        // Journal + volume/pages with expanded char class for &, +, ®, dashes
+        Regex::new(&format!(r"\.\s*[A-Z](?:{}|\s)+,\s*\d+\s*[,:\s]\s*\d+[\u{{2013}}\-]?\d*.*$", j)).unwrap(),
+        // Journal name after period with no volume (just ends): ". Big Data & Society, 1(1)"
+        // These are caught by the volume/issue patterns above; this handles standalone names
+        Regex::new(&format!(r"\.\s+(?:[A-Z](?:{}|\s)+[&+](?:{}|\s)+)\s*$", j, j)).unwrap(),
+    ]
+});
+
+fn apply_cutoff_patterns_with_config(title: &str, config: &PdfParsingConfig) -> String {
+    let patterns = config
+        .venue_cutoff_patterns
+        .resolve(&DEFAULT_CUTOFF_PATTERNS);
 
     let mut result = title.to_string();
-    for re in CUTOFF_PATTERNS.iter() {
+    for re in patterns.iter() {
         result = re.replace(&result, "").to_string();
     }
     result
