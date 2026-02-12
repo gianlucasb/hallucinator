@@ -21,8 +21,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+          # aarch64-unknown-linux-gnu excluded: ring crate cannot
+          # cross-compile ARM assembly in manylinux containers.
+          # Revisit with native ARM runners or aws-lc-rs backend.
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
