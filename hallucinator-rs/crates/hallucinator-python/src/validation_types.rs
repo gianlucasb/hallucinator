@@ -535,18 +535,17 @@ impl From<CheckStats> for PyCheckStats {
 
 impl PyCheckStats {
     pub(crate) fn compute(results: &[&ValidationResult]) -> Self {
-        let mut stats = CheckStats::default();
-        stats.total = results.len();
+        let mut stats = CheckStats {
+            total: results.len(),
+            ..Default::default()
+        };
         for r in results {
             match r.status {
                 Status::Verified => stats.verified += 1,
                 Status::NotFound => stats.not_found += 1,
                 Status::AuthorMismatch => stats.author_mismatch += 1,
             }
-            if r.retraction_info
-                .as_ref()
-                .map_or(false, |ri| ri.is_retracted)
-            {
+            if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
                 stats.retracted += 1;
             }
         }

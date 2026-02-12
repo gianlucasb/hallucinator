@@ -47,7 +47,10 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
     // Safe marker (FP reason)
     if let Some(reason) = rs.fp_reason {
         lines.push(Line::from(Span::styled(
-            format!("  \u{2713} Marked as SAFE \u{2014} {}", reason.description()),
+            format!(
+                "  \u{2713} Marked as SAFE \u{2014} {}",
+                reason.description()
+            ),
             Style::default()
                 .fg(theme.verified)
                 .add_modifier(Modifier::BOLD),

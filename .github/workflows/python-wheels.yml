@@ -21,8 +21,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+          # aarch64-unknown-linux-gnu excluded: ring crate cannot
+          # cross-compile ARM assembly in manylinux containers.
+          # Revisit with native ARM runners or aws-lc-rs backend.
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
@@ -34,12 +35,6 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 500
-
-      - name: Set up QEMU (Linux aarch64 cross-compile)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - uses: actions/setup-python@v5
         if: runner.os != 'Linux'
@@ -53,10 +48,11 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --out dist -i 3.12
           working-directory: hallucinator-rs
-          manylinux: auto
-          before-script-linux: yum install -y openssl-devel fontconfig-devel
+          manylinux: "2_28"
+          before-script-linux: |
+            dnf install -y fontconfig-devel clang-devel
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4

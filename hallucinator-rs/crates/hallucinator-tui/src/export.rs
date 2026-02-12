@@ -562,10 +562,7 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
 
                 // FP override
                 if let Some(fp) = paper_refs.get(ri).and_then(|rs| rs.fp_reason) {
-                    out.push_str(&format!(
-                        "       FP override: {}\n",
-                        fp.description()
-                    ));
+                    out.push_str(&format!("       FP override: {}\n", fp.description()));
                 }
             }
         }
