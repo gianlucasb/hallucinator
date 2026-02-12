@@ -845,6 +845,10 @@ def strip_running_headers(text):
     - "Paper Title Here"
     - "A. Author, B. Author, and C. Author"
 
+    Math papers have headers like:
+    - "HODGE THEORY OF SECANT VARIETIES" (all caps title)
+    - "99" (page numbers on their own line)
+
     These get mixed into references when they span page boundaries.
     """
     # Pattern for ACM-style venue headers
@@ -856,6 +860,14 @@ def strip_running_headers(text):
     # Pattern for abbreviated author headers
     # e.g., "O.A Akanji, M. Egele, and G. Stringhini"
     author_header_pattern = r'^[A-Z]\.?[A-Z]?\s+[A-Z][a-z]+(?:,\s+[A-Z]\.?\s*[A-Z]?\.?\s*[A-Z][a-z]+)*(?:,?\s+and\s+[A-Z]\.?\s*[A-Z]?\.?\s*[A-Z][a-z]+)?$'
+
+    # Pattern for math paper running headers (ALL CAPS title with at least 3 words)
+    # e.g., "HODGE THEORY OF SECANT VARIETIES"
+    math_title_header_pattern = r'^[A-Z][A-Z\s\-]+$'
+
+    # Pattern for standalone page numbers (math papers often have these)
+    # e.g., "99" or "123"
+    page_number_pattern = r'^\d{1,4}$'
 
     lines = text.split('\n')
     filtered_lines = []
@@ -882,6 +894,18 @@ def strip_running_headers(text):
         # Check if this line matches author header pattern
         if re.match(author_header_pattern, line) and len(line) < 100:
             # This is likely a running header with authors, skip it
+            i += 1
+            continue
+
+        # Check for math paper ALL CAPS title headers (at least 3 words, all caps)
+        if re.match(math_title_header_pattern, line) and len(line.split()) >= 3 and len(line) > 15:
+            # This is likely a math paper title running header, skip it
+            i += 1
+            continue
+
+        # Check for standalone page numbers
+        if re.match(page_number_pattern, line):
+            # This is likely a page number, skip it
             i += 1
             continue
 
@@ -1354,6 +1378,16 @@ def extract_title_from_reference(ref_text):
     ref_text = fix_hyphenation(ref_text)
     ref_text = re.sub(r'\s+', ' ', ref_text).strip()
 
+    # === Math paper preprocessing ===
+    # Strip MathReview numbers (e.g., "MR4870047" or "MR 4870047")
+    ref_text = re.sub(r'\bMR\s*\d{5,}', '', ref_text)
+
+    # Strip page back-references (e.g., "↑12" or "↑9, 21, 40")
+    ref_text = re.sub(r'\s*↑\d+(?:,\s*\d+)*\s*', ' ', ref_text)
+
+    # Clean up any resulting double spaces
+    ref_text = re.sub(r'\s+', ' ', ref_text).strip()
+
     # === Format 1: IEEE/USENIX - Quoted titles or titles with quoted portions ===
     # Handles: "Full Title" or "Quoted part": Subtitle
     quote_patterns = [
@@ -1525,6 +1559,7 @@ def extract_title_from_reference(ref_text):
             r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{10,},\s*\d+',  # ". Long Journal Name, vol" - long journal names
             r'[?!]\s+[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]+,\s*\d+\s*[(:]',  # "? Journal Name, vol(" - cut after ?/!
             r'\s+doi:',
+            r'\s*\(\d+(?:st|nd|rd|th)?\s*ed\.?\)\.\s*[A-Z]',  # "(2nd ed.). Publisher" - book edition + publisher
         ]
         title_end = len(after_year)
         for pattern in title_end_patterns:
@@ -1648,6 +1683,100 @@ def extract_title_from_reference(ref_text):
                 title = re.sub(r'\.\s*$', '', title)
                 if len(title.split()) >= 3:
                     return title, False
+
+    # === Format 6: Math paper style - "Authors, Title, Venue Vol (Year), Pages" ===
+    # Pattern: "Firstname Lastname, ... and Firstname Lastname, Title, Journal Vol (Year)"
+    # Title is between the last author comma and the venue comma
+    # Example: "Alexander Beilinson, ..., and Ofer Gabber, Faisceaux pervers, Astérisque 100 (1983)"
+    # Example: "Aaron Bertram, Moduli of rank-2 vector bundles..., J. Differential Geom. 35 (1992)"
+    # Venue patterns: abbreviated journal names followed by volume and (year)
+    math_venue_patterns = [
+        r',\s*arXiv\s+e-prints\s*\(',  # arXiv e-prints (Month Year)
+        r',\s*arXiv:\d+',  # arXiv:XXXX.XXXXX
+        r',\s*(?:J\.|Ann\.|Trans\.|Proc\.|Bull\.|Adv\.|Comm\.|Compos\.|Invent\.|Duke|Math\.|Publ\.|Arch\.|Acta|Amer\.|Geom\.|Algebra|Topology)[^,]*\d+\s*\(\d{4}',  # Abbreviated journal + vol (year)
+        r',\s*[A-Z][a-zA-Z\u00C0-\u017F\s.\'´`]+\d+\s*\(\d{4}',  # Journal Name Vol (Year) - handles accented chars
+        r',\s*IEEE\s+[A-Z][a-zA-Z.\s]+,',  # IEEE Trans/Journal without year in parens
+        r',\s*ACM\s+[A-Z][a-zA-Z.\s]+,',  # ACM Trans/Journal without year in parens
+        r',\s*Proc\.\s+[A-Z]+',  # Proc. ACM/IEEE etc.
+    ]
+
+    for pattern in math_venue_patterns:
+        venue_match = re.search(pattern, ref_text)
+        if venue_match:
+            before_venue = ref_text[:venue_match.start()].strip()
+
+            # Find the title by looking for "and LastName, Title" pattern
+            # In math refs, authors end with "and Lastname," then title follows
+            # Also handles single author: "Lastname, Title,"
+            # Look for the last occurrence of "Name, " that precedes the title
+            # The title typically starts with a capital letter and contains multiple words
+
+            # Try to find "and Lastname, Title" pattern first
+            # IMPORTANT: "and" must be followed by a proper name, not articles like "and the"
+            and_author_match = re.search(r',?\s+and\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*(.+)', before_venue)
+            if and_author_match:
+                potential_lastname = and_author_match.group(1).split()[0].lower()
+                # Make sure it's not a common word that appears in titles
+                common_words = {'the', 'a', 'an', 'some', 'their', 'its', 'other', 'more', 'all', 'new', 'one', 'two'}
+                if potential_lastname not in common_words:
+                    title = and_author_match.group(2).strip()
+                    title = re.sub(r',\s*$', '', title)
+                    # Math papers often have shorter titles (e.g., "Faisceaux pervers")
+                    if len(title.split()) >= 2:
+                        return title, False
+
+            # Second try: Find where author list ends
+            # Authors can be:
+            # - "Firstname Lastname" (math style)
+            # - "I. Surname" or "I. I. Surname" (CS style with initials)
+            # Title starts when we see a comma followed by something that's NOT a name
+            # Split by comma and find first non-name segment
+            parts = before_venue.split(',')
+            title_start_idx = None
+
+            for i, part in enumerate(parts[1:], start=1):  # Skip first part (always author)
+                part = part.strip()
+                if not part:
+                    continue
+
+                # Skip "and Firstname Lastname" or "and I. Surname" parts - they're authors
+                if re.match(r'^and\s+(?:[A-Z]\.?\s*)+[A-Z][a-z]+$', part):
+                    continue
+
+                # Check if this part looks like a name
+                # Pattern 1: "Firstname Lastname" - 1-3 capitalized words (may be hyphenated)
+                # Pattern 2: "I. Surname" or "I. I. Surname" - initials + surname
+                words = part.split()
+
+                # Check for initial-based author: "I. I. Surname" or "I. Surname-Hyphen"
+                # Pattern: one or more "X." followed by a capitalized surname (possibly hyphenated)
+                if re.match(r'^(?:[A-Z]\.?\s*)+[A-Z][a-z]+(?:-[A-Z][a-z]+)*$', part.replace(' ', '')):
+                    continue  # This is an author with initials
+
+                if len(words) <= 3:
+                    # Check if all words look like names (Capitalized, possibly hyphenated) or initials
+                    looks_like_name = all(
+                        re.match(r'^[A-Z][a-z]+(?:-[A-Z][a-z]+)*$', w) or  # Capitalized name (hyphenated ok)
+                        re.match(r'^[A-Z]\.$', w) or      # Single initial with dot
+                        re.match(r'^[A-Z]$', w)           # Single initial without dot
+                        for w in words
+                    )
+                    if looks_like_name:
+                        continue  # This is part of author list
+
+                # This doesn't look like a name - it's the title start
+                title_start_idx = i
+                break
+
+            if title_start_idx is not None:
+                # Title is from this part to the end
+                title = ', '.join(p.strip() for p in parts[title_start_idx:])
+                title = re.sub(r',\s*$', '', title)
+                # Math papers often have shorter titles
+                if len(title.split()) >= 2:
+                    return title, False
+
+            break
 
     # === Fallback: second sentence if it looks like a title ===
     # Use smart splitting that skips author initials like "M." "J."
