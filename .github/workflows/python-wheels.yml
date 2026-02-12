@@ -58,13 +58,13 @@ jobs:
           manylinux: auto
           before-script-linux: |
             if command -v yum &> /dev/null; then
-              yum install -y openssl-devel fontconfig-devel clang-devel
+              yum install -y fontconfig-devel clang-devel
             elif command -v dnf &> /dev/null; then
-              dnf install -y openssl-devel fontconfig-devel clang-devel
+              dnf install -y fontconfig-devel clang-devel
             elif command -v apk &> /dev/null; then
-              apk add openssl-dev fontconfig-dev clang-dev
+              apk add fontconfig-dev clang-dev
             else
-              apt-get update && apt-get -y install libssl-dev libfontconfig1-dev libclang-dev
+              apt-get update && apt-get -y install libfontconfig1-dev libclang-dev
             fi
 
       - name: Upload wheel
