@@ -55,6 +55,11 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
+    // === Format 1a: Bracket citation - "[ACGH20] Authors. Title. In Venue" ===
+    if let Some(result) = try_bracket_code(ref_text) {
+        return result;
+    }
+
     // === Format 1b: LNCS/Springer - "Authors, I.: Title. In: Venue" ===
     if let Some(result) = try_lncs(ref_text) {
         return result;
@@ -65,38 +70,50 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
-    // === Format 2a: Springer/Nature/Harvard - "Authors (Year) Title" ===
+    // === Format 2: Author names with particles (von, van der, etc.) ===
+    // Must run before venue marker and year-based formats, since those
+    // mis-split at "P. von Styp-Rekowsky" treating "P." as sentence end
+    if let Some(result) = try_author_particles(ref_text) {
+        return result;
+    }
+
+    // === Format 3a: Springer/Nature/Harvard - "Authors (Year) Title" ===
     if let Some(result) = try_springer_year(ref_text) {
         return result;
     }
 
-    // === Format 2b: ACM - "Authors. Year. Title. In Venue" ===
+    // === Format 3b: ACM - "Authors. Year. Title. In Venue" ===
     if let Some(result) = try_acm_year(ref_text) {
         return result;
     }
 
-    // === Format 3: USENIX/ICML/NeurIPS/Elsevier - "Authors. Title. In Venue" ===
+    // === Format 4: USENIX/ICML/NeurIPS/Elsevier - "Authors. Title. In Venue" ===
     if let Some(result) = try_venue_marker(ref_text) {
         return result;
     }
 
-    // === Format 4: Journal style ===
+    // === Format 5: Journal style ===
     if let Some(result) = try_journal(ref_text) {
         return result;
     }
 
-    // === Format 4b: Elsevier journal ===
+    // === Format 5b: Elsevier journal ===
     if let Some(result) = try_elsevier_journal(ref_text) {
         return result;
     }
 
-    // === Format 5a: Chinese ALL CAPS authors (SURNAME I, SURNAME I, et al. Title) ===
+    // === Format 6a: Chinese ALL CAPS authors (SURNAME I, SURNAME I, et al. Title) ===
     if let Some(result) = try_chinese_allcaps(ref_text) {
         return result;
     }
 
-    // === Format 5b: Western ALL CAPS authors (SURNAME, F. Title) ===
+    // === Format 6b: Western ALL CAPS authors (SURNAME, F. Title) ===
     if let Some(result) = try_all_caps_authors(ref_text) {
+        return result;
+    }
+
+    // === Format 7: Direct "Title. In Venue" fallback ===
+    if let Some(result) = try_direct_in_venue(ref_text) {
         return result;
     }
 
@@ -177,6 +194,19 @@ pub(crate) fn clean_title_with_config(
             .rfind(['?', '!'])
             .unwrap();
         title = title[..=punct_pos].to_string();
+    }
+
+    // Remove editor lists: ". In Name, Name, and Name, editors, Venue"
+    static EDITOR_LIST_RE: Lazy<Regex> = Lazy::new(|| {
+        let name = r"[A-Za-z\u{00C0}-\u{024F}]+(?:\s+[A-Z]\.)*(?:\s+[A-Za-z\u{00C0}-\u{024F}]+)?";
+        Regex::new(&format!(
+            r"\.\s*In\s+{n}(?:,\s*{n})*(?:,?\s*and\s+{n})?,\s*editors?,",
+            n = name
+        ))
+        .unwrap()
+    });
+    if let Some(m) = EDITOR_LIST_RE.find(&title) {
+        title = title[..m.start()].to_string();
     }
 
     // Apply cutoff patterns to remove trailing venue/metadata
@@ -282,19 +312,26 @@ fn find_subtitle_end(text: &str) -> usize {
 }
 
 fn try_lncs(ref_text: &str) -> Option<(String, bool)> {
-    // Pattern: comma/space + Initial(s) + colon, then title
-    static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[,\s][A-Z]\.(?:[-\u{2013}][A-Z]\.)?\s*:\s*(.+)").unwrap());
+    // Enhanced Springer/LNCS format: "Author, I., Author, I.: Title. In: Venue"
+    // Also handles multi-initial patterns like "B.S.:", "C.P.:", "L.:"
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?:,\s*)?[A-Z](?:\.[A-Z])*\.\s*:\s*(.+)").unwrap()
+    });
 
     let caps = RE.captures(ref_text)?;
     let after_colon = caps.get(1).unwrap().as_str().trim();
 
     let title_end = find_title_end_lncs(after_colon);
     let title = after_colon[..title_end].trim();
-    static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
+    static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.,;:]+\s*$").unwrap());
     let title = TRAIL.replace(title, "");
 
-    if title.split_whitespace().count() >= 3 {
+    // Reject if what we extracted looks like journal metadata, not a title
+    if is_journal_metadata(&title) {
+        return None;
+    }
+
+    if title.split_whitespace().count() >= 2 {
         Some((title.to_string(), false))
     } else {
         None
@@ -304,14 +341,30 @@ fn try_lncs(ref_text: &str) -> Option<(String, bool)> {
 fn find_title_end_lncs(text: &str) -> usize {
     static PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
+            // Journal + volume(issue): ". Journal 13(6),"
+            Regex::new(r"\.\s+[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]").unwrap(),
+            // Journal + volume, pages: ". Journal 13, 456" or ": 456"
+            Regex::new(r"\.\s+[A-Z][A-Za-z\s&\-]+\s+\d+\s*[,:]\s*\d+").unwrap(),
+            // In/In: venue markers
             Regex::new(r"\.\s*[Ii]n:\s+").unwrap(),
             Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|NDSS|arXiv)").unwrap(),
+            Regex::new(r"\.\s*(?:Proceedings|Proc\.)\s+of").unwrap(),
+            // Common venues/publishers
+            Regex::new(r"\.\s*(?:IEEE|ACM|USENIX|NDSS|arXiv|Nature|Science)").unwrap(),
+            Regex::new(r"\.\s*(?:Journal|Trans\.|Transactions|Review)\s+(?:of|on)").unwrap(),
             Regex::new(r"\.\s*[A-Z][a-zA-Z\s]+(?:Access|Journal|Review|Transactions)").unwrap(),
+            Regex::new(r"\.\s*(?:Springer|Elsevier|Wiley|Cambridge|Oxford)\b").unwrap(),
+            // Volume without journal name
+            Regex::new(r"\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]").unwrap(),
+            // DOI/URL
+            Regex::new(r",?\s+doi:\s*10\.").unwrap(),
             Regex::new(r"\.\s*https?://").unwrap(),
-            Regex::new(r"\.\s*pp?\.?\s*\d+").unwrap(),
+            // Year patterns
             Regex::new(r"\s+\((?:19|20)\d{2}\)\s*[,.]?\s*(?:https?://|$)").unwrap(),
             Regex::new(r"\s+\((?:19|20)\d{2}\)\s*,").unwrap(),
+            Regex::new(r"\.\s*pp?\.?\s*\d+").unwrap(),
+            // Venue name with year: ". Venue Name (2020)"
+            Regex::new(r"\.\s+[A-Z][A-Za-z\s]+\s+\(\d{4}\)").unwrap(),
         ]
     });
 
@@ -322,6 +375,38 @@ fn find_title_end_lncs(text: &str) -> usize {
         }
     }
     end
+}
+
+/// Check if extracted text looks like journal metadata rather than a title.
+fn is_journal_metadata(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+
+    static PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            // "In:" or "In " venue markers
+            Regex::new(r"(?i)^In[:\s]").unwrap(),
+            // "In: Proceedings..." or "In: 2019 IEEE..."
+            Regex::new(r"(?i)^In[:\s]+(?:Proceedings|Proc\.)").unwrap(),
+            Regex::new(r"(?i)^In[:\s]+\d{4}\s+(?:IEEE|ACM|USENIX)").unwrap(),
+            // Journal Vol(Issue), Pages (Year): "Educational Researcher 13(6), 4–16 (1984)"
+            Regex::new(r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)").unwrap(),
+            // Journal Vol:Pages (Year): "Nature 123:456-789 (2020)"
+            Regex::new(r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*:\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)").unwrap(),
+            // Journal with acronym in parens: "Journal of the ACM (JACM) 32(2)"
+            Regex::new(r"^[A-Z][A-Za-z\s]+\([A-Z]+\)\s+\d+\s*\(\d+\)").unwrap(),
+            // Short journal: "Nature 299(5886)"
+            Regex::new(r"^(?:Nature|Science|Cell|PNAS|PLoS)\s+\d+\s*\(\d+\)").unwrap(),
+            // Just volume/page: "13(6), 4–16 (1984)"
+            Regex::new(r"^\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]\d+").unwrap(),
+            // Journal name;year format: "IEEE Trans... 2018;17(3)"
+            Regex::new(r"^[A-Z][A-Za-z\s]+\d{4};\d+").unwrap(),
+        ]
+    });
+
+    PATTERNS.iter().any(|re| re.is_match(text))
 }
 
 fn try_org_doc(ref_text: &str) -> Option<(String, bool)> {
@@ -693,6 +778,121 @@ fn try_all_caps_authors(ref_text: &str) -> Option<(String, bool)> {
         }
     }
     None
+}
+
+fn try_bracket_code(ref_text: &str) -> Option<(String, bool)> {
+    // Bracket citation format: "[ACGH20] Authors. Title. In Venue"
+    static BRACKET_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\[([A-Z]+\d+[a-z]?)\]\s*").unwrap());
+
+    let caps = BRACKET_RE.captures(ref_text)?;
+    let after_bracket = &ref_text[caps.get(0).unwrap().end()..];
+
+    // Split into sentences and find author-title boundary
+    let sentences = split_sentences_skip_initials(after_bracket);
+    if sentences.len() < 2 {
+        return None;
+    }
+
+    // First sentence is authors, look for title in subsequent sentences
+    for i in 0..sentences.len().saturating_sub(1) {
+        let sent = &sentences[i];
+        // Check if this sentence ends with what looks like an author name
+        // and next doesn't start with "In" (venue marker)
+        static AUTHOR_END_RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"(?:and\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*$").unwrap()
+        });
+        static IN_START_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^In\s+").unwrap());
+
+        if AUTHOR_END_RE.is_match(sent) {
+            let next = &sentences[i + 1];
+            if !IN_START_RE.is_match(next) && next.starts_with(|c: char| c.is_uppercase()) {
+                // Found the title. Reconstruct it and find where it ends (at "In Venue")
+                let remaining: String = sentences[i + 1..].join(". ");
+                let title_end = remaining.find(". In ").unwrap_or(remaining.len());
+                let title = remaining[..title_end].trim();
+                if title.split_whitespace().count() >= 3 {
+                    return Some((title.to_string(), false));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
+    // Handles author names with particles: von, van der, Le, etc.
+    // Pattern: "I. Name, I. Name, and I. Name. Title"
+    // The key is finding ", and Initial. Surname. TitleStart"
+    static AND_AUTHOR_TITLE_RE: Lazy<Regex> = Lazy::new(|| {
+        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}]\.(?:[\s\-]*[A-Z]\.)*";
+        let particle = r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
+        let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
+        let surname = format!(r"{}{}+(?:\s+{}+)*", particle, surname_chars, surname_chars);
+        let pattern = format!(
+            r#",?\s+and\s+{}\s*{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
+            initial, surname,
+        );
+        Regex::new(&pattern).unwrap()
+    });
+
+    let caps = AND_AUTHOR_TITLE_RE.captures(ref_text)?;
+    let title_start = caps.get(1).unwrap().start();
+    let title_text = &ref_text[title_start..];
+
+    // Find where title ends (venue/year markers)
+    static TITLE_END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            Regex::new(r"\.\s+In\s+").unwrap(),
+            Regex::new(r"\s+In\s+Proceedings").unwrap(),
+            Regex::new(r"\.\s+(?:Proc\.|Proceedings\s+of)").unwrap(),
+            Regex::new(r"\.\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS|EuroS&P)\b").unwrap(),
+            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+\d{4}").unwrap(),
+            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s*&\s*[A-Z][a-z]+)+").unwrap(),
+            Regex::new(r"\.\s+arXiv\s+preprint").unwrap(),
+            Regex::new(r",\s+(?:vol\.|pp\.|pages)\s").unwrap(),
+            Regex::new(r",\s+\d{4}\.\s*$").unwrap(),
+            Regex::new(r",\s+\d+\(\d+\)").unwrap(),
+            Regex::new(r"\.\s+(?:Springer|Elsevier|Wiley|Nature|Science|PLOS|Oxford|Cambridge)\b").unwrap(),
+            Regex::new(r"\.\s+(?:The\s+)?(?:Annals|Journal|Proceedings)\s+of\b").unwrap(),
+            Regex::new(r"\.\s+Journal\s+of\s+[A-Z]").unwrap(),
+            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+,\s*\d").unwrap(),
+            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+\d+[:(]").unwrap(),
+        ]
+    });
+
+    let mut title_end = title_text.len();
+    for re in TITLE_END_PATTERNS.iter() {
+        if let Some(m) = re.find(title_text) {
+            title_end = title_end.min(m.start());
+        }
+    }
+
+    let title = title_text[..title_end].trim();
+    static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
+    let title = TRAIL.replace(title, "");
+
+    if title.split_whitespace().count() >= 3 {
+        Some((title.to_string(), false))
+    } else {
+        None
+    }
+}
+
+fn try_direct_in_venue(ref_text: &str) -> Option<(String, bool)> {
+    // Fallback: "Title. In Something" where title starts with capital and has 15+ chars
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^([A-Z][^.]{15,}?)\.\s+In\s+(?:[A-Z]|Proceedings|Proc\.)").unwrap()
+    });
+
+    let caps = RE.captures(ref_text)?;
+    let title = caps.get(1).unwrap().as_str().trim();
+
+    if title.split_whitespace().count() >= 4 {
+        Some((title.to_string(), false))
+    } else {
+        None
+    }
 }
 
 fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
@@ -1211,5 +1411,159 @@ mod tests {
             "Western ALL CAPS should still extract a title: {}",
             title,
         );
+    }
+
+    // ───────────────── Tests for new format extractors ─────────────────
+
+    #[test]
+    fn test_bracket_code_format() {
+        let ref_text = "[ACGH20] Gorjan Alagic, Andrew M. Childs, Alex B. Grilo, and Shih-Han Hung. Noninteractive classical verification of quantum computation. In CRYPTO 2020.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Noninteractive classical verification"),
+            "Should extract title from bracket code format: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_bracket_code_format_ccy20() {
+        let ref_text = "[CCY20] Nai-Hui Chia, Kai-Min Chung, and Takashi Yamakawa. Classical verification of quantum computations with efficient verifier. In Theory of Cryptography Conference 2020.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Classical verification of quantum computations"),
+            "Should extract title from bracket code format: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_author_particles_von() {
+        let ref_text = "M. Backes, S. Bugiel, O. Schranz, P. von Styp-Rekowsky, and S. Weisgerber. Artist: The android runtime instrumentation and security toolkit. In EuroS&P, 2017.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Artist") || title.contains("android runtime"),
+            "Should extract title with von particle in author: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_author_particles_van_der() {
+        let ref_text = "C. J. Hoofnagle, B. van der Sloot, and F. Z. Borgesius. The european union general data protection regulation: what it is and what it means. Information & Communications Technology Law, 28(1), 2019.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("european union general data protection"),
+            "Should extract title with van der particle in author: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_author_particles_le() {
+        let ref_text = "K. Allix, T. F. Bissyand\u{00B4}e, J. Klein, and Y. Le Traon. Androzoo: Collecting millions of android apps for the research community. In MSR, 2016.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Androzoo") || title.contains("Collecting millions"),
+            "Should extract title with Le particle in author: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_author_particles_fifty_ways() {
+        let ref_text = "J. Reardon, \u{00B4}A. Feal, P. Wijesekera, A. E. B. On, N. Vallina-Rodriguez, and S. Egelman. 50 ways to leak your data: An exploration of apps' circumvention of the android permissions system. In USENIX Security, 2019.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("50 ways to leak"),
+            "Should extract title starting with number: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_direct_in_venue() {
+        let ref_text = "Beating the random assignment on constraint satisfaction problems of bounded degree. In Naveen Garg, Klaus Jansen, Anup Rao, editors, Approximation.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Beating the random assignment"),
+            "Should extract title from direct 'Title. In Venue' format: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_editor_list_cleaning() {
+        let title = "Beating the random assignment on constraint satisfaction problems. In Naveen Garg, Klaus Jansen, Anup Rao, and Jos\u{00E9} Rolim, editors, Approximation";
+        let cleaned = clean_title(title, false);
+        assert!(
+            !cleaned.contains("editors"),
+            "Editor list should be removed from title: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("Beating the random assignment"),
+            "Title content should be preserved: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_editor_list_simple() {
+        let title = "A great paper title. In John Smith and Jane Doe, editors, Proceedings of Something";
+        let cleaned = clean_title(title, false);
+        assert!(
+            !cleaned.contains("editors"),
+            "Editor list should be removed: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("great paper title"),
+            "Title content should be preserved: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_springer_lncs_bloom() {
+        // Enhanced Springer/LNCS with journal metadata detection
+        let ref_text = "Bloom, B.S.: The 2 sigma problem: The search for methods of group instruction as effective as one-to-one tutoring. Educational Researcher 13(6), 4\u{2013}16 (1984)";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("2 sigma problem"),
+            "Should extract title from Springer format: {}",
+            title,
+        );
+        assert!(
+            !title.contains("Educational Researcher"),
+            "Should not include journal name: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_springer_lncs_multi_initial() {
+        // Multi-initial author like "C.P.:" or "B.S.:"
+        let ref_text = "Schnorr, C.P.: Efficient signature generation by smart cards. Journal of cryptology 4(3), 161\u{2013}174 (1991)";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Efficient signature generation"),
+            "Should extract title with multi-initial author: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_is_journal_metadata_detection() {
+        // These should be detected as journal metadata
+        assert!(is_journal_metadata("Educational Researcher 13(6), 4\u{2013}16 (1984)"));
+        assert!(is_journal_metadata("Nature 299(5886), 802\u{2013}803 (1982)"));
+        assert!(is_journal_metadata("In: Proceedings of the 8th ACM Conference"));
+        assert!(is_journal_metadata("13(6), 4\u{2013}16 (1984)"));
+
+        // These should NOT be detected as metadata
+        assert!(!is_journal_metadata("The 2 sigma problem: The search for methods"));
+        assert!(!is_journal_metadata("Knowledge tracing: Modeling the acquisition"));
+        assert!(!is_journal_metadata("A survey on deep learning for cybersecurity"));
     }
 }
