@@ -1243,6 +1243,338 @@ def print_patterns_to_port():
     print("   Example: 'Title. In John Smith, Jane Doe, editors, Venue'")
     print()
 
+    print("13. Journal metadata detection (validate extracted text is title):")
+    print("   Reject if starts with: ^In[:\\s]")
+    print("   Reject if matches journal vol/page pattern:")
+    print("     ^[A-Z][A-Za-z\\s&\\-]+\\s+\\d+\\s*\\(\\d+\\)\\s*[,:]\\s*\\d+[–\\-]\\d+\\s*\\(\\d{4}\\)")
+    print("   Example rejections:")
+    print("     'Educational Researcher 13(6), 4–16 (1984)' -> REJECTED (journal info)")
+    print("     'In: Proceedings of ACM' -> REJECTED (venue marker)")
+    print()
+
+    print("14. Enhanced Springer title end detection:")
+    print("   After finding 'Author.: ' colon marker, find title end at:")
+    print("     \\. Journal Vol(Issue),")
+    print("     \\. In[:\\s] or \\. Proceedings")
+    print("     \\. IEEE|ACM|Nature etc.")
+    print("     doi: or https://")
+    print("   Example: 'Bloom, B.S.: The 2 sigma problem... Educational Researcher 13(6)'")
+    print("            -> Extract 'The 2 sigma problem...' (stop at journal)")
+    print()
+
+
+# =============================================================================
+# IMPROVEMENT 13: Title Cleanup for Journal Volume/Page/Year Leak
+# =============================================================================
+# The Rust parser sometimes extracts journal metadata instead of the title.
+# Example failures:
+#   "Educational Researcher 13(6), 4–16 (1984), doi:10" (should be the journal)
+#   "Trends in Cognitive Sciences 3(4), 128–135 (1999)" (journal info leaked)
+#
+# These patterns indicate the extracted "title" is actually journal metadata:
+#   - "JournalName Vol(Issue), Pages (Year)"
+#   - "JournalName Vol:Pages (Year)"
+#   - Starts with "In:" or "In " followed by venue
+#
+# Solution: Detect these patterns and mark extraction as failed.
+#
+# Location: hallucinator-pdf/src/title.rs (validation/cleanup)
+
+
+def is_journal_metadata_not_title(text: str) -> bool:
+    """Check if extracted text looks like journal metadata, not a title.
+
+    Returns True if the text appears to be journal volume/page/year info
+    rather than an actual paper title.
+    """
+    text = text.strip()
+
+    # Pattern 1: Starts with "In:" or "In " (venue marker, not title)
+    if re.match(r'^In[:\s]', text, re.IGNORECASE):
+        return True
+
+    # Pattern 2: Journal Vol(Issue), Pages (Year) format
+    # Example: "Educational Researcher 13(6), 4–16 (1984)"
+    # Example: "Trends in Cognitive Sciences 3(4), 128–135 (1999)"
+    journal_vol_pattern = re.match(
+        r'^[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]\d+\s*\(\d{4}\)',
+        text
+    )
+    if journal_vol_pattern:
+        return True
+
+    # Pattern 3: Journal Vol:Pages (Year) format
+    # Example: "Nature 123:456-789 (2020)"
+    journal_colon_pattern = re.match(
+        r'^[A-Z][A-Za-z\s&\-]+\s+\d+\s*:\s*\d+[–\-]\d+\s*\(\d{4}\)',
+        text
+    )
+    if journal_colon_pattern:
+        return True
+
+    # Pattern 4: Just volume/page info
+    # Example: "13(6), 4–16 (1984)"
+    vol_page_only = re.match(
+        r'^\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]\d+',
+        text
+    )
+    if vol_page_only:
+        return True
+
+    # Pattern 5: Journal name with year;volume format
+    # Example: "IEEE Trans Dependable Secure Comput 2018;17(3):506–17"
+    elsevier_pattern = re.match(
+        r'^[A-Z][A-Za-z\s]+\d{4};\d+',
+        text
+    )
+    if elsevier_pattern:
+        return True
+
+    return False
+
+
+def clean_title_journal_leak(title: str) -> str:
+    """Remove journal volume/page/year info that leaked into title.
+
+    This handles cases where the title extraction grabbed too much and
+    included trailing journal metadata.
+    """
+    if not title:
+        return title
+
+    # Pattern 1: ", Vol(Issue), Pages (Year)" at end
+    title = re.sub(
+        r',?\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]\d+\s*\(\d{4}\).*$',
+        '', title
+    )
+
+    # Pattern 2: ". JournalName Vol(Issue)" at end
+    title = re.sub(
+        r'\.\s+[A-Z][A-Za-z\s]+\d+\s*\(\d+\)\s*[,:]\s*\d+.*$',
+        '', title
+    )
+
+    # Pattern 3: ", doi:10..." at end
+    title = re.sub(r',?\s*doi:\s*10\.\d+.*$', '', title, flags=re.IGNORECASE)
+
+    # Pattern 4: Trailing URL
+    title = re.sub(r',?\s*https?://.*$', '', title)
+
+    # Pattern 5: "(Year), doi" or "(Year)." at end after title
+    title = re.sub(r'\s*\(\d{4}\)\s*[,.]?\s*(?:doi)?.*$', '', title)
+
+    return title.strip()
+
+
+def test_journal_metadata_detection():
+    """Test detection of journal metadata vs actual titles."""
+    print("=" * 60)
+    print("IMPROVEMENT 13: Detect Journal Metadata (Not Titles)")
+    print("=" * 60)
+
+    # Should be detected as journal metadata (not titles)
+    metadata_cases = [
+        "Educational Researcher 13(6), 4–16 (1984), doi:10",
+        "Trends in Cognitive Sciences 3(4), 128–135 (1999)",
+        "User Modeling and User-Adapted Interaction 4(4), 253–278 (1995), doi:10",
+        "In: Proceedings of the 46th IEEE/ACM International Conference",
+        "In Ouyang, F., Jiao, P., McLaren, B.M., Alavi, A.H",
+        "Nature 123:456-789 (2020)",
+        "13(6), 4–16 (1984)",
+    ]
+
+    # Should NOT be detected as metadata (these are real titles)
+    title_cases = [
+        "The 2 sigma problem: The search for methods of group instruction",
+        "Knowledge tracing: Modeling the acquisition of procedural knowledge",
+        "Catastrophic forgetting in connectionist networks",
+        "A survey on deep learning for cybersecurity",
+    ]
+
+    print("  Should be detected as journal metadata:")
+    for text in metadata_cases:
+        result = is_journal_metadata_not_title(text)
+        status = "OK" if result else "FAIL"
+        print(f"    {status}: '{text[:55]}...'")
+
+    print("  Should NOT be detected as metadata (real titles):")
+    for text in title_cases:
+        result = is_journal_metadata_not_title(text)
+        status = "OK" if not result else "FAIL"
+        print(f"    {status}: '{text[:55]}...'")
+
+    print()
+
+
+# =============================================================================
+# IMPROVEMENT 14: Springer/LNCS Enhanced Title Extraction
+# =============================================================================
+# The current Springer format (Improvement 9) needs enhancement to better
+# extract titles from references like:
+#   "Bloom, B.S.: The 2 sigma problem: The search for methods... Educational Researcher 13(6)..."
+#
+# The title should be "The 2 sigma problem: The search for methods of group instruction"
+# But the Rust parser may be extracting the journal info instead.
+#
+# Enhanced pattern: After "Author.: " find title ending at journal patterns.
+
+
+def extract_title_springer_enhanced(ref_text: str) -> Optional[str]:
+    """Enhanced Springer/LNCS title extraction.
+
+    Handles the common format: Author, I., Author, I.: Title. Journal Vol(Issue), Pages (Year)
+
+    Key improvement: Better detection of where title ends and journal begins.
+    """
+    # Strip reference number prefixes
+    ref_text = re.sub(r'^\[\d+\]\s*', '', ref_text)
+    ref_text = re.sub(r'^\d+\.\s*', '', ref_text)
+
+    # Look for "Initial.: " or "Initial.Initial.: " pattern marking author end
+    # Examples: "B.S.:", "A.T.:", "L.:", "T.F.:", "C.P.:"
+    colon_match = re.search(
+        r'(?:,\s*)?'  # Optional comma before final author
+        r'([A-Z](?:\.[A-Z])*\.)'  # Initials like "B.S." or "L."
+        r':\s*'  # Colon after authors
+        r'(.+)',  # Everything after colon
+        ref_text
+    )
+
+    if not colon_match:
+        return None
+
+    after_colon = colon_match.group(2).strip()
+
+    # Find where title ends - comprehensive journal/venue patterns
+    title_end_patterns = [
+        # Standard journal patterns
+        r'\.\s+[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]',  # ". Journal 13(6),"
+        r'\.\s+[A-Z][A-Za-z\s&\-]+\s+\d+\s*[,:]\s*\d+',  # ". Journal 13, 456" or ": 456"
+        # In/In: venue markers
+        r'\.\s+In[:\s]\s*[A-Z]',  # ". In Proceedings" or ". In: Proceedings"
+        r'\.\s+(?:Proceedings|Proc\.)\s+of',  # ". Proceedings of"
+        # Common journals/venues
+        r'\.\s+(?:IEEE|ACM|USENIX|arXiv|Nature|Science)\b',
+        r'\.\s+(?:Journal|Trans\.|Transactions|Review)\s+(?:of|on)',
+        # Volume patterns without journal name
+        r'\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]',  # " 13(6), 456-"
+        # DOI/URL
+        r',?\s+doi:\s*10\.',
+        r',?\s+https?://',
+        # Publisher locations
+        r'\.\s+(?:Springer|Elsevier|Wiley|Cambridge|Oxford)\b',
+        # Year in parentheses at end of title-like segment
+        r'\.\s+[A-Z][A-Za-z\s]+\s+\(\d{4}\)',  # ". Venue Name (2020)"
+    ]
+
+    title_end = len(after_colon)
+    for pattern in title_end_patterns:
+        m = re.search(pattern, after_colon)
+        if m:
+            title_end = min(title_end, m.start())
+
+    title = after_colon[:title_end].strip()
+    # Clean up trailing punctuation
+    title = re.sub(r'[.,;:]+\s*$', '', title)
+
+    # Validate: not too short, not journal metadata
+    if len(title.split()) < 2:
+        return None
+    if is_journal_metadata_not_title(title):
+        return None
+
+    return title
+
+
+def test_springer_enhanced():
+    """Test enhanced Springer/LNCS format extraction."""
+    print("=" * 60)
+    print("IMPROVEMENT 14: Enhanced Springer/LNCS Title Extraction")
+    print("=" * 60)
+
+    test_cases = [
+        (
+            "Bloom, B.S.: The 2 sigma problem: The search for methods of group instruction "
+            "as effective as one-to-one tutoring. Educational Researcher 13(6), 4–16 (1984)",
+            "The 2 sigma problem: The search for methods of group instruction as effective as one-to-one tutoring"
+        ),
+        (
+            "Corbett, A.T., Anderson, J.R.: Knowledge tracing: Modeling the acquisition of "
+            "procedural knowledge. User Modeling and User-Adapted Interaction 4(4), 253–278 (1995)",
+            "Knowledge tracing: Modeling the acquisition of procedural knowledge"
+        ),
+        (
+            "French, R.M.: Catastrophic forgetting in connectionist networks. "
+            "Trends in Cognitive Sciences 3(4), 128–135 (1999)",
+            "Catastrophic forgetting in connectionist networks"
+        ),
+        (
+            "Kulik, J.A., Fletcher, J.D.: Effectiveness of intelligent tutoring systems: "
+            "A meta-analytic review. Review of Educational Research 86(1), 42–78 (2016)",
+            "Effectiveness of intelligent tutoring systems: A meta-analytic review"
+        ),
+        (
+            "Garofalo, J., Lester, F.K.: Metacognition, cognitive monitoring, and mathematical "
+            "performance. Journal for Research in Mathematics Education 16(3), 163–176 (1985)",
+            "Metacognition, cognitive monitoring, and mathematical performance"
+        ),
+        # Existing test case (should still work)
+        (
+            "Micali, S., Ohta, K., Reyzin, L.: Accountable-subgroup multisignatures. "
+            "In: Proceedings of the 8th ACM Conference",
+            "Accountable-subgroup multisignatures"
+        ),
+    ]
+
+    passed = 0
+    for raw, expected in test_cases:
+        result = extract_title_springer_enhanced(raw)
+        if result is None:
+            print(f"  FAIL: No title extracted")
+            print(f"    Raw: {raw[:70]}...")
+        elif result.lower().rstrip('.,') == expected.lower().rstrip('.,'):
+            print(f"  OK: '{result[:60]}{'...' if len(result) > 60 else ''}'")
+            passed += 1
+        else:
+            print(f"  MISMATCH:")
+            print(f"    Got:      {result}")
+            print(f"    Expected: {expected}")
+
+    print(f"\n  Passed: {passed}/{len(test_cases)}")
+    print()
+
+
+# Regex patterns for Rust implementation - Improvements 13-14
+JOURNAL_METADATA_PATTERNS = {
+    # Patterns that indicate extracted text is journal metadata, not title
+    "in_venue_start": r"^In[:\s]",  # Starts with "In:" or "In "
+    "journal_vol_issue": r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]\d+\s*\(\d{4}\)",
+    "journal_colon_pages": r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*:\s*\d+[–\-]\d+\s*\(\d{4}\)",
+    "vol_page_only": r"^\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]\d+",
+}
+
+TITLE_CLEANUP_PATTERNS = {
+    # Patterns to remove from end of title
+    "trailing_vol_page_year": r",?\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]\d+\s*\(\d{4}\).*$",
+    "trailing_journal_vol": r"\.\s+[A-Z][A-Za-z\s]+\d+\s*\(\d+\)\s*[,:]\s*\d+.*$",
+    "trailing_doi": r",?\s*doi:\s*10\.\d+.*$",
+    "trailing_url": r",?\s*https?://.*$",
+    "trailing_year_paren": r"\s*\(\d{4}\)\s*[,.]?\s*(?:doi)?.*$",
+}
+
+SPRINGER_TITLE_END_PATTERNS = [
+    # Enhanced patterns for finding where Springer title ends
+    r"\.\s+[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]",  # ". Journal 13(6),"
+    r"\.\s+[A-Z][A-Za-z\s&\-]+\s+\d+\s*[,:]\s*\d+",  # ". Journal 13, 456"
+    r"\.\s+In[:\s]\s*[A-Z]",  # ". In Proceedings" or ". In: Proceedings"
+    r"\.\s+(?:Proceedings|Proc\.)\s+of",
+    r"\.\s+(?:IEEE|ACM|USENIX|arXiv|Nature|Science)\b",
+    r"\.\s+(?:Journal|Trans\.|Transactions|Review)\s+(?:of|on)",
+    r"\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[–\-]",  # Volume without journal
+    r",?\s+doi:\s*10\.",
+    r",?\s+https?://",
+]
+
 
 # =============================================================================
 # MAIN
@@ -1261,6 +1593,8 @@ if __name__ == "__main__":
     test_bracket_code_format()
     test_editor_list_cleaning()
     test_direct_in_venue()
+    test_journal_metadata_detection()
+    test_springer_enhanced()
     test_combined_extraction()
     print_patterns_to_port()
 
