@@ -20,6 +20,10 @@ pub fn normalize_title(title: &str) -> String {
         .replace("&#39;", "'")
         .replace("&apos;", "'");
 
+    // Handle mathematical symbols before NFKD strips them
+    // H∞ (H-infinity) is common in control theory papers
+    let title = title.replace('∞', "infinity");
+
     // NFKD normalization and strip to ASCII
     let normalized: String = title.nfkd().filter(|c| c.is_ascii()).collect();
 
@@ -89,5 +93,27 @@ mod tests {
     fn test_titles_match_empty() {
         assert!(!titles_match("", "Something"));
         assert!(!titles_match("Something", ""));
+    }
+
+    #[test]
+    fn test_normalize_h_infinity() {
+        // H∞ (H-infinity) common in control theory papers
+        assert_eq!(
+            normalize_title("H\u{221E} almost state synchronization"),
+            "hinfinityalmoststate synchronization".replace(' ', "")
+        );
+        assert_eq!(
+            normalize_title("Robust H\u{221E} filtering"),
+            "robusthinfinityfiltering"
+        );
+    }
+
+    #[test]
+    fn test_h_infinity_fuzzy_match() {
+        // A PDF with ∞ should match a database entry with "infinity"
+        assert!(titles_match(
+            "H\u{221E} almost state synchronization for homogeneous networks",
+            "H-infinity almost state synchronization for homogeneous networks"
+        ));
     }
 }

@@ -41,6 +41,15 @@ pub(crate) fn extract_title_from_reference_with_config(
     let ref_text = WS_RE.replace_all(&ref_text, " ");
     let ref_text = ref_text.trim();
 
+    // Strip reference number prefixes: [N] or N.
+    static REF_NUM_BRACKET: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\[\d+\]\s*").unwrap());
+    static REF_NUM_DOT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\d+\.\s*").unwrap());
+    let ref_text = REF_NUM_BRACKET.replace(ref_text, "");
+    let ref_text = REF_NUM_DOT.replace(&ref_text, "");
+    let ref_text = ref_text.trim_start_matches(['.', ' ']);
+
     // === Format 1: IEEE/USENIX - Quoted titles ===
     if let Some(result) = try_quoted_title_with_config(ref_text, config) {
         return result;
@@ -81,7 +90,12 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
-    // === Format 5: ALL CAPS authors ===
+    // === Format 5a: Chinese ALL CAPS authors (SURNAME I, SURNAME I, et al. Title) ===
+    if let Some(result) = try_chinese_allcaps(ref_text) {
+        return result;
+    }
+
+    // === Format 5b: Western ALL CAPS authors (SURNAME, F. Title) ===
     if let Some(result) = try_all_caps_authors(ref_text) {
         return result;
     }
@@ -127,11 +141,42 @@ pub(crate) fn clean_title_with_config(
 
     // Handle "? JournalName, vol(issue)" — journal name bleeding after question mark
     static QMARK_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\?\s+[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]+,\s*\d+\s*[\(:]").unwrap()
+        Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]+,\s*(?:vol\.?\s*)?\d+")
+            .unwrap()
     });
     if let Some(m) = QMARK_JOURNAL_RE.find(&title) {
-        let qmark_pos = title[..m.end()].rfind('?').unwrap();
-        title = title[..=qmark_pos].to_string();
+        let punct_pos = title[..m.end()]
+            .rfind(['?', '!'])
+            .unwrap();
+        title = title[..=punct_pos].to_string();
+    }
+
+    // Handle "? Automatica 34(" or "? IEEE Trans... 53(" — journal + volume with parens
+    static QMARK_JOURNAL_VOL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"[?!]\s+(?:IEEE\s+Trans[a-z.]*|ACM\s+Trans[a-z.]*|Automatica|J\.\s*[A-Z][a-z]+|[A-Z][a-z]+\.?\s+[A-Z][a-z]+\.?)\s+\d+\s*[(\[]",
+        )
+        .unwrap()
+    });
+    if let Some(m) = QMARK_JOURNAL_VOL_RE.find(&title) {
+        let punct_pos = title[..m.end()]
+            .rfind(['?', '!'])
+            .unwrap();
+        title = title[..=punct_pos].to_string();
+    }
+
+    // Handle "? IEEE Trans. Aut. Contr. 53" — abbreviated journal + volume, no parens
+    static QMARK_ABBREV_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"[?!]\s+(?:IEEE|ACM|SIAM)\s+Trans[a-z.]*(?:\s+[A-Z][a-z]+\.?)+\s+\d+",
+        )
+        .unwrap()
+    });
+    if let Some(m) = QMARK_ABBREV_JOURNAL_RE.find(&title) {
+        let punct_pos = title[..m.end()]
+            .rfind(['?', '!'])
+            .unwrap();
+        title = title[..=punct_pos].to_string();
     }
 
     // Apply cutoff patterns to remove trailing venue/metadata
@@ -172,8 +217,9 @@ fn try_quoted_title_with_config(
             let after_quote = ref_text[caps.get(0).unwrap().end()..].trim();
 
             // IEEE: comma inside quotes means title is complete
+            // Accept 2+ words for quoted titles (quotes are a strong indicator)
             if quoted_part.ends_with(',') {
-                if quoted_part.split_whitespace().count() >= 3 {
+                if quoted_part.split_whitespace().count() >= 2 {
                     return Some((quoted_part.to_string(), true));
                 }
                 continue;
@@ -202,7 +248,8 @@ fn try_quoted_title_with_config(
             }
 
             // No subtitle — use quoted part if long enough
-            if quoted_part.split_whitespace().count() >= 3 {
+            // Accept 2+ words for quoted titles (quotes are a strong indicator)
+            if quoted_part.split_whitespace().count() >= 2 {
                 return Some((quoted_part.to_string(), true));
             }
         }
@@ -528,9 +575,89 @@ fn try_elsevier_journal(ref_text: &str) -> Option<(String, bool)> {
     None
 }
 
+fn try_chinese_allcaps(ref_text: &str) -> Option<(String, bool)> {
+    // Chinese ALL CAPS: "SURNAME I, SURNAME I, et al. Title[J]. Venue"
+    // Key difference from Western: single-letter initial without period after surname
+    static CHINESE_CAPS: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^[A-Z]{2,}\s+[A-Z](?:,|\s|$)").unwrap());
+    if !CHINESE_CAPS.is_match(ref_text) {
+        return None;
+    }
+
+    // Find end of author list at "et al." or transition to non-author text
+    static ET_AL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i),?\s+et\s+al\.?\s*[,.]?\s*").unwrap());
+
+    let after_authors_str: String = if let Some(m) = ET_AL.find(ref_text) {
+        ref_text[m.end()..].trim().to_string()
+    } else {
+        // Find where ALL CAPS author pattern ends by scanning comma-separated parts
+        static AUTHOR_PART: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"^[A-Z]{2,}(?:\s+[A-Z](?:\s+[A-Z])?)?$").unwrap());
+        let parts: Vec<&str> = ref_text.split(", ").collect();
+        let mut title_start_idx = None;
+        for (i, part) in parts.iter().enumerate() {
+            let trimmed = part.trim();
+            if AUTHOR_PART.is_match(trimmed) {
+                continue;
+            }
+            title_start_idx = Some(i);
+            break;
+        }
+        match title_start_idx {
+            Some(idx) => parts[idx..].join(", ").trim().to_string(),
+            None => return None,
+        }
+    };
+
+    if after_authors_str.is_empty() {
+        return None;
+    }
+
+    // Find where title ends — at Chinese citation markers or venue patterns
+    static TITLE_END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            Regex::new(r"\[J\]").unwrap(), // Chinese: journal
+            Regex::new(r"\[C\]").unwrap(), // Chinese: conference
+            Regex::new(r"\[M\]").unwrap(), // Chinese: book/monograph
+            Regex::new(r"\[D\]").unwrap(), // Chinese: dissertation
+            Regex::new(r"\.\s*[A-Z][a-zA-Z\s]+\d+\s*\(\d+\)").unwrap(), // ". Journal 34(5)"
+            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&+]+\d+:\d+").unwrap(),     // ". Journal 34:123"
+            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&+]+,\s*\d+").unwrap(),     // ". Journal, vol"
+            Regex::new(r"\.\s*(?:19|20)\d{2}").unwrap(),                 // ". 2024"
+            Regex::new(r"\.\s*https?://").unwrap(),
+            Regex::new(r"\.\s*doi:").unwrap(),
+        ]
+    });
+
+    let mut title_end = after_authors_str.len();
+    for re in TITLE_END_PATTERNS.iter() {
+        if let Some(m) = re.find(&after_authors_str) {
+            title_end = title_end.min(m.start());
+        }
+    }
+
+    let title = after_authors_str[..title_end].trim();
+    static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
+    let title = TRAIL.replace(title, "");
+
+    if title.split_whitespace().count() >= 3 {
+        Some((title.to_string(), false))
+    } else {
+        None
+    }
+}
+
 fn try_all_caps_authors(ref_text: &str) -> Option<(String, bool)> {
     static STARTS_CAPS: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Z]{2,}").unwrap());
     if !STARTS_CAPS.is_match(ref_text) {
+        return None;
+    }
+
+    // Skip Chinese ALL CAPS pattern (handled by try_chinese_allcaps)
+    static CHINESE_CAPS: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^[A-Z]{2,}\s+[A-Z](?:,|\s)").unwrap());
+    if CHINESE_CAPS.is_match(ref_text) {
         return None;
     }
 
@@ -719,6 +846,11 @@ fn truncate_at_sentence_end(title: &str) -> String {
 pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     let j = r"[a-zA-Z&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars (no \s)
     vec![
+        // Chinese citation markers: [J]=journal, [C]=conference, [M]=book, [D]=dissertation
+        Regex::new(r"\[J\].*$").unwrap(),
+        Regex::new(r"\[C\].*$").unwrap(),
+        Regex::new(r"\[M\].*$").unwrap(),
+        Regex::new(r"\[D\].*$").unwrap(),
         Regex::new(r"(?i)\.\s*[Ii]n:\s+[A-Z].*$").unwrap(),
         Regex::new(r"(?i)\.\s*[Ii]n\s+[A-Z].*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR|PACM[- ]\w+).*$").unwrap(),
@@ -957,6 +1089,127 @@ mod tests {
             !cleaned.contains("American Political"),
             "Journal name leaked into title: {}",
             cleaned,
+        );
+    }
+
+    // ───────────────── Tests for regexp_improvements.py ports ─────────────────
+
+    #[test]
+    fn test_chinese_allcaps_with_et_al() {
+        let ref_text = "CAO X, YANG B, WANG K, et al. AI-empowered multiple access for 6G: A survey of spectrum sensing, protocol designs, and optimizations[J]. Proceedings of the IEEE, 2024, 112(9): 1264-1302.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            cleaned.contains("AI-empowered multiple access for 6G"),
+            "Should extract Chinese ALL CAPS title: {}",
+            cleaned,
+        );
+        assert!(
+            !cleaned.contains("[J]"),
+            "Should not include [J] marker: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_chinese_allcaps_h_infinity() {
+        let ref_text = "LIU Z, SABERI A, et al. H\u{221E} almost state synchronization for homogeneous networks[J]. IEEE Trans. Aut. Contr. 53 (2008), no. 4.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("almost state synchronization"),
+            "Should extract title from Chinese ALL CAPS with H-infinity: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_chinese_citation_marker_cutoff() {
+        // [J] marker should terminate the title
+        let title = "Some great research title[J]. Journal Name, 2024";
+        let cleaned = clean_title(title, false);
+        assert!(
+            !cleaned.contains("[J]"),
+            "Chinese citation marker [J] should be removed: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("great research title"),
+            "Title content should be preserved: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_venue_leak_abbreviated_journal_after_question() {
+        // "? IEEE Trans. Aut. Contr. 53" should not leak into title
+        let title = "Can machines think? IEEE Trans. Aut. Contr. 53 (2008), no. 4";
+        let cleaned = clean_title(title, false);
+        assert!(
+            !cleaned.contains("IEEE"),
+            "IEEE journal should not leak into title: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("Can machines think"),
+            "Title content should be preserved: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_venue_leak_journal_vol_after_question() {
+        // "? Automatica 34(5)" should be truncated at ?
+        let title = "What is consciousness? Automatica 34(5): 123-456";
+        let cleaned = clean_title(title, false);
+        assert!(
+            !cleaned.contains("Automatica"),
+            "Should not contain journal name after ?: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_two_word_quoted_title() {
+        let ref_text = r#"A. van der Schaft, "Cyclo-dissipativity revisited," IEEE Transactions on Automatic Control, vol. 66, no. 6, pp. 2925-2931, 2021."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "Should detect quoted title");
+        assert!(
+            title.contains("Cyclo-dissipativity"),
+            "Should extract 2-word quoted title: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_reference_prefix_stripping() {
+        // [N] prefix should be stripped
+        let ref_text = r#"[42] Jones, A. "A comprehensive survey on neural networks," Proc. AAAI, 2023."#;
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("comprehensive survey"),
+            "Should extract title after stripping [N] prefix: {}",
+            title,
+        );
+
+        // N. prefix should be stripped
+        let ref_text2 = r#"1. Smith, J. "Deep learning for NLP applications," Nature, 2024."#;
+        let (title2, _) = extract_title_from_reference(ref_text2);
+        assert!(
+            title2.contains("Deep learning"),
+            "Should extract title after stripping N. prefix: {}",
+            title2,
+        );
+    }
+
+    #[test]
+    fn test_format5_skip_chinese_allcaps() {
+        // Western ALL CAPS should NOT match Chinese pattern
+        let ref_text_western = "SMITH, J., AND JONES, A. A novel approach to detection. In Proceedings of AAAI.";
+        let (title, _) = extract_title_from_reference(ref_text_western);
+        assert!(
+            !title.is_empty(),
+            "Western ALL CAPS should still extract a title: {}",
+            title,
         );
     }
 }
