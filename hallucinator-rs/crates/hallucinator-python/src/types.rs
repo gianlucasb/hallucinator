@@ -133,6 +133,13 @@ impl From<ExtractionResult> for PyExtractionResult {
     }
 }
 
+impl PyExtractionResult {
+    /// Number of references in the result.
+    pub fn len(&self) -> usize {
+        self.inner.references.len()
+    }
+}
+
 #[pymethods]
 impl PyExtractionResult {
     /// List of parsed references.

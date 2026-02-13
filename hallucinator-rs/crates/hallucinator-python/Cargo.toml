@@ -21,3 +21,4 @@ hallucinator-acl = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-util = { workspace = true }
 pyo3 = { workspace = true }
+tempfile = { workspace = true }

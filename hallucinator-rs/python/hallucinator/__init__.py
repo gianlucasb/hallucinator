@@ -11,6 +11,10 @@ from hallucinator._native import (
     Reference,
     ExtractionResult,
     SkipStats,
+    # Archive extraction
+    ArchiveEntry,
+    ArchiveIterator,
+    is_archive_path,
     # Validation pipeline
     ValidatorConfig,
     Validator,
@@ -29,6 +33,10 @@ __all__ = [
     "Reference",
     "ExtractionResult",
     "SkipStats",
+    # Archive extraction
+    "ArchiveEntry",
+    "ArchiveIterator",
+    "is_archive_path",
     # Validation pipeline
     "Validator",
     "ValidatorConfig",
@@ -177,6 +185,16 @@ class PdfExtractor:
 
         text = self._native.extract_text(path)
         return self.extract_from_text(text)
+
+    def extract_archive(self, path, max_size_bytes=0):
+        """Extract and parse references from a ZIP or tar.gz archive.
+
+        Yields ArchiveEntry items as each file is processed.
+        PDFs get full reference extraction; BBL/BIB files yield raw content.
+
+        Access ``.warnings`` on the returned iterator for any size-limit warnings.
+        """
+        return self._native.extract_archive(path, max_size_bytes=max_size_bytes)
 
     def extract_text(self, path):
         """Extract raw text from a PDF file."""
