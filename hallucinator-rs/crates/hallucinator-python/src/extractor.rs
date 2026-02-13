@@ -6,6 +6,8 @@ use pyo3::prelude::*;
 
 use hallucinator_pdf::{PdfExtractor, PdfParsingConfigBuilder};
 
+#[cfg(feature = "pdf")]
+use crate::archive::PyArchiveIterator;
 use crate::errors::pdf_error_to_py;
 use crate::types::{PyExtractionResult, PyReference};
 
@@ -167,6 +169,43 @@ impl PyPdfExtractor {
             .extract_references(&PathBuf::from(path))
             .map_err(pdf_error_to_py)?;
         Ok(PyExtractionResult::from(result))
+    }
+
+    /// Extract and parse references from a ZIP or tar.gz archive.
+    ///
+    /// Returns an iterator that yields ``ArchiveEntry`` items as each file
+    /// is processed. PDFs get full reference extraction; BBL/BIB files yield
+    /// raw text content. Access ``.warnings`` on the iterator for any
+    /// size-limit warnings.
+    #[cfg(feature = "pdf")]
+    #[pyo3(signature = (path, max_size_bytes=0))]
+    fn extract_archive(&mut self, path: &str, max_size_bytes: u64) -> PyResult<PyArchiveIterator> {
+        let archive_path = PathBuf::from(path);
+
+        if !hallucinator_pdf::archive::is_archive_path(&archive_path) {
+            return Err(PyValueError::new_err(format!(
+                "Unsupported archive format: {}. Expected .zip, .tar.gz, or .tgz",
+                path
+            )));
+        }
+
+        let config = self
+            .builder
+            .clone()
+            .build()
+            .map_err(|e| PyValueError::new_err(format!("Invalid regex: {}", e)))?;
+        let extractor = PdfExtractor::with_config(config);
+
+        let temp_dir = tempfile::tempdir()
+            .map_err(|e| PyValueError::new_err(format!("Failed to create temp dir: {}", e)))?;
+        let dir = temp_dir.path().to_path_buf();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            hallucinator_pdf::archive::extract_archive_streaming(&archive_path, &dir, max_size_bytes, &tx)
+        });
+
+        Ok(PyArchiveIterator::new(rx, extractor, temp_dir, handle))
     }
 
     /// Extract raw text from a PDF file (step 1).

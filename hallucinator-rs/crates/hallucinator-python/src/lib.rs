@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+mod archive;
 mod config;
 mod errors;
 mod extractor;
@@ -15,6 +16,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::PyReference>()?;
     m.add_class::<types::PyExtractionResult>()?;
     m.add_class::<types::PySkipStats>()?;
+
+    // Archive extraction
+    m.add_class::<archive::PyArchiveEntry>()?;
+    m.add_class::<archive::PyArchiveIterator>()?;
+    m.add_function(wrap_pyfunction!(archive::is_archive_path, m)?)?;
 
     // Validation pipeline (Phase 2B)
     m.add_class::<config::PyValidatorConfig>()?;
