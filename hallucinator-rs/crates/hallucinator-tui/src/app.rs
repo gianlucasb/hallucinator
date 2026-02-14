@@ -987,10 +987,20 @@ impl App {
                     let paper_idx = *paper_idx;
                     self.screen = Screen::Paper(paper_idx);
                 }
-                Screen::Paper(_) => {
+                Screen::Paper(paper_idx) => {
                     if !self.single_paper_mode {
+                        let paper_idx = *paper_idx;
                         self.screen = Screen::Queue;
                         self.paper_cursor = 0;
+                        // Restore cursor to the same paper even if sort order changed
+                        self.queue_cursor = self
+                            .queue_sorted
+                            .iter()
+                            .position(|&i| i == paper_idx)
+                            .unwrap_or(
+                                self.queue_cursor
+                                    .min(self.queue_sorted.len().saturating_sub(1)),
+                            );
                     }
                 }
                 Screen::Queue => {
