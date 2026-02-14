@@ -23,17 +23,20 @@ pub enum FpReason {
     AllTimedOut,
     /// User personally knows this reference is real.
     KnownGood,
+    /// Non-academic source (RFC, legal document, news article, etc.).
+    NonAcademic,
 }
 
 impl FpReason {
-    /// Cycle: None → BrokenParse → ExistsElsewhere → AllTimedOut → KnownGood → None.
+    /// Cycle: None → BrokenParse → ExistsElsewhere → AllTimedOut → KnownGood → NonAcademic → None.
     pub fn cycle(current: Option<FpReason>) -> Option<FpReason> {
         match current {
             None => Some(FpReason::BrokenParse),
             Some(FpReason::BrokenParse) => Some(FpReason::ExistsElsewhere),
             Some(FpReason::ExistsElsewhere) => Some(FpReason::AllTimedOut),
             Some(FpReason::AllTimedOut) => Some(FpReason::KnownGood),
-            Some(FpReason::KnownGood) => None,
+            Some(FpReason::KnownGood) => Some(FpReason::NonAcademic),
+            Some(FpReason::NonAcademic) => None,
         }
     }
 
@@ -44,6 +47,7 @@ impl FpReason {
             FpReason::ExistsElsewhere => "GS",
             FpReason::AllTimedOut => "timeout",
             FpReason::KnownGood => "known",
+            FpReason::NonAcademic => "N/A",
         }
     }
 
@@ -54,6 +58,7 @@ impl FpReason {
             FpReason::ExistsElsewhere => "Found on Google Scholar / other source",
             FpReason::AllTimedOut => "All databases timed out",
             FpReason::KnownGood => "User verified as real",
+            FpReason::NonAcademic => "Non-academic source (RFC, legal, news, etc.)",
         }
     }
 
@@ -64,6 +69,7 @@ impl FpReason {
             FpReason::ExistsElsewhere => "exists_elsewhere",
             FpReason::AllTimedOut => "all_timed_out",
             FpReason::KnownGood => "known_good",
+            FpReason::NonAcademic => "non_academic",
         }
     }
 
@@ -74,6 +80,7 @@ impl FpReason {
             "exists_elsewhere" => Some(FpReason::ExistsElsewhere),
             "all_timed_out" => Some(FpReason::AllTimedOut),
             "known_good" => Some(FpReason::KnownGood),
+            "non_academic" => Some(FpReason::NonAcademic),
             _ => None,
         }
     }
