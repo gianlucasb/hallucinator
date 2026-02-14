@@ -2,7 +2,7 @@
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::db;
 use crate::{AclError, AclQueryResult, AclRecord};
@@ -122,7 +122,7 @@ pub fn query_fts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init_database, insert_batch, rebuild_fts_index, InsertBatch};
+    use crate::db::{InsertBatch, init_database, insert_batch, rebuild_fts_index};
 
     fn setup_db_with_data() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

@@ -14,7 +14,7 @@ pub mod retraction;
 
 // Re-export for convenience
 pub use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
-pub use orchestrator::{query_all_databases, DbSearchResult};
+pub use orchestrator::{DbSearchResult, query_all_databases};
 
 /// Status of a single database query within an orchestrator run.
 #[derive(Debug, Clone, PartialEq, Eq)]

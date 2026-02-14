@@ -302,20 +302,20 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
             raw_parts.push(authors.join(", "));
         }
         raw_parts.push(title.clone());
-        if let Some(journal) = entry.get("journal").map(chunks_to_string) {
-            if !journal.is_empty() {
-                raw_parts.push(journal);
-            }
+        if let Some(journal) = entry.get("journal").map(chunks_to_string)
+            && !journal.is_empty()
+        {
+            raw_parts.push(journal);
         }
-        if let Some(booktitle) = entry.get("booktitle").map(chunks_to_string) {
-            if !booktitle.is_empty() {
-                raw_parts.push(booktitle);
-            }
+        if let Some(booktitle) = entry.get("booktitle").map(chunks_to_string)
+            && !booktitle.is_empty()
+        {
+            raw_parts.push(booktitle);
         }
-        if let Some(year) = entry.get("year").map(chunks_to_string) {
-            if !year.is_empty() {
-                raw_parts.push(year);
-            }
+        if let Some(year) = entry.get("year").map(chunks_to_string)
+            && !year.is_empty()
+        {
+            raw_parts.push(year);
         }
         let raw_citation = raw_parts.join(". ");
 
@@ -443,24 +443,24 @@ fn segment_bibitem_entries(content: &str) -> Vec<String> {
 /// 3. `\bibinfo{booktitle}{...}` — book titles
 fn extract_title(entry: &str) -> Option<String> {
     // 1. \showarticletitle{...}
-    if let Some(t) = extract_braced_arg(entry, "\\showarticletitle") {
-        if !t.is_empty() {
-            return Some(t);
-        }
+    if let Some(t) = extract_braced_arg(entry, "\\showarticletitle")
+        && !t.is_empty()
+    {
+        return Some(t);
     }
 
     // 2. \bibinfo{title}{...}
-    if let Some(t) = extract_bibinfo(entry, "title") {
-        if !t.is_empty() {
-            return Some(t);
-        }
+    if let Some(t) = extract_bibinfo(entry, "title")
+        && !t.is_empty()
+    {
+        return Some(t);
     }
 
     // 3. \bibinfo{booktitle}{...}
-    if let Some(t) = extract_bibinfo(entry, "booktitle") {
-        if !t.is_empty() {
-            return Some(t);
-        }
+    if let Some(t) = extract_bibinfo(entry, "booktitle")
+        && !t.is_empty()
+    {
+        return Some(t);
     }
 
     None

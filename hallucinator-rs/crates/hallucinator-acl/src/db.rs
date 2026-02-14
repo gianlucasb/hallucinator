@@ -1,6 +1,6 @@
 //! SQLite database operations for ACL Anthology indexing.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::AclError;
 

@@ -1,6 +1,6 @@
 //! SQLite database operations for DBLP indexing.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::DblpError;
 

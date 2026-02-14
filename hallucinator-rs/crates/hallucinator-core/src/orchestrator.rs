@@ -273,15 +273,15 @@ fn build_database_list(
     if should_include("PubMed") {
         databases.push(Box::new(pubmed::PubMed));
     }
-    if let Some(ref key) = config.openalex_key {
-        if should_include("OpenAlex") {
-            databases.insert(
-                0,
-                Box::new(openalex::OpenAlex {
-                    api_key: key.clone(),
-                }),
-            );
-        }
+    if let Some(ref key) = config.openalex_key
+        && should_include("OpenAlex")
+    {
+        databases.insert(
+            0,
+            Box::new(openalex::OpenAlex {
+                api_key: key.clone(),
+            }),
+        );
     }
 
     databases

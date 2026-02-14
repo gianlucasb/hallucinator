@@ -46,15 +46,15 @@ pub async fn build(
     // Check latest commit SHA
     let current_sha = get_latest_commit_sha(&client).await?;
 
-    if let Some(ref stored) = stored_sha {
-        if stored == &current_sha {
-            progress(BuildProgress::Complete {
-                publications: 0,
-                authors: 0,
-                skipped: true,
-            });
-            return Ok(false);
-        }
+    if let Some(ref stored) = stored_sha
+        && stored == &current_sha
+    {
+        progress(BuildProgress::Complete {
+            publications: 0,
+            authors: 0,
+            skipped: true,
+        });
+        return Ok(false);
     }
 
     // Download tarball

@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 use hallucinator_core::{DbStatus, Status};
 
@@ -271,37 +271,37 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         }
 
         // RETRACTION section
-        if let Some(retraction) = &result.retraction_info {
-            if retraction.is_retracted {
-                lines.push(Line::from(""));
-                // Heavy box border for retraction
-                lines.push(Line::from(Span::styled(
+        if let Some(retraction) = &result.retraction_info
+            && retraction.is_retracted
+        {
+            lines.push(Line::from(""));
+            // Heavy box border for retraction
+            lines.push(Line::from(Span::styled(
                     "  \u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}",
                     Style::default().fg(theme.retracted),
                 )));
+            lines.push(Line::from(Span::styled(
+                "  \u{2551} \u{26A0} WARNING: This paper has been retracted!  \u{2551}",
+                Style::default()
+                    .fg(theme.retracted)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            if let Some(rdoi) = &retraction.retraction_doi {
                 lines.push(Line::from(Span::styled(
-                    "  \u{2551} \u{26A0} WARNING: This paper has been retracted!  \u{2551}",
-                    Style::default()
-                        .fg(theme.retracted)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                if let Some(rdoi) = &retraction.retraction_doi {
-                    lines.push(Line::from(Span::styled(
-                        format!("  \u{2551} DOI: {:<38}\u{2551}", rdoi),
-                        Style::default().fg(theme.retracted),
-                    )));
-                }
-                if let Some(rsrc) = &retraction.retraction_source {
-                    lines.push(Line::from(Span::styled(
-                        format!("  \u{2551} Source: {:<35}\u{2551}", rsrc),
-                        Style::default().fg(theme.retracted),
-                    )));
-                }
-                lines.push(Line::from(Span::styled(
-                    "  \u{255A}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255D}",
+                    format!("  \u{2551} DOI: {:<38}\u{2551}", rdoi),
                     Style::default().fg(theme.retracted),
                 )));
             }
+            if let Some(rsrc) = &retraction.retraction_source {
+                lines.push(Line::from(Span::styled(
+                    format!("  \u{2551} Source: {:<35}\u{2551}", rsrc),
+                    Style::default().fg(theme.retracted),
+                )));
+            }
+            lines.push(Line::from(Span::styled(
+                    "  \u{255A}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255D}",
+                    Style::default().fg(theme.retracted),
+                )));
         }
 
         // FAILED DATABASES section

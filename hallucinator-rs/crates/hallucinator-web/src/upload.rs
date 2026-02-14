@@ -86,10 +86,10 @@ pub async fn parse_multipart(mut multipart: Multipart) -> Result<FormFields, Str
                     .text()
                     .await
                     .map_err(|e| format!("Failed to read disabled_dbs: {}", e))?;
-                if !val.is_empty() {
-                    if let Ok(dbs) = serde_json::from_str::<Vec<String>>(&val) {
-                        disabled_dbs = dbs;
-                    }
+                if !val.is_empty()
+                    && let Ok(dbs) = serde_json::from_str::<Vec<String>>(&val)
+                {
+                    disabled_dbs = dbs;
                 }
             }
             _ => {

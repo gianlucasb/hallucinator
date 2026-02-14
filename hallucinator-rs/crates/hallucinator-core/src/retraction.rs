@@ -40,7 +40,7 @@ pub async fn check_retraction(
             return RetractionResult {
                 error: Some(format!("Retraction check failed: {}", e)),
                 ..Default::default()
-            }
+            };
         }
     };
 
@@ -60,7 +60,7 @@ pub async fn check_retraction(
             return RetractionResult {
                 error: Some(format!("Failed to parse: {}", e)),
                 ..Default::default()
-            }
+            };
         }
     };
 
@@ -85,26 +85,26 @@ pub async fn check_retraction(
 
     // Check relation field
     let relation = &work["relation"];
-    if let Some(retracted_by) = relation["is-retracted-by"].as_array() {
-        if let Some(first) = retracted_by.first() {
-            return RetractionResult {
-                retracted: true,
-                retraction_doi: first["id"].as_str().map(String::from),
-                retraction_type: Some("Retraction".into()),
-                error: None,
-            };
-        }
+    if let Some(retracted_by) = relation["is-retracted-by"].as_array()
+        && let Some(first) = retracted_by.first()
+    {
+        return RetractionResult {
+            retracted: true,
+            retraction_doi: first["id"].as_str().map(String::from),
+            retraction_type: Some("Retraction".into()),
+            error: None,
+        };
     }
 
-    if let Some(concerns) = relation["has-expression-of-concern"].as_array() {
-        if let Some(first) = concerns.first() {
-            return RetractionResult {
-                retracted: true,
-                retraction_doi: first["id"].as_str().map(String::from),
-                retraction_type: Some("Expression of Concern".into()),
-                error: None,
-            };
-        }
+    if let Some(concerns) = relation["has-expression-of-concern"].as_array()
+        && let Some(first) = concerns.first()
+    {
+        return RetractionResult {
+            retracted: true,
+            retraction_doi: first["id"].as_str().map(String::from),
+            retraction_type: Some("Expression of Concern".into()),
+            error: None,
+        };
     }
 
     RetractionResult::default()
@@ -144,7 +144,7 @@ pub async fn check_retraction_by_title(
             return RetractionResult {
                 error: Some(format!("Retraction search failed: {}", e)),
                 ..Default::default()
-            }
+            };
         }
     };
 
@@ -192,26 +192,26 @@ pub async fn check_retraction_by_title(
 
         // Check relation field
         let relation = &item["relation"];
-        if let Some(retracted_by) = relation["is-retracted-by"].as_array() {
-            if let Some(first) = retracted_by.first() {
-                return RetractionResult {
-                    retracted: true,
-                    retraction_doi: first["id"].as_str().map(String::from),
-                    retraction_type: Some("Retraction".into()),
-                    error: None,
-                };
-            }
+        if let Some(retracted_by) = relation["is-retracted-by"].as_array()
+            && let Some(first) = retracted_by.first()
+        {
+            return RetractionResult {
+                retracted: true,
+                retraction_doi: first["id"].as_str().map(String::from),
+                retraction_type: Some("Retraction".into()),
+                error: None,
+            };
         }
 
-        if let Some(concerns) = relation["has-expression-of-concern"].as_array() {
-            if let Some(first) = concerns.first() {
-                return RetractionResult {
-                    retracted: true,
-                    retraction_doi: first["id"].as_str().map(String::from),
-                    retraction_type: Some("Expression of Concern".into()),
-                    error: None,
-                };
-            }
+        if let Some(concerns) = relation["has-expression-of-concern"].as_array()
+            && let Some(first) = concerns.first()
+        {
+            return RetractionResult {
+                retracted: true,
+                retraction_doi: first["id"].as_str().map(String::from),
+                retraction_type: Some("Expression of Concern".into()),
+                error: None,
+            };
         }
     }
 

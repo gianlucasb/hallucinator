@@ -14,7 +14,7 @@ use crate::model::activity::{ActiveQuery, ActivityState};
 use crate::model::config::ConfigState;
 use crate::model::paper::{FpReason, PaperFilter, PaperSortOrder, RefPhase, RefState};
 use crate::model::queue::{
-    filtered_indices, PaperPhase, PaperState, PaperVerdict, QueueFilter, SortOrder,
+    PaperPhase, PaperState, PaperVerdict, QueueFilter, SortOrder, filtered_indices,
 };
 use crate::theme::Theme;
 use crate::tui_event::{BackendCommand, BackendEvent};
@@ -157,25 +157,25 @@ impl FilePickerState {
 
     /// Toggle selection of the current entry (PDFs, .bbl, .bib files, archives, and .json results).
     pub fn toggle_selected(&mut self) {
-        if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_pdf || entry.is_bbl || entry.is_bib || entry.is_archive || entry.is_json {
-                if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
-                    self.selected.remove(pos);
-                } else {
-                    self.selected.push(entry.path.clone());
-                }
+        if let Some(entry) = self.entries.get(self.cursor)
+            && (entry.is_pdf || entry.is_bbl || entry.is_bib || entry.is_archive || entry.is_json)
+        {
+            if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
+                self.selected.remove(pos);
+            } else {
+                self.selected.push(entry.path.clone());
             }
         }
     }
 
     /// Enter the directory at cursor, or return false if not a directory.
     pub fn enter_directory(&mut self) -> bool {
-        if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_dir {
-                self.current_dir = entry.path.clone();
-                self.refresh_entries();
-                return true;
-            }
+        if let Some(entry) = self.entries.get(self.cursor)
+            && entry.is_dir
+        {
+            self.current_dir = entry.path.clone();
+            self.refresh_entries();
+            return true;
         }
         false
     }
@@ -698,17 +698,18 @@ impl App {
         let got_new = !new_pdfs.is_empty();
 
         // If processing is already started, send newly extracted PDFs to backend
-        if self.processing_started && got_new {
-            if let Some(tx) = &self.backend_cmd_tx {
-                let starting_index = self.file_paths.len() - new_pdfs.len();
-                let config = self.build_config();
-                let _ = tx.send(BackendCommand::ProcessFiles {
-                    files: new_pdfs,
-                    starting_index,
-                    max_concurrent_papers: self.config_state.max_concurrent_papers,
-                    config: Box::new(config),
-                });
-            }
+        if self.processing_started
+            && got_new
+            && let Some(tx) = &self.backend_cmd_tx
+        {
+            let starting_index = self.file_paths.len() - new_pdfs.len();
+            let config = self.build_config();
+            let _ = tx.send(BackendCommand::ProcessFiles {
+                files: new_pdfs,
+                starting_index,
+                max_concurrent_papers: self.config_state.max_concurrent_papers,
+                config: Box::new(config),
+            });
         }
 
         if got_new {
@@ -891,10 +892,10 @@ impl App {
                 }
                 Action::Tick => {
                     self.tick = self.tick.wrapping_add(1);
-                    if let Some(dismiss) = self.banner_dismiss_tick {
-                        if self.tick >= dismiss {
-                            self.dismiss_banner();
-                        }
+                    if let Some(dismiss) = self.banner_dismiss_tick
+                        && self.tick >= dismiss
+                    {
+                        self.dismiss_banner();
                     }
                 }
                 Action::Resize(_w, h) => {
@@ -1240,10 +1241,10 @@ impl App {
                         let indices = self.paper_ref_indices(idx);
                         if self.paper_cursor < indices.len() {
                             let ref_idx = indices[self.paper_cursor];
-                            if let Some(refs) = self.ref_states.get_mut(idx) {
-                                if let Some(rs) = refs.get_mut(ref_idx) {
-                                    rs.fp_reason = FpReason::cycle(rs.fp_reason);
-                                }
+                            if let Some(refs) = self.ref_states.get_mut(idx)
+                                && let Some(rs) = refs.get_mut(ref_idx)
+                            {
+                                rs.fp_reason = FpReason::cycle(rs.fp_reason);
                             }
                         }
                     }
@@ -1251,10 +1252,10 @@ impl App {
                         // Space on detail: cycle FP reason
                         let paper_idx = *paper_idx;
                         let ref_idx = *ref_idx;
-                        if let Some(refs) = self.ref_states.get_mut(paper_idx) {
-                            if let Some(rs) = refs.get_mut(ref_idx) {
-                                rs.fp_reason = FpReason::cycle(rs.fp_reason);
-                            }
+                        if let Some(refs) = self.ref_states.get_mut(paper_idx)
+                            && let Some(rs) = refs.get_mut(ref_idx)
+                        {
+                            rs.fp_reason = FpReason::cycle(rs.fp_reason);
                         }
                     }
                     Screen::Config => {
@@ -1351,26 +1352,27 @@ impl App {
 
     /// Handle mouse click → row selection.
     fn handle_click(&mut self, _x: u16, y: u16) {
-        if let Some(table_area) = self.last_table_area {
-            if y >= table_area.y && y < table_area.y + table_area.height {
-                // Account for border (1) + header row (1) = offset 2 from table_area.y
-                let row_offset = 2u16;
-                if y >= table_area.y + row_offset {
-                    let clicked_row = (y - table_area.y - row_offset) as usize;
-                    match &self.screen {
-                        Screen::Queue => {
-                            if clicked_row < self.queue_sorted.len() {
-                                self.queue_cursor = clicked_row;
-                            }
+        if let Some(table_area) = self.last_table_area
+            && y >= table_area.y
+            && y < table_area.y + table_area.height
+        {
+            // Account for border (1) + header row (1) = offset 2 from table_area.y
+            let row_offset = 2u16;
+            if y >= table_area.y + row_offset {
+                let clicked_row = (y - table_area.y - row_offset) as usize;
+                match &self.screen {
+                    Screen::Queue => {
+                        if clicked_row < self.queue_sorted.len() {
+                            self.queue_cursor = clicked_row;
                         }
-                        Screen::Paper(idx) => {
-                            let indices = self.paper_ref_indices(*idx);
-                            if clicked_row < indices.len() {
-                                self.paper_cursor = clicked_row;
-                            }
-                        }
-                        _ => {}
                     }
+                    Screen::Paper(idx) => {
+                        let indices = self.paper_ref_indices(*idx);
+                        if clicked_row < indices.len() {
+                            self.paper_cursor = clicked_row;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1527,10 +1529,10 @@ impl App {
                 _ => {}
             },
             ConfigSection::Display => {
-                if self.config_state.item_cursor == 1 {
-                    if let Ok(v) = buf.parse::<u32>() {
-                        self.config_state.fps = v.clamp(1, 120);
-                    }
+                if self.config_state.item_cursor == 1
+                    && let Ok(v) = buf.parse::<u32>()
+                {
+                    self.config_state.fps = v.clamp(1, 120);
                 }
             }
         }
@@ -1596,10 +1598,10 @@ impl App {
                 paper_index,
                 results: _,
             } => {
-                if let Some(paper) = self.papers.get_mut(paper_index) {
-                    if paper.phase != PaperPhase::ExtractionFailed {
-                        paper.phase = PaperPhase::Complete;
-                    }
+                if let Some(paper) = self.papers.get_mut(paper_index)
+                    && paper.phase != PaperPhase::ExtractionFailed
+                {
+                    paper.phase = PaperPhase::Complete;
                 }
             }
             BackendEvent::BatchComplete => {
@@ -1613,10 +1615,10 @@ impl App {
     fn handle_progress(&mut self, paper_index: usize, event: ProgressEvent) {
         match event {
             ProgressEvent::Checking { index, title, .. } => {
-                if let Some(refs) = self.ref_states.get_mut(paper_index) {
-                    if let Some(rs) = refs.get_mut(index) {
-                        rs.phase = RefPhase::Checking;
-                    }
+                if let Some(refs) = self.ref_states.get_mut(paper_index)
+                    && let Some(rs) = refs.get_mut(index)
+                {
+                    rs.phase = RefPhase::Checking;
                 }
                 // Track active query
                 self.activity.active_queries.push(ActiveQuery {
@@ -1633,16 +1635,16 @@ impl App {
                     }
                     paper.record_result(index, result.clone());
                 }
-                if let Some(refs) = self.ref_states.get_mut(paper_index) {
-                    if let Some(rs) = refs.get_mut(index) {
-                        rs.phase = RefPhase::Done;
-                        // Remove matching active query
-                        let title = rs.title.clone();
-                        self.activity
-                            .active_queries
-                            .retain(|q| q.ref_title != title);
-                        rs.result = Some(result);
-                    }
+                if let Some(refs) = self.ref_states.get_mut(paper_index)
+                    && let Some(rs) = refs.get_mut(index)
+                {
+                    rs.phase = RefPhase::Done;
+                    // Remove matching active query
+                    let title = rs.title.clone();
+                    self.activity
+                        .active_queries
+                        .retain(|q| q.ref_title != title);
+                    rs.result = Some(result);
                 }
                 self.activity.total_completed += 1;
                 self.throughput_since_last += 1;
@@ -1681,15 +1683,13 @@ impl App {
                         && !success
                         && !self.activity.dblp_timeout_warned
                         && self.config_state.dblp_offline_path.is_empty()
+                        && let Some(health) = self.activity.db_health.get("DBLP")
+                        && health.failed >= 3
                     {
-                        if let Some(health) = self.activity.db_health.get("DBLP") {
-                            if health.failed >= 3 {
-                                self.activity.log_warn(
+                        self.activity.log_warn(
                                     "DBLP online timing out repeatedly. Build an offline database: hallucinator-tui update-dblp".to_string()
                                 );
-                                self.activity.dblp_timeout_warned = true;
-                            }
-                        }
+                        self.activity.dblp_timeout_warned = true;
                     }
                 }
             }
@@ -1725,10 +1725,10 @@ impl App {
         match &self.screen {
             Screen::RefDetail(paper_idx, ref_idx) => {
                 let rs = self.ref_states.get(*paper_idx)?.get(*ref_idx)?;
-                if let Some(result) = &rs.result {
-                    if !result.raw_citation.is_empty() {
-                        return Some(result.raw_citation.clone());
-                    }
+                if let Some(result) = &rs.result
+                    && !result.raw_citation.is_empty()
+                {
+                    return Some(result.raw_citation.clone());
                 }
                 Some(rs.title.clone())
             }
@@ -1783,10 +1783,10 @@ impl App {
         };
 
         // Mark as retrying
-        if let Some(refs) = self.ref_states.get_mut(paper_idx) {
-            if let Some(rs) = refs.get_mut(ref_idx) {
-                rs.phase = RefPhase::Retrying;
-            }
+        if let Some(refs) = self.ref_states.get_mut(paper_idx)
+            && let Some(rs) = refs.get_mut(ref_idx)
+        {
+            rs.phase = RefPhase::Retrying;
         }
 
         self.activity
@@ -1829,12 +1829,11 @@ impl App {
         // Collect retryable refs: NotFound with failed_dbs, or NotFound for full re-check
         let mut to_retry: Vec<(usize, hallucinator_core::Reference, Vec<String>)> = Vec::new();
         for (i, rs) in refs.iter().enumerate() {
-            if let Some(result) = &rs.result {
-                if result.status == hallucinator_core::Status::NotFound {
-                    if let Some(reference) = paper_refs.get(i) {
-                        to_retry.push((i, reference.clone(), result.failed_dbs.clone()));
-                    }
-                }
+            if let Some(result) = &rs.result
+                && result.status == hallucinator_core::Status::NotFound
+                && let Some(reference) = paper_refs.get(i)
+            {
+                to_retry.push((i, reference.clone(), result.failed_dbs.clone()));
             }
         }
 

@@ -1,9 +1,9 @@
 use crate::app::App;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 /// Render the activity panel in the given area.
 pub fn render(f: &mut Frame, area: Rect, app: &App) {

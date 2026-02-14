@@ -4,8 +4,8 @@ use regex::Regex;
 use std::path::Path;
 
 use crate::config::PdfParsingConfig;
-use crate::{authors, identifiers, section, text_processing, title};
 use crate::{ExtractionResult, PdfError, Reference, SkipStats};
+use crate::{authors, identifiers, section, text_processing, title};
 
 /// A configurable PDF reference extraction pipeline.
 ///

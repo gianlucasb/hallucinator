@@ -5,8 +5,8 @@
 
 use std::io::BufRead;
 
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 
 /// A publication extracted from the DBLP XML dump.
 #[derive(Debug)]
@@ -123,10 +123,10 @@ pub fn parse_xml<R: BufRead>(reader: R, mut on_pub: impl FnMut(Publication)) {
             }
 
             Ok(Event::Text(ref e)) => {
-                if reading.is_some() {
-                    if let Ok(text) = e.unescape() {
-                        text_buf.push_str(&text);
-                    }
+                if reading.is_some()
+                    && let Ok(text) = e.unescape()
+                {
+                    text_buf.push_str(&text);
                 }
             }
 

@@ -2,8 +2,8 @@ use std::path::Path;
 
 use mupdf::{Document, TextPageFlags};
 
-use crate::text_processing::expand_ligatures;
 use crate::PdfError;
+use crate::text_processing::expand_ligatures;
 
 /// Extract text from a PDF file using MuPDF.
 ///

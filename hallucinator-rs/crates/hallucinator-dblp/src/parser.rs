@@ -124,10 +124,10 @@ fn parse_literal(s: &str) -> Option<(String, &str)> {
                                     hex.push(h);
                                 }
                             }
-                            if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                                if let Some(ch) = char::from_u32(code) {
-                                    result.push(ch);
-                                }
+                            if let Ok(code) = u32::from_str_radix(&hex, 16)
+                                && let Some(ch) = char::from_u32(code)
+                            {
+                                result.push(ch);
                             }
                         }
                         'U' => {
@@ -138,10 +138,10 @@ fn parse_literal(s: &str) -> Option<(String, &str)> {
                                     hex.push(h);
                                 }
                             }
-                            if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                                if let Some(ch) = char::from_u32(code) {
-                                    result.push(ch);
-                                }
+                            if let Ok(code) = u32::from_str_radix(&hex, 16)
+                                && let Some(ch) = char::from_u32(code)
+                            {
+                                result.push(ch);
                             }
                         }
                         _ => result.push(escaped),

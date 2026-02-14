@@ -502,32 +502,32 @@ fn write_md_ref(out: &mut String, ref_num: usize, r: &ValidationResult) {
     }
 
     // DOI/arXiv issues
-    if let Some(doi) = &r.doi_info {
-        if !doi.valid {
-            out.push_str(&format!(
-                "- **DOI** `{}` \u{2014} invalid/unresolvable\n",
-                doi.doi
-            ));
-        }
+    if let Some(doi) = &r.doi_info
+        && !doi.valid
+    {
+        out.push_str(&format!(
+            "- **DOI** `{}` \u{2014} invalid/unresolvable\n",
+            doi.doi
+        ));
     }
-    if let Some(ax) = &r.arxiv_info {
-        if !ax.valid {
-            out.push_str(&format!("- **arXiv** `{}` \u{2014} invalid\n", ax.arxiv_id));
-        }
+    if let Some(ax) = &r.arxiv_info
+        && !ax.valid
+    {
+        out.push_str(&format!("- **arXiv** `{}` \u{2014} invalid\n", ax.arxiv_id));
     }
 
     // Retraction details
-    if let Some(ret) = &r.retraction_info {
-        if ret.is_retracted {
-            if let Some(rdoi) = &ret.retraction_doi {
-                out.push_str(&format!(
-                    "- **Retraction notice:** [{}](https://doi.org/{})\n",
-                    rdoi, rdoi
-                ));
-            }
-            if let Some(src) = &ret.retraction_source {
-                out.push_str(&format!("- **Retraction source:** {}\n", src));
-            }
+    if let Some(ret) = &r.retraction_info
+        && ret.is_retracted
+    {
+        if let Some(rdoi) = &ret.retraction_doi {
+            out.push_str(&format!(
+                "- **Retraction notice:** [{}](https://doi.org/{})\n",
+                rdoi, rdoi
+            ));
+        }
+        if let Some(src) = &ret.retraction_source {
+            out.push_str(&format!("- **Retraction source:** {}\n", src));
         }
     }
 
@@ -615,14 +615,14 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                 }
 
                 // Retraction details
-                if let Some(ret) = &r.retraction_info {
-                    if ret.is_retracted {
-                        if let Some(rdoi) = &ret.retraction_doi {
-                            out.push_str(&format!("       Retraction DOI: {}\n", rdoi));
-                        }
-                        if let Some(src) = &ret.retraction_source {
-                            out.push_str(&format!("       Retraction source: {}\n", src));
-                        }
+                if let Some(ret) = &r.retraction_info
+                    && ret.is_retracted
+                {
+                    if let Some(rdoi) = &ret.retraction_doi {
+                        out.push_str(&format!("       Retraction DOI: {}\n", rdoi));
+                    }
+                    if let Some(src) = &ret.retraction_source {
+                        out.push_str(&format!("       Retraction source: {}\n", src));
                     }
                 }
 
@@ -1067,20 +1067,20 @@ fn write_html_ref(
     }
 
     // Retraction warning
-    if let Some(ret) = &r.retraction_info {
-        if ret.is_retracted {
-            out.push_str("<div class=\"retraction-warning\">\u{26a0}\u{fe0f} <strong>This paper has been retracted.</strong>");
-            if let Some(rdoi) = &ret.retraction_doi {
-                out.push_str(&format!(
-                    " <a href=\"https://doi.org/{}\">Retraction notice</a>",
-                    html_escape(rdoi),
-                ));
-            }
-            if let Some(src) = &ret.retraction_source {
-                out.push_str(&format!(" ({})", html_escape(src)));
-            }
-            out.push_str("</div>\n");
+    if let Some(ret) = &r.retraction_info
+        && ret.is_retracted
+    {
+        out.push_str("<div class=\"retraction-warning\">\u{26a0}\u{fe0f} <strong>This paper has been retracted.</strong>");
+        if let Some(rdoi) = &ret.retraction_doi {
+            out.push_str(&format!(
+                " <a href=\"https://doi.org/{}\">Retraction notice</a>",
+                html_escape(rdoi),
+            ));
         }
+        if let Some(src) = &ret.retraction_source {
+            out.push_str(&format!(" ({})", html_escape(src)));
+        }
+        out.push_str("</div>\n");
     }
 
     // Links

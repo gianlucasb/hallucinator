@@ -1,4 +1,4 @@
-use crate::doi::{check_doi_match, validate_doi, DoiMatchResult};
+use crate::doi::{DoiMatchResult, check_doi_match, validate_doi};
 use crate::orchestrator::query_all_databases;
 use crate::retraction::{check_retraction, check_retraction_by_title};
 use crate::{

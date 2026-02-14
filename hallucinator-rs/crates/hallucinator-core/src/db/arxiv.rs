@@ -47,8 +47,8 @@ impl DatabaseBackend for Arxiv {
 
 /// Parse arXiv Atom XML response and find matching entries.
 fn parse_arxiv_response(xml: &str, title: &str) -> Result<DbQueryResult, String> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
 

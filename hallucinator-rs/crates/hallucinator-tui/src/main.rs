@@ -4,14 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use ratatui::Terminal;
 use ratatui::crossterm::event;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::prelude::CrosstermBackend;
-use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -131,35 +131,35 @@ async fn main() -> anyhow::Result<()> {
     config_file::apply_to_config_state(&file_config, &mut config_state);
 
     // Apply env vars (override file config)
-    if let Ok(key) = std::env::var("OPENALEX_KEY") {
-        if !key.is_empty() {
-            config_state.openalex_key = key;
-        }
+    if let Ok(key) = std::env::var("OPENALEX_KEY")
+        && !key.is_empty()
+    {
+        config_state.openalex_key = key;
     }
-    if let Ok(key) = std::env::var("S2_API_KEY") {
-        if !key.is_empty() {
-            config_state.s2_api_key = key;
-        }
+    if let Ok(key) = std::env::var("S2_API_KEY")
+        && !key.is_empty()
+    {
+        config_state.s2_api_key = key;
     }
-    if let Ok(path) = std::env::var("DBLP_OFFLINE_PATH") {
-        if !path.is_empty() {
-            config_state.dblp_offline_path = path;
-        }
+    if let Ok(path) = std::env::var("DBLP_OFFLINE_PATH")
+        && !path.is_empty()
+    {
+        config_state.dblp_offline_path = path;
     }
-    if let Ok(path) = std::env::var("ACL_OFFLINE_PATH") {
-        if !path.is_empty() {
-            config_state.acl_offline_path = path;
-        }
+    if let Ok(path) = std::env::var("ACL_OFFLINE_PATH")
+        && !path.is_empty()
+    {
+        config_state.acl_offline_path = path;
     }
-    if let Ok(v) = std::env::var("DB_TIMEOUT") {
-        if let Ok(secs) = v.parse::<u64>() {
-            config_state.db_timeout_secs = secs;
-        }
+    if let Ok(v) = std::env::var("DB_TIMEOUT")
+        && let Ok(secs) = v.parse::<u64>()
+    {
+        config_state.db_timeout_secs = secs;
     }
-    if let Ok(v) = std::env::var("DB_TIMEOUT_SHORT") {
-        if let Ok(secs) = v.parse::<u64>() {
-            config_state.db_timeout_short_secs = secs;
-        }
+    if let Ok(v) = std::env::var("DB_TIMEOUT_SHORT")
+        && let Ok(secs) = v.parse::<u64>()
+    {
+        config_state.db_timeout_short_secs = secs;
     }
 
     // Apply CLI args (highest priority)
@@ -308,11 +308,11 @@ async fn main() -> anyhow::Result<()> {
     app.banner_dismiss_tick = Some(app.config_state.fps.max(1) as usize * 2);
 
     // Show config file path if one was loaded
-    if let Some(path) = config_file::config_path() {
-        if path.exists() {
-            app.activity
-                .log(format!("Config loaded from {}", path.display()));
-        }
+    if let Some(path) = config_file::config_path()
+        && path.exists()
+    {
+        app.activity
+            .log(format!("Config loaded from {}", path.display()));
     }
 
     // Startup hints if no offline DBs configured (logged last so they show first)
@@ -512,15 +512,14 @@ async fn main() -> anyhow::Result<()> {
                 match maybe_event {
                     Some(backend_event) => {
                         // Persist paper results on completion
-                        if let tui_event::BackendEvent::PaperComplete { paper_index, .. } = &backend_event {
-                            if let Some(ref dir) = run_dir {
+                        if let tui_event::BackendEvent::PaperComplete { paper_index, .. } = &backend_event
+                            && let Some(ref dir) = run_dir {
                                 let pi = *paper_index;
                                 if let Some(paper) = app.papers.get(pi) {
                                     let rs = app.ref_states.get(pi).map(|v| v.as_slice()).unwrap_or(&[]);
                                     persistence::save_paper_results(dir, pi, paper, rs);
                                 }
                             }
-                        }
                         app.handle_backend_event(backend_event);
                         // Drain any additional queued backend events
                         while let Ok(evt) = event_rx.try_recv() {

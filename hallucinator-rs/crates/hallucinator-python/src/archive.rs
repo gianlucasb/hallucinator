@@ -6,8 +6,8 @@ use std::thread::JoinHandle;
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 
-use hallucinator_pdf::archive::{self, ArchiveItem};
 use hallucinator_pdf::PdfExtractor;
+use hallucinator_pdf::archive::{self, ArchiveItem};
 
 use crate::types::PyExtractionResult;
 

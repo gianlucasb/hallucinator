@@ -14,8 +14,8 @@
 //! </collection>
 //! ```
 
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 use std::io::BufRead;
 
 /// A parsed paper record from an ACL Anthology XML file.

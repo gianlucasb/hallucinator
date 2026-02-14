@@ -191,32 +191,32 @@ pub fn save_config(config: &ConfigFile) -> Result<PathBuf, String> {
 /// Only sets values that are `Some` in the file config (doesn't overwrite with defaults).
 pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
     if let Some(api) = &file_cfg.api_keys {
-        if let Some(ref key) = api.openalex_key {
-            if !key.is_empty() {
-                state.openalex_key = key.clone();
-            }
+        if let Some(ref key) = api.openalex_key
+            && !key.is_empty()
+        {
+            state.openalex_key = key.clone();
         }
-        if let Some(ref key) = api.s2_api_key {
-            if !key.is_empty() {
-                state.s2_api_key = key.clone();
-            }
+        if let Some(ref key) = api.s2_api_key
+            && !key.is_empty()
+        {
+            state.s2_api_key = key.clone();
         }
-        if let Some(ref email) = api.crossref_mailto {
-            if !email.is_empty() {
-                state.crossref_mailto = email.clone();
-            }
+        if let Some(ref email) = api.crossref_mailto
+            && !email.is_empty()
+        {
+            state.crossref_mailto = email.clone();
         }
     }
     if let Some(db) = &file_cfg.databases {
-        if let Some(ref path) = db.dblp_offline_path {
-            if !path.is_empty() {
-                state.dblp_offline_path = path.clone();
-            }
+        if let Some(ref path) = db.dblp_offline_path
+            && !path.is_empty()
+        {
+            state.dblp_offline_path = path.clone();
         }
-        if let Some(ref path) = db.acl_offline_path {
-            if !path.is_empty() {
-                state.acl_offline_path = path.clone();
-            }
+        if let Some(ref path) = db.acl_offline_path
+            && !path.is_empty()
+        {
+            state.acl_offline_path = path.clone();
         }
         if let Some(ref disabled) = db.disabled {
             for (name, enabled) in &mut state.disabled_dbs {
@@ -244,10 +244,10 @@ pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
         }
     }
     if let Some(disp) = &file_cfg.display {
-        if let Some(ref theme) = disp.theme {
-            if !theme.is_empty() {
-                state.theme_name = theme.clone();
-            }
+        if let Some(ref theme) = disp.theme
+            && !theme.is_empty()
+        {
+            state.theme_name = theme.clone();
         }
         if let Some(fps) = disp.fps {
             state.fps = fps.clamp(1, 120);

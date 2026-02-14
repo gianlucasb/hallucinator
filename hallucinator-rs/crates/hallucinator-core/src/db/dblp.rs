@@ -99,11 +99,12 @@ impl DatabaseBackend for DblpOnline {
                             })
                             .collect(),
                         serde_json::Value::Object(obj) => {
-                            vec![obj
-                                .get("text")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string()]
+                            vec![
+                                obj.get("text")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                            ]
                         }
                         _ => vec![],
                     };

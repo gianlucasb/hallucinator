@@ -24,13 +24,13 @@ async fn main() -> anyhow::Result<()> {
             match hallucinator_dblp::DblpDatabase::open(&path) {
                 Ok(db) => {
                     // Check staleness (30 days)
-                    if let Ok(staleness) = db.check_staleness(30) {
-                        if staleness.is_stale {
-                            eprintln!(
-                                "Warning: DBLP offline database is {} days old. Consider updating with: hallucinator-cli update-dblp <path>",
-                                staleness.age_days.unwrap_or(0)
-                            );
-                        }
+                    if let Ok(staleness) = db.check_staleness(30)
+                        && staleness.is_stale
+                    {
+                        eprintln!(
+                            "Warning: DBLP offline database is {} days old. Consider updating with: hallucinator-cli update-dblp <path>",
+                            staleness.age_days.unwrap_or(0)
+                        );
                     }
                     dblp_offline_path_display = path_str.clone();
                     dblp_offline_db = Some(Arc::new(Mutex::new(db)));

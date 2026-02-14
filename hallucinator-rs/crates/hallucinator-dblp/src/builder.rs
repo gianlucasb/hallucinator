@@ -316,8 +316,8 @@ mod tests {
 
     /// Create a minimal .xml.gz file for testing.
     fn create_test_xml_gz() -> Vec<u8> {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -416,8 +416,8 @@ mod tests {
 
     #[test]
     fn test_parse_proceedings_with_editors() {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>

@@ -44,11 +44,7 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
             .iter()
             .filter_map(|a| {
                 let s = get_last_name(a);
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
+                if s.is_empty() { None } else { Some(s) }
             })
             .collect();
 
@@ -56,11 +52,7 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
             .iter()
             .filter_map(|a| {
                 let s = get_last_name(a);
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
+                if s.is_empty() { None } else { Some(s) }
             })
             .collect();
 
