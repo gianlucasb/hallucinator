@@ -13,8 +13,8 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
-edition = "2021"
+version = "0.1.0-alpha.2"
+edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/gianlucasb/hallucinator"
 
