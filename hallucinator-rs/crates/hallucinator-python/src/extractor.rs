@@ -202,7 +202,12 @@ impl PyPdfExtractor {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
-            hallucinator_pdf::archive::extract_archive_streaming(&archive_path, &dir, max_size_bytes, &tx)
+            hallucinator_pdf::archive::extract_archive_streaming(
+                &archive_path,
+                &dir,
+                max_size_bytes,
+                &tx,
+            )
         });
 
         Ok(PyArchiveIterator::new(rx, extractor, temp_dir, handle))

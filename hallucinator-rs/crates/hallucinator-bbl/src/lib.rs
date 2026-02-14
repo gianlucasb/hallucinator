@@ -969,8 +969,14 @@ Second entry content.
         assert_eq!(result.skip_stats.short_title, 1);
         // Both refs are included (skipped ones have skip_reason set)
         assert_eq!(result.references.len(), 2);
-        assert!(result.references[0].skip_reason.is_some(), "Short title should be skipped");
-        assert!(result.references[1].skip_reason.is_none(), "Long title should not be skipped");
+        assert!(
+            result.references[0].skip_reason.is_some(),
+            "Short title should be skipped"
+        );
+        assert!(
+            result.references[1].skip_reason.is_none(),
+            "Long title should not be skipped"
+        );
     }
 
     #[test]

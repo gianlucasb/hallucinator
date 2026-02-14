@@ -69,9 +69,7 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         };
         lines.push(Line::from(Span::styled(
             format!("  Skipped: {}", reason_desc),
-            Style::default()
-                .fg(theme.dim)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
     }

@@ -287,7 +287,7 @@ mod tests {
         let ref_text = "See https://github.com/some/repo for details about the implementation.";
         let parsed = ext.parse_reference(ref_text, &[]);
         match parsed {
-            ParsedRef::Skip(SkipReason::UrlOnly, _, _) => {}    // expected
+            ParsedRef::Skip(SkipReason::UrlOnly, _, _) => {} // expected
             ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // also acceptable
             ParsedRef::Ref(r) => panic!("URL-only ref should be skipped, got: {:?}", r.title),
         }

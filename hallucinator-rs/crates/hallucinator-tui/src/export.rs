@@ -123,10 +123,7 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
                     .and_then(|rs| rs.fp_reason)
                     .map(|fp| json_str(fp.as_str()))
                     .unwrap_or_else(|| "null".to_string());
-                let orig_num = paper_refs
-                    .get(ri)
-                    .map(|rs| rs.index + 1)
-                    .unwrap_or(ri + 1);
+                let orig_num = paper_refs.get(ri).map(|rs| rs.index + 1).unwrap_or(ri + 1);
                 let mut entry = String::new();
                 entry.push_str("      {\n");
                 entry.push_str(&format!("        \"index\": {},\n", ri));
@@ -294,10 +291,7 @@ fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                     .and_then(|rs| rs.fp_reason)
                     .map(|fp| fp.as_str())
                     .unwrap_or("");
-                let ref_num = paper_refs
-                    .get(ri)
-                    .map(|rs| rs.index + 1)
-                    .unwrap_or(ri + 1);
+                let ref_num = paper_refs.get(ri).map(|rs| rs.index + 1).unwrap_or(ri + 1);
                 let authors = r.ref_authors.join("; ");
                 let found = r.found_authors.join("; ");
                 let url = r.paper_url.as_deref().unwrap_or("");
@@ -391,10 +385,7 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
         if !problems.is_empty() {
             out.push_str("### Problematic References\n\n");
             for (ri, r) in &problems {
-                let ref_num = paper_refs
-                    .get(*ri)
-                    .map(|rs| rs.index + 1)
-                    .unwrap_or(ri + 1);
+                let ref_num = paper_refs.get(*ri).map(|rs| rs.index + 1).unwrap_or(ri + 1);
                 write_md_ref(&mut out, ref_num, r);
                 if let Some(fp) = paper_refs.get(*ri).and_then(|rs| rs.fp_reason) {
                     out.push_str(&format!(
@@ -410,10 +401,7 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
             out.push_str("| # | Title | Source | URL | FP Override |\n");
             out.push_str("|---|-------|--------|-----|-------------|\n");
             for (ri, r) in &verified {
-                let ref_num = paper_refs
-                    .get(*ri)
-                    .map(|rs| rs.index + 1)
-                    .unwrap_or(ri + 1);
+                let ref_num = paper_refs.get(*ri).map(|rs| rs.index + 1).unwrap_or(ri + 1);
                 let source = r.source.as_deref().unwrap_or("\u{2014}");
                 let url = r
                     .paper_url
@@ -589,10 +577,7 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
 
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
-                let ref_num = paper_refs
-                    .get(ri)
-                    .map(|rs| rs.index + 1)
-                    .unwrap_or(ri + 1);
+                let ref_num = paper_refs.get(ri).map(|rs| rs.index + 1).unwrap_or(ri + 1);
                 let status = match r.status {
                     Status::Verified => "Verified",
                     Status::NotFound => "NOT FOUND",
@@ -602,11 +587,7 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                 let source = r.source.as_deref().unwrap_or("-");
                 out.push_str(&format!(
                     "  [{}] {} - {} ({}){}\n",
-                    ref_num,
-                    r.title,
-                    status,
-                    source,
-                    retracted,
+                    ref_num, r.title, status, source, retracted,
                 ));
 
                 // Authors
@@ -925,10 +906,7 @@ footer {
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
                 let fp = paper_refs.get(ri).and_then(|rs| rs.fp_reason);
-                let ref_num = paper_refs
-                    .get(ri)
-                    .map(|rs| rs.index + 1)
-                    .unwrap_or(ri + 1);
+                let ref_num = paper_refs.get(ri).map(|rs| rs.index + 1).unwrap_or(ri + 1);
                 write_html_ref(&mut out, ref_num, r, fp);
             }
         }
@@ -939,7 +917,9 @@ footer {
             .filter(|rs| matches!(rs.phase, RefPhase::Skipped(_)))
             .collect();
         if !skipped.is_empty() {
-            out.push_str("<h3 style=\"color:var(--dim);margin-top:1.5rem\">Skipped References</h3>\n");
+            out.push_str(
+                "<h3 style=\"color:var(--dim);margin-top:1.5rem\">Skipped References</h3>\n",
+            );
             for rs in &skipped {
                 let reason = match &rs.phase {
                     RefPhase::Skipped(r) => match r.as_str() {

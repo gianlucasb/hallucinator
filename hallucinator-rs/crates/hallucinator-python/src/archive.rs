@@ -143,15 +143,15 @@ impl PyArchiveIterator {
 
                     if file_type == "pdf" {
                         // Run full reference extraction on the PDF.
-                        let result = self
-                            .extractor
-                            .extract_references(&extracted.path)
-                            .map_err(|e| {
-                                PyRuntimeError::new_err(format!(
-                                    "Failed to extract {}: {}",
-                                    extracted.filename, e
-                                ))
-                            })?;
+                        let result =
+                            self.extractor
+                                .extract_references(&extracted.path)
+                                .map_err(|e| {
+                                    PyRuntimeError::new_err(format!(
+                                        "Failed to extract {}: {}",
+                                        extracted.filename, e
+                                    ))
+                                })?;
                         return Ok(PyArchiveEntry {
                             filename: extracted.filename,
                             file_type: file_type.to_string(),

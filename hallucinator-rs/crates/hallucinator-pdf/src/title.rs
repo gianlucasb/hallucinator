@@ -42,10 +42,8 @@ pub(crate) fn extract_title_from_reference_with_config(
     let ref_text = ref_text.trim();
 
     // Strip reference number prefixes: [N] or N.
-    static REF_NUM_BRACKET: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^\[\d+\]\s*").unwrap());
-    static REF_NUM_DOT: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^\d+\.\s*").unwrap());
+    static REF_NUM_BRACKET: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\[\d+\]\s*").unwrap());
+    static REF_NUM_DOT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d+\.\s*").unwrap());
     let ref_text = REF_NUM_BRACKET.replace(ref_text, "");
     let ref_text = REF_NUM_DOT.replace(&ref_text, "");
     let ref_text = ref_text.trim_start_matches(['.', ' ']);
@@ -162,9 +160,7 @@ pub(crate) fn clean_title_with_config(
             .unwrap()
     });
     if let Some(m) = QMARK_JOURNAL_RE.find(&title) {
-        let punct_pos = title[..m.end()]
-            .rfind(['?', '!'])
-            .unwrap();
+        let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
         title = title[..=punct_pos].to_string();
     }
 
@@ -176,23 +172,16 @@ pub(crate) fn clean_title_with_config(
         .unwrap()
     });
     if let Some(m) = QMARK_JOURNAL_VOL_RE.find(&title) {
-        let punct_pos = title[..m.end()]
-            .rfind(['?', '!'])
-            .unwrap();
+        let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
         title = title[..=punct_pos].to_string();
     }
 
     // Handle "? IEEE Trans. Aut. Contr. 53" — abbreviated journal + volume, no parens
     static QMARK_ABBREV_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"[?!]\s+(?:IEEE|ACM|SIAM)\s+Trans[a-z.]*(?:\s+[A-Z][a-z]+\.?)+\s+\d+",
-        )
-        .unwrap()
+        Regex::new(r"[?!]\s+(?:IEEE|ACM|SIAM)\s+Trans[a-z.]*(?:\s+[A-Z][a-z]+\.?)+\s+\d+").unwrap()
     });
     if let Some(m) = QMARK_ABBREV_JOURNAL_RE.find(&title) {
-        let punct_pos = title[..m.end()]
-            .rfind(['?', '!'])
-            .unwrap();
+        let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
         title = title[..=punct_pos].to_string();
     }
 
@@ -314,9 +303,8 @@ fn find_subtitle_end(text: &str) -> usize {
 fn try_lncs(ref_text: &str) -> Option<(String, bool)> {
     // Enhanced Springer/LNCS format: "Author, I., Author, I.: Title. In: Venue"
     // Also handles multi-initial patterns like "B.S.:", "C.P.:", "L.:"
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?:,\s*)?[A-Z](?:\.[A-Z])*\.\s*:\s*(.+)").unwrap()
-    });
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?:,\s*)?[A-Z](?:\.[A-Z])*\.\s*:\s*(.+)").unwrap());
 
     let caps = RE.captures(ref_text)?;
     let after_colon = caps.get(1).unwrap().as_str().trim();
@@ -392,7 +380,10 @@ fn is_journal_metadata(text: &str) -> bool {
             Regex::new(r"(?i)^In[:\s]+(?:Proceedings|Proc\.)").unwrap(),
             Regex::new(r"(?i)^In[:\s]+\d{4}\s+(?:IEEE|ACM|USENIX)").unwrap(),
             // Journal Vol(Issue), Pages (Year): "Educational Researcher 13(6), 4–16 (1984)"
-            Regex::new(r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)").unwrap(),
+            Regex::new(
+                r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)",
+            )
+            .unwrap(),
             // Journal Vol:Pages (Year): "Nature 123:456-789 (2020)"
             Regex::new(r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*:\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)").unwrap(),
             // Journal with acronym in parens: "Journal of the ACM (JACM) 32(2)"
@@ -707,9 +698,9 @@ fn try_chinese_allcaps(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(r"\[M\]").unwrap(), // Chinese: book/monograph
             Regex::new(r"\[D\]").unwrap(), // Chinese: dissertation
             Regex::new(r"\.\s*[A-Z][a-zA-Z\s]+\d+\s*\(\d+\)").unwrap(), // ". Journal 34(5)"
-            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&+]+\d+:\d+").unwrap(),     // ". Journal 34:123"
-            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&+]+,\s*\d+").unwrap(),     // ". Journal, vol"
-            Regex::new(r"\.\s*(?:19|20)\d{2}").unwrap(),                 // ". 2024"
+            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&+]+\d+:\d+").unwrap(), // ". Journal 34:123"
+            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&+]+,\s*\d+").unwrap(), // ". Journal, vol"
+            Regex::new(r"\.\s*(?:19|20)\d{2}").unwrap(), // ". 2024"
             Regex::new(r"\.\s*https?://").unwrap(),
             Regex::new(r"\.\s*doi:").unwrap(),
         ]
@@ -799,9 +790,8 @@ fn try_bracket_code(ref_text: &str) -> Option<(String, bool)> {
         let sent = &sentences[i];
         // Check if this sentence ends with what looks like an author name
         // and next doesn't start with "In" (venue marker)
-        static AUTHOR_END_RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"(?:and\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*$").unwrap()
-        });
+        static AUTHOR_END_RE: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"(?:and\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*$").unwrap());
         static IN_START_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^In\s+").unwrap());
 
         if AUTHOR_END_RE.is_match(sent) {
@@ -826,7 +816,8 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     // The key is finding ", and Initial. Surname. TitleStart"
     static AND_AUTHOR_TITLE_RE: Lazy<Regex> = Lazy::new(|| {
         let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}]\.(?:[\s\-]*[A-Z]\.)*";
-        let particle = r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
+        let particle =
+            r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
         let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
         let surname = format!(r"{}{}+(?:\s+{}+)*", particle, surname_chars, surname_chars);
         let pattern = format!(
@@ -853,7 +844,8 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(r",\s+(?:vol\.|pp\.|pages)\s").unwrap(),
             Regex::new(r",\s+\d{4}\.\s*$").unwrap(),
             Regex::new(r",\s+\d+\(\d+\)").unwrap(),
-            Regex::new(r"\.\s+(?:Springer|Elsevier|Wiley|Nature|Science|PLOS|Oxford|Cambridge)\b").unwrap(),
+            Regex::new(r"\.\s+(?:Springer|Elsevier|Wiley|Nature|Science|PLOS|Oxford|Cambridge)\b")
+                .unwrap(),
             Regex::new(r"\.\s+(?:The\s+)?(?:Annals|Journal|Proceedings)\s+of\b").unwrap(),
             Regex::new(r"\.\s+Journal\s+of\s+[A-Z]").unwrap(),
             Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+,\s*\d").unwrap(),
@@ -1383,7 +1375,8 @@ mod tests {
     #[test]
     fn test_reference_prefix_stripping() {
         // [N] prefix should be stripped
-        let ref_text = r#"[42] Jones, A. "A comprehensive survey on neural networks," Proc. AAAI, 2023."#;
+        let ref_text =
+            r#"[42] Jones, A. "A comprehensive survey on neural networks," Proc. AAAI, 2023."#;
         let (title, _) = extract_title_from_reference(ref_text);
         assert!(
             title.contains("comprehensive survey"),
@@ -1404,7 +1397,8 @@ mod tests {
     #[test]
     fn test_format5_skip_chinese_allcaps() {
         // Western ALL CAPS should NOT match Chinese pattern
-        let ref_text_western = "SMITH, J., AND JONES, A. A novel approach to detection. In Proceedings of AAAI.";
+        let ref_text_western =
+            "SMITH, J., AND JONES, A. A novel approach to detection. In Proceedings of AAAI.";
         let (title, _) = extract_title_from_reference(ref_text_western);
         assert!(
             !title.is_empty(),
@@ -1510,7 +1504,8 @@ mod tests {
 
     #[test]
     fn test_editor_list_simple() {
-        let title = "A great paper title. In John Smith and Jane Doe, editors, Proceedings of Something";
+        let title =
+            "A great paper title. In John Smith and Jane Doe, editors, Proceedings of Something";
         let cleaned = clean_title(title, false);
         assert!(
             !cleaned.contains("editors"),
@@ -1556,14 +1551,26 @@ mod tests {
     #[test]
     fn test_is_journal_metadata_detection() {
         // These should be detected as journal metadata
-        assert!(is_journal_metadata("Educational Researcher 13(6), 4\u{2013}16 (1984)"));
-        assert!(is_journal_metadata("Nature 299(5886), 802\u{2013}803 (1982)"));
-        assert!(is_journal_metadata("In: Proceedings of the 8th ACM Conference"));
+        assert!(is_journal_metadata(
+            "Educational Researcher 13(6), 4\u{2013}16 (1984)"
+        ));
+        assert!(is_journal_metadata(
+            "Nature 299(5886), 802\u{2013}803 (1982)"
+        ));
+        assert!(is_journal_metadata(
+            "In: Proceedings of the 8th ACM Conference"
+        ));
         assert!(is_journal_metadata("13(6), 4\u{2013}16 (1984)"));
 
         // These should NOT be detected as metadata
-        assert!(!is_journal_metadata("The 2 sigma problem: The search for methods"));
-        assert!(!is_journal_metadata("Knowledge tracing: Modeling the acquisition"));
-        assert!(!is_journal_metadata("A survey on deep learning for cybersecurity"));
+        assert!(!is_journal_metadata(
+            "The 2 sigma problem: The search for methods"
+        ));
+        assert!(!is_journal_metadata(
+            "Knowledge tracing: Modeling the acquisition"
+        ));
+        assert!(!is_journal_metadata(
+            "A survey on deep learning for cybersecurity"
+        ));
     }
 }
