@@ -452,14 +452,19 @@ fn dry_run_pdf(
 
         let word_count = cleaned_title.split_whitespace().count();
         if cleaned_title.is_empty() || word_count < 4 {
-            if use_color {
-                writeln!(
-                    writer,
-                    "  {}",
-                    format!("SKIPPED (title too short: {} words)", word_count).red()
-                )?;
-            } else {
-                writeln!(writer, "  SKIPPED (title too short: {} words)", word_count)?;
+            // Check for strong signals that override the short-title skip
+            let has_signal =
+                !cleaned_title.is_empty() && (doi.is_some() || arxiv_id.is_some() || from_quotes);
+            if !has_signal {
+                if use_color {
+                    writeln!(
+                        writer,
+                        "  {}",
+                        format!("SKIPPED (title too short: {} words)", word_count).red()
+                    )?;
+                } else {
+                    writeln!(writer, "  SKIPPED (title too short: {} words)", word_count)?;
+                }
             }
         }
 

@@ -9,6 +9,59 @@ use hallucinator_pdf::ExtractionResult;
 
 use crate::tui_event::BackendEvent;
 
+/// Remap progress event indices from the filtered (checkable-only) vec back to
+/// the full all-refs vec, so the TUI's ref_states (which includes skipped refs)
+/// receives updates at the correct positions.
+fn remap_progress_index(event: ProgressEvent, index_map: &[usize]) -> ProgressEvent {
+    match event {
+        ProgressEvent::Checking {
+            index,
+            total,
+            title,
+        } => ProgressEvent::Checking {
+            index: index_map.get(index).copied().unwrap_or(index),
+            total,
+            title,
+        },
+        ProgressEvent::Result {
+            index,
+            total,
+            result,
+        } => ProgressEvent::Result {
+            index: index_map.get(index).copied().unwrap_or(index),
+            total,
+            result,
+        },
+        ProgressEvent::Warning {
+            index,
+            total,
+            title,
+            failed_dbs,
+            message,
+        } => ProgressEvent::Warning {
+            index: index_map.get(index).copied().unwrap_or(index),
+            total,
+            title,
+            failed_dbs,
+            message,
+        },
+        ProgressEvent::DatabaseQueryComplete {
+            paper_index,
+            ref_index,
+            db_name,
+            status,
+            elapsed,
+        } => ProgressEvent::DatabaseQueryComplete {
+            paper_index,
+            ref_index: index_map.get(ref_index).copied().unwrap_or(ref_index),
+            db_name,
+            status,
+            elapsed,
+        },
+        other => other,
+    }
+}
+
 /// Run batch validation with paper indices starting at `offset`.
 ///
 /// Spawns `max_concurrent_papers` worker tasks that pull from a shared work
@@ -130,6 +183,15 @@ async fn process_single_paper(
         skip_stats,
     });
 
+    // Build a mapping from filtered (checkable) index → original all_refs index,
+    // so that progress events use indices into the full ref_states array.
+    let index_map: Vec<usize> = all_refs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.skip_reason.is_none())
+        .map(|(i, _)| i)
+        .collect();
+
     // Filter to only checkable refs for validation
     let refs: Vec<_> = all_refs
         .into_iter()
@@ -147,9 +209,11 @@ async fn process_single_paper(
     // Build per-paper config
     let paper_config = (*config).clone();
 
-    // Bridge sync progress callback → async channel via unbounded send
+    // Bridge sync progress callback → async channel via unbounded send.
+    // Remap the checker's filtered indices back to the full ref_states indices.
     let tx_progress = tx.clone();
     let progress_cb = move |event: ProgressEvent| {
+        let event = remap_progress_index(event, &index_map);
         let _ = tx_progress.send(BackendEvent::Progress {
             paper_index,
             event: Box::new(event),

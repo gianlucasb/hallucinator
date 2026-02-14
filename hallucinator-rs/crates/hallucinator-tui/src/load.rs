@@ -158,17 +158,23 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
                 .skip_reason
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string());
+            let raw_cit = loaded_ref.raw_citation.clone().unwrap_or_default();
+            let authors = loaded_ref.ref_authors.clone().unwrap_or_default();
             ref_states.push(RefState {
                 index: orig_num.saturating_sub(1),
                 title: title.clone(),
                 phase: RefPhase::Skipped(reason.clone()),
                 result: None,
                 fp_reason,
+                raw_citation: raw_cit.clone(),
+                authors: authors.clone(),
+                doi: None,
+                arxiv_id: None,
             });
             references.push(Reference {
-                raw_citation: loaded_ref.raw_citation.clone().unwrap_or_default(),
+                raw_citation: raw_cit,
                 title: if title.is_empty() { None } else { Some(title) },
-                authors: loaded_ref.ref_authors.clone().unwrap_or_default(),
+                authors,
                 doi: None,
                 arxiv_id: None,
                 original_number: orig_num,
@@ -180,19 +186,27 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
         let status = match parse_status(&loaded_ref.status) {
             Some(s) => s,
             None => {
+                let raw_cit = loaded_ref.raw_citation.clone().unwrap_or_default();
+                let authors = loaded_ref.ref_authors.clone().unwrap_or_default();
+                let doi = loaded_ref.doi_info.as_ref().map(|d| d.doi.clone());
+                let arxiv_id = loaded_ref.arxiv_info.as_ref().map(|a| a.arxiv_id.clone());
                 ref_states.push(RefState {
                     index: orig_num.saturating_sub(1),
                     title: title.clone(),
                     phase: RefPhase::Done,
                     result: None,
                     fp_reason,
+                    raw_citation: raw_cit.clone(),
+                    authors: authors.clone(),
+                    doi: doi.clone(),
+                    arxiv_id: arxiv_id.clone(),
                 });
                 references.push(Reference {
-                    raw_citation: loaded_ref.raw_citation.clone().unwrap_or_default(),
+                    raw_citation: raw_cit,
                     title: if title.is_empty() { None } else { Some(title) },
-                    authors: loaded_ref.ref_authors.clone().unwrap_or_default(),
-                    doi: loaded_ref.doi_info.as_ref().map(|d| d.doi.clone()),
-                    arxiv_id: loaded_ref.arxiv_info.as_ref().map(|a| a.arxiv_id.clone()),
+                    authors,
+                    doi,
+                    arxiv_id,
                     original_number: orig_num,
                     skip_reason: None,
                 });
@@ -272,20 +286,28 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
 
         paper.record_result(loaded_ref.index, result.clone());
 
+        let raw_cit = loaded_ref.raw_citation.clone().unwrap_or_default();
+        let ref_authors = loaded_ref.ref_authors.clone().unwrap_or_default();
+        let ref_doi = doi_info.as_ref().map(|d| d.doi.clone());
+        let ref_arxiv = arxiv_info.as_ref().map(|a| a.arxiv_id.clone());
         ref_states.push(RefState {
             index: orig_num.saturating_sub(1),
             title: title.clone(),
             phase: RefPhase::Done,
             result: Some(result),
             fp_reason,
+            raw_citation: raw_cit.clone(),
+            authors: ref_authors.clone(),
+            doi: ref_doi.clone(),
+            arxiv_id: ref_arxiv.clone(),
         });
 
         references.push(Reference {
-            raw_citation: loaded_ref.raw_citation.clone().unwrap_or_default(),
+            raw_citation: raw_cit,
             title: if title.is_empty() { None } else { Some(title) },
-            authors: loaded_ref.ref_authors.clone().unwrap_or_default(),
-            doi: doi_info.map(|d| d.doi),
-            arxiv_id: arxiv_info.map(|a| a.arxiv_id),
+            authors: ref_authors,
+            doi: ref_doi,
+            arxiv_id: ref_arxiv,
             original_number: orig_num,
             skip_reason: None,
         });

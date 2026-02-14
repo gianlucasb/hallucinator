@@ -95,6 +95,14 @@ pub struct RefState {
     pub result: Option<ValidationResult>,
     /// Why the user marked this reference as a false positive, or None if not overridden.
     pub fp_reason: Option<FpReason>,
+    /// Raw citation text from extraction (always available, even for skipped refs).
+    pub raw_citation: String,
+    /// Authors parsed during extraction.
+    pub authors: Vec<String>,
+    /// DOI extracted during parsing.
+    pub doi: Option<String>,
+    /// arXiv ID extracted during parsing.
+    pub arxiv_id: Option<String>,
 }
 
 impl RefState {

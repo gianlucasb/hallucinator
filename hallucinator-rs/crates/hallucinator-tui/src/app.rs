@@ -322,7 +322,13 @@ impl App {
     }
 
     /// Recompute `queue_sorted` based on the current `sort_order`, filter, and search.
+    ///
+    /// Stabilises the cursor: if the paper previously under the cursor is still
+    /// present after filtering/sorting, the cursor follows it to its new row.
     pub fn recompute_sorted_indices(&mut self) {
+        // Remember which paper the cursor is currently on.
+        let prev_paper = self.queue_sorted.get(self.queue_cursor).copied();
+
         let mut indices = filtered_indices(&self.papers, self.queue_filter, &self.search_query);
         match self.sort_order {
             SortOrder::Original => {}
@@ -348,6 +354,18 @@ impl App {
             }
         }
         self.queue_sorted = indices;
+
+        // Restore cursor to the same paper if it's still in the list.
+        if let Some(paper_idx) = prev_paper {
+            if let Some(new_pos) = self.queue_sorted.iter().position(|&i| i == paper_idx) {
+                self.queue_cursor = new_pos;
+            } else {
+                // Paper was filtered out — clamp cursor.
+                self.queue_cursor = self
+                    .queue_cursor
+                    .min(self.queue_sorted.len().saturating_sub(1));
+            }
+        }
     }
 
     /// Get sorted/filtered reference indices for the paper view.
@@ -1568,7 +1586,9 @@ impl App {
             } => {
                 if let Some(paper) = self.papers.get_mut(paper_index) {
                     paper.total_refs = ref_count;
-                    paper.init_results(ref_count);
+                    // Allocate result slots for ALL refs (including skipped) so
+                    // that remapped indices from the backend fit.
+                    paper.init_results(references.len());
                     paper.phase = PaperPhase::Checking;
                 }
                 if paper_index < self.ref_states.len() {
@@ -1587,6 +1607,10 @@ impl App {
                                 phase,
                                 result: None,
                                 fp_reason: None,
+                                raw_citation: r.raw_citation.clone(),
+                                authors: r.authors.clone(),
+                                doi: r.doi.clone(),
+                                arxiv_id: r.arxiv_id.clone(),
                             }
                         })
                         .collect();

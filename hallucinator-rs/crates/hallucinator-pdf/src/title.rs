@@ -479,16 +479,17 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
     static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
     let title = TRAIL.replace(title, "");
 
-    if title.split_whitespace().count() >= 3 {
-        Some((title.to_string(), false))
-    } else {
+    if title.is_empty() {
         None
+    } else {
+        Some((title.to_string(), false))
     }
 }
 
 fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
-    // ". YYYY. Title" — require \s+ after year to avoid matching DOIs
-    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*((?:19|20)\d{2})\.\s+").unwrap());
+    // ". YYYY[a-z]. Title" — require \s+ after year to avoid matching DOIs
+    // Optional letter suffix for disambiguated years (e.g. "2022b")
+    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*((?:19|20)\d{2}[a-z]?)\.\s+").unwrap());
 
     let caps = RE.captures(ref_text)?;
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
@@ -535,10 +536,10 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
     let title = TRAIL.replace(title, "");
 
-    if title.split_whitespace().count() >= 3 {
-        Some((title.to_string(), false))
-    } else {
+    if title.is_empty() {
         None
+    } else {
+        Some((title.to_string(), false))
     }
 }
 
@@ -568,7 +569,7 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 let title = parts[1].trim();
                 static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
                 let title = TRAIL.replace(title, "");
-                if title.split_whitespace().count() >= 3 {
+                if !title.is_empty() {
                     // Verify it doesn't look like authors
                     static AUTHOR_CHECK: Lazy<Regex> =
                         Lazy::new(|| Regex::new(r"^[A-Z][a-z]+\s+[A-Z][a-z]+,").unwrap());
@@ -599,7 +600,7 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 let title = remaining.trim();
                 static TRAIL2: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
                 let title = TRAIL2.replace(title, "");
-                if title.split_whitespace().count() >= 3 {
+                if !title.is_empty() {
                     static AUTHOR_CHECK2: Lazy<Regex> =
                         Lazy::new(|| Regex::new(r"^[A-Z][a-z]+,\s+[A-Z]\.").unwrap());
                     if !AUTHOR_CHECK2.is_match(&title) {
@@ -625,7 +626,7 @@ fn try_journal(ref_text: &str) -> Option<(String, bool)> {
     let parts = split_sentences_skip_initials(before_journal);
     if parts.len() >= 2 {
         let title = parts[1].trim();
-        if title.split_whitespace().count() >= 3 {
+        if !title.is_empty() {
             return Some((title.to_string(), false));
         }
     }
@@ -644,7 +645,7 @@ fn try_elsevier_journal(ref_text: &str) -> Option<(String, bool)> {
         let title = parts.last().unwrap().trim();
         static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
         let title = TRAIL.replace(title, "");
-        if title.split_whitespace().count() >= 3 {
+        if !title.is_empty() {
             return Some((title.to_string(), false));
         }
     }
@@ -717,10 +718,10 @@ fn try_chinese_allcaps(ref_text: &str) -> Option<(String, bool)> {
     static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
     let title = TRAIL.replace(title, "");
 
-    if title.split_whitespace().count() >= 3 {
-        Some((title.to_string(), false))
-    } else {
+    if title.is_empty() {
         None
+    } else {
+        Some((title.to_string(), false))
     }
 }
 
@@ -764,7 +765,7 @@ fn try_all_caps_authors(ref_text: &str) -> Option<(String, bool)> {
         let title = title_text[..title_end].trim();
         static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
         let title = TRAIL.replace(title, "");
-        if title.split_whitespace().count() >= 3 {
+        if !title.is_empty() {
             return Some((title.to_string(), false));
         }
     }
@@ -801,7 +802,7 @@ fn try_bracket_code(ref_text: &str) -> Option<(String, bool)> {
                 let remaining: String = sentences[i + 1..].join(". ");
                 let title_end = remaining.find(". In ").unwrap_or(remaining.len());
                 let title = remaining[..title_end].trim();
-                if title.split_whitespace().count() >= 3 {
+                if !title.is_empty() {
                     return Some((title.to_string(), false));
                 }
             }
@@ -864,10 +865,10 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
     let title = TRAIL.replace(title, "");
 
-    if title.split_whitespace().count() >= 3 {
-        Some((title.to_string(), false))
-    } else {
+    if title.is_empty() {
         None
+    } else {
+        Some((title.to_string(), false))
     }
 }
 
@@ -916,10 +917,10 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
         return None;
     }
 
-    if potential_title.split_whitespace().count() >= 3 {
-        Some((potential_title, false))
-    } else {
+    if potential_title.is_empty() {
         None
+    } else {
+        Some((potential_title, false))
     }
 }
 

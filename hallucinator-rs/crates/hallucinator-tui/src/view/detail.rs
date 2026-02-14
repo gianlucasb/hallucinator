@@ -78,19 +78,21 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
     section_header(&mut lines, "CITATION", theme);
     labeled_line(&mut lines, "Title", &rs.title, theme);
 
-    if let Some(result) = &rs.result {
-        if !result.raw_citation.is_empty() {
-            labeled_line(&mut lines, "Raw Citation", &result.raw_citation, theme);
-        }
-        if !result.ref_authors.is_empty() {
-            labeled_line(
-                &mut lines,
-                "Ref Authors",
-                &result.ref_authors.join(", "),
-                theme,
-            );
-        }
+    // Show raw citation and authors from RefState (always available, even for skipped refs)
+    if !rs.raw_citation.is_empty() {
+        labeled_line(&mut lines, "Raw Citation", &rs.raw_citation, theme);
+    }
+    if !rs.authors.is_empty() {
+        labeled_line(&mut lines, "Authors", &rs.authors.join(", "), theme);
+    }
+    if let Some(doi) = &rs.doi {
+        labeled_line(&mut lines, "DOI", doi, theme);
+    }
+    if let Some(arxiv) = &rs.arxiv_id {
+        labeled_line(&mut lines, "arXiv ID", arxiv, theme);
+    }
 
+    if let Some(result) = &rs.result {
         lines.push(Line::from(""));
 
         // VALIDATION section
@@ -314,6 +316,15 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
                     Style::default().fg(theme.not_found),
                 )));
             }
+        }
+    } else if matches!(rs.phase, RefPhase::Skipped(_)) {
+        // Skipped refs: show a search link if we have a title
+        if !rs.title.is_empty() {
+            lines.push(Line::from(""));
+            section_header(&mut lines, "LINKS", theme);
+            let scholar_query = encode_url_param(&rs.title);
+            let scholar_url = format!("https://scholar.google.com/scholar?q={}", scholar_query);
+            url_line(&mut lines, "Google Scholar", &scholar_url, theme);
         }
     } else {
         lines.push(Line::from(""));

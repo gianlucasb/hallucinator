@@ -171,20 +171,22 @@ fn try_aaai(ref_text: &str) -> Option<Vec<String>> {
     // Surname chars: ASCII letters + common diacritics (Latin Extended)
     let sc = r"[a-zA-Z\u{00C0}-\u{024F}\u{00E4}\u{00F6}\u{00FC}\u{00DF}\u{00E8}\u{00E9}]";
 
-    // AAAI pattern: end of previous ref (lowercase/digit/paren/CAPS). + newline
+    // AAAI pattern: end of previous ref (lowercase/digit/paren/CAPS/slash). + newline
     // + optional page number line + Surname, I. (next ref start)
     // Rust regex doesn't support look-ahead, so we match without (?!In\s) and filter in code
     let re_pattern = format!(
-        r"([a-z0-9)]|[A-Z]{{2}})\.\n(?:\d{{1,4}}\n)?\s*({}{}+(?:[ \-]{}+)?,\s+[A-Z]\.)",
+        r"([a-z0-9)/]|[A-Z]{{2}})\.\n(?:\d{{1,4}}\n)?\s*({}{}+(?:[ \-]{}+)?,\s+[A-Z]\.)",
         r"[A-Z\u{00C0}-\u{024F}]", sc, sc,
     );
     let re = Regex::new(&re_pattern).unwrap();
 
-    // Secondary pattern for organization authors: "OrgName. Year." on its own boundary
-    // e.g., "European Union. 2022a." or "World Health Organization. 2021."
+    // Secondary pattern for organization/non-standard authors: any text followed by ". Year."
+    // Uses lazy matching to find the shortest author block before a year.
+    // Handles: lowercase orgs (noyb), orgs with digits (FORCE11), dashes, etc.
     let org_re = Regex::new(
-        r"([a-z0-9)]|[A-Z]{2})\.\n(?:\d{1,4}\n)?\s*([A-Z][a-zA-Z]+(?:\s+[A-Z]?[a-zA-Z]+)+\.\s+(?:19|20)\d{2}[a-z]?\.)",
-    ).unwrap();
+        r"([a-z0-9)/]|[A-Z]{2})\.\n(?:\d{1,4}\n)?\s*(.{2,200}?\.\s+(?:19|20)\d{2}[a-z]?\.)",
+    )
+    .unwrap();
 
     // Collect boundary matches from both patterns
     struct Boundary {
@@ -206,8 +208,13 @@ fn try_aaai(ref_text: &str) -> Option<Vec<String>> {
         });
     }
 
-    // Organization pattern matches
+    // Organization / general year-based boundary matches
     for caps in org_re.captures_iter(ref_text) {
+        let author_block = caps.get(2).unwrap().as_str();
+        // Skip venue-like patterns (not author names)
+        if author_block.starts_with("In ") || author_block.starts_with("in ") {
+            continue;
+        }
         boundaries.push(Boundary {
             prefix_end: caps.get(1).unwrap().end(),
             ref_start: caps.get(2).unwrap().start(),
@@ -404,6 +411,125 @@ mod tests {
         let refs = segment_references_with_config(text, &config);
         assert_eq!(refs.len(), 3);
         assert!(refs[0].starts_with("First"));
+    }
+
+    #[test]
+    fn test_segment_aaai_basic() {
+        // Standard AAAI format: "Surname, I. Year. Title. Venue."
+        let text = concat!(
+            "Adams, B.; and Clark, D. 2019. First Paper With a Long Title.\n",
+            "In Proceedings of CHI. Glasgow, UK.\n",
+            "Baker, E. 2020. Second Paper With Another Long Title.\n",
+            "In Proceedings of CSCW. Virtual.\n",
+            "Carter, F.; and Davis, G. 2021. Third Paper About Something.\n",
+            "In Proceedings of USENIX. Boston.\n",
+            "Evans, H. 2022. Fourth Paper On Some Topic Here.\n",
+            "In Proceedings of NeurIPS. New Orleans.\n",
+        );
+        let refs = segment_references(text);
+        assert!(
+            refs.len() >= 4,
+            "Expected >= 4 refs, got {}: {:?}",
+            refs.len(),
+            refs
+        );
+        assert!(refs[0].contains("Adams"));
+        assert!(refs[1].contains("Baker"));
+        assert!(refs[2].contains("Carter"));
+        assert!(refs[3].contains("Evans"));
+    }
+
+    #[test]
+    fn test_segment_aaai_in_venue_not_boundary() {
+        // "In Proceedings..." after a period-newline should NOT be treated as a boundary.
+        // This tests that the "In " exclusion filter works.
+        let text = concat!(
+            "Adams, B. 2019. First Paper With a Long Title.\n",
+            "In Proceedings of CHI. Glasgow.\n",
+            "Baker, E. 2020. Second Paper With a Long Title.\n",
+            "In Proceedings of CSCW. Virtual.\n",
+            "Carter, F. 2021. Third Paper About Something.\n",
+            "In Proceedings of USENIX. Boston.\n",
+            "Davis, G. 2022. Fourth Paper On Some Topic.\n",
+            "In Proceedings of NeurIPS. New Orleans.\n",
+        );
+        let refs = segment_references(text);
+        // Should be 4 refs, not 8 (venues should not split)
+        assert_eq!(
+            refs.len(),
+            4,
+            "Venues should not create false boundaries: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_segment_aaai_org_with_digits() {
+        // FORCE11 has digits — should be detected as a boundary
+        let text = concat!(
+            "Smith, J.; and Jones, K. 2020. Some Long Title About Neural Networks.\n",
+            "In Proceedings of ICML. Montreal, Canada.\n",
+            "Taylor, R. 2019. Another Paper Title That Is Long Enough.\n",
+            "In Conference on AI. New York.\n",
+            "FORCE11. 2020. The FAIR Data Principles and Guidelines.\n",
+            "https://force11.org/info/the-fair-data-principles/.\n",
+            "Wilson, M.; and Brown, A. 2021. Yet Another Paper With a Title.\n",
+            "In NeurIPS. Virtual.\n",
+        );
+        let refs = segment_references(text);
+        // Should have 4 refs, not 3 (FORCE11 should be separate)
+        assert!(
+            refs.len() >= 4,
+            "Expected >= 4 refs, got {}: {:?}",
+            refs.len(),
+            refs
+        );
+        assert!(refs.iter().any(|r| r.contains("FORCE11")));
+    }
+
+    #[test]
+    fn test_segment_aaai_lowercase_org() {
+        // noyb starts with lowercase — should be detected as a boundary
+        let text = concat!(
+            "Adams, B.; and Clark, D. 2019. First Paper Long Enough Title.\n",
+            "In Proceedings of CHI. Glasgow.\n",
+            "Baker, E. 2020. Second Paper With A Long Enough Title.\n",
+            "In Proceedings of CSCW. Virtual.\n",
+            "noyb \u{2013} European Center for Digital Rights. 2024. Consent Banner Report.\n",
+            "https://noyb.eu/.\n",
+            "Davis, F. 2021. Third Paper That Has A Long Title.\n",
+            "In Proceedings of USENIX. Boston.\n",
+        );
+        let refs = segment_references(text);
+        assert!(
+            refs.len() >= 4,
+            "Expected >= 4 refs, got {}: {:?}",
+            refs.len(),
+            refs
+        );
+        assert!(refs.iter().any(|r| r.contains("noyb")));
+    }
+
+    #[test]
+    fn test_segment_aaai_url_slash_boundary() {
+        // URL ending with / before next author — slash should be valid boundary char
+        let text = concat!(
+            "Adams, B. 2018. First Paper About Something Important.\n",
+            "In Proceedings of AAAI. New Orleans.\n",
+            "Baker, E. 2019. Second Paper With Details and More.\n",
+            "In Conference on NLP. Florence.\n",
+            "Clark, D. 2020. Third Paper With URL at End.\n",
+            "https://example.org/paper/.\n",
+            "Davis, F. 2021. Fourth Paper After URL Reference.\n",
+            "In Proceedings of ACL. Dublin.\n",
+        );
+        let refs = segment_references(text);
+        assert!(
+            refs.len() >= 4,
+            "Expected >= 4 refs, got {}: {:?}",
+            refs.len(),
+            refs
+        );
     }
 
     #[test]
