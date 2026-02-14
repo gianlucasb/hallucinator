@@ -86,14 +86,29 @@ impl PdfExtractor {
         let mut references = Vec::new();
         let mut previous_authors: Vec<String> = Vec::new();
 
-        for ref_text in &raw_refs {
+        for (raw_idx, ref_text) in raw_refs.iter().enumerate() {
             let parsed = parse_single_reference(ref_text, &previous_authors, &self.config);
             match parsed {
-                ParsedRef::Skip(reason) => match reason {
-                    SkipReason::UrlOnly => stats.url_only += 1,
-                    SkipReason::ShortTitle => stats.short_title += 1,
-                },
-                ParsedRef::Ref(r) => {
+                ParsedRef::Skip(reason, raw_citation, title) => {
+                    match reason {
+                        SkipReason::UrlOnly => stats.url_only += 1,
+                        SkipReason::ShortTitle => stats.short_title += 1,
+                    }
+                    references.push(Reference {
+                        raw_citation,
+                        title,
+                        authors: vec![],
+                        doi: None,
+                        arxiv_id: None,
+                        original_number: raw_idx + 1,
+                        skip_reason: Some(match reason {
+                            SkipReason::UrlOnly => "url_only".to_string(),
+                            SkipReason::ShortTitle => "short_title".to_string(),
+                        }),
+                    });
+                }
+                ParsedRef::Ref(mut r) => {
+                    r.original_number = raw_idx + 1; // 1-based
                     if r.authors.is_empty() {
                         stats.no_authors += 1;
                     } else {
@@ -114,7 +129,8 @@ impl PdfExtractor {
 /// Result of parsing a single reference.
 pub enum ParsedRef {
     Ref(Reference),
-    Skip(SkipReason),
+    /// A skipped reference: reason, raw_citation, and optional title.
+    Skip(SkipReason, String, Option<String>),
 }
 
 /// Reason a reference was skipped.
@@ -150,7 +166,9 @@ fn parse_single_reference(
     if (URL_RE.is_match(&ref_text) || BROKEN_URL_RE.is_match(&ref_text))
         && !ACADEMIC_URL_RE.is_match(&ref_text)
     {
-        return ParsedRef::Skip(SkipReason::UrlOnly);
+        static WS_SKIP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+        let raw = WS_SKIP_RE.replace_all(&ref_text, " ").trim().to_string();
+        return ParsedRef::Skip(SkipReason::UrlOnly, raw, None);
     }
 
     // Extract title
@@ -160,7 +178,15 @@ fn parse_single_reference(
 
     if cleaned_title.is_empty() || cleaned_title.split_whitespace().count() < config.min_title_words
     {
-        return ParsedRef::Skip(SkipReason::ShortTitle);
+        // Clean up raw citation for the skipped ref
+        static WS_SKIP_RE2: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+        let raw = WS_SKIP_RE2.replace_all(&ref_text, " ").trim().to_string();
+        let title = if cleaned_title.is_empty() {
+            None
+        } else {
+            Some(cleaned_title)
+        };
+        return ParsedRef::Skip(SkipReason::ShortTitle, raw, title);
     }
 
     // Extract authors
@@ -189,6 +215,8 @@ fn parse_single_reference(
         authors: ref_authors,
         doi,
         arxiv_id,
+        original_number: 0, // placeholder; overwritten by caller
+        skip_reason: None,
     })
 }
 
@@ -225,7 +253,7 @@ mod tests {
                 assert!(r.title.unwrap().contains("Detecting Fake References"));
                 assert!(!r.authors.is_empty());
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference, got skip"),
+            ParsedRef::Skip(..) => panic!("Expected a reference, got skip"),
         }
     }
 
@@ -259,8 +287,8 @@ mod tests {
         let ref_text = "See https://github.com/some/repo for details about the implementation.";
         let parsed = ext.parse_reference(ref_text, &[]);
         match parsed {
-            ParsedRef::Skip(SkipReason::UrlOnly) => {}    // expected
-            ParsedRef::Skip(SkipReason::ShortTitle) => {} // also acceptable
+            ParsedRef::Skip(SkipReason::UrlOnly, _, _) => {}    // expected
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // also acceptable
             ParsedRef::Ref(r) => panic!("URL-only ref should be skipped, got: {:?}", r.title),
         }
 
@@ -269,7 +297,7 @@ mod tests {
         let parsed2 = ext.parse_reference(academic_ref, &[]);
         match parsed2 {
             ParsedRef::Ref(_) => {} // expected — doi.org is academic
-            ParsedRef::Skip(_) => panic!("Academic URL ref should not be skipped"),
+            ParsedRef::Skip(..) => panic!("Academic URL ref should not be skipped"),
         }
     }
 
@@ -350,7 +378,7 @@ mod tests {
         let ext_default = PdfExtractor::new();
         let parsed_default = ext_default.parse_reference(ref_text, &[]);
         match parsed_default {
-            ParsedRef::Skip(SkipReason::ShortTitle) => {} // expected
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // expected
             _ => panic!("3-word title should be skipped with default min_title_words=4"),
         }
 
@@ -365,7 +393,7 @@ mod tests {
             ParsedRef::Ref(r) => {
                 assert!(r.title.as_ref().unwrap().contains("Three Word Title"));
             }
-            ParsedRef::Skip(_) => panic!("3-word title should pass with min_title_words=3"),
+            ParsedRef::Skip(..) => panic!("3-word title should pass with min_title_words=3"),
         }
 
         // With min_title_words = 10, a normal title should be skipped
@@ -377,7 +405,7 @@ mod tests {
         let long_ref = r#"J. Smith, "A Five Word Paper Title Here," in Proc. IEEE, 2023."#;
         let parsed2 = ext_strict.parse_reference(long_ref, &[]);
         match parsed2 {
-            ParsedRef::Skip(SkipReason::ShortTitle) => {} // expected
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // expected
             _ => panic!("5-word title should be skipped with min_title_words=10"),
         }
     }
@@ -400,7 +428,7 @@ mod tests {
                     r.authors.len()
                 );
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
         }
     }
 
@@ -438,7 +466,7 @@ mod tests {
                     r.title.unwrap(),
                 );
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
         }
     }
 
@@ -454,7 +482,7 @@ mod tests {
             ParsedRef::Ref(r) => {
                 assert_eq!(r.authors, prev_authors);
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
         }
     }
 
@@ -478,7 +506,7 @@ mod tests {
                     title,
                 );
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
         }
     }
 }

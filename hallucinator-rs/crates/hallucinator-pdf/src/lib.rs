@@ -38,6 +38,10 @@ pub struct Reference {
     pub authors: Vec<String>,
     pub doi: Option<String>,
     pub arxiv_id: Option<String>,
+    /// 1-based position in the original PDF reference list (before skip filtering).
+    pub original_number: usize,
+    /// If set, this reference was skipped during extraction (e.g. "url_only", "short_title").
+    pub skip_reason: Option<String>,
 }
 
 /// Statistics about references that were skipped during extraction.

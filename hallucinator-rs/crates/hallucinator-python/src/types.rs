@@ -53,6 +53,18 @@ impl PyReference {
         self.inner.arxiv_id.as_deref()
     }
 
+    /// 1-based position in the original PDF reference list (before skip filtering).
+    #[getter]
+    fn original_number(&self) -> usize {
+        self.inner.original_number
+    }
+
+    /// Why this reference was skipped, or `None` if it was not skipped.
+    #[getter]
+    fn skip_reason(&self) -> Option<&str> {
+        self.inner.skip_reason.as_deref()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Reference(title={:?}, authors={}, doi={:?})",

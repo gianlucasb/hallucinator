@@ -243,7 +243,7 @@ impl PyPdfExtractor {
         let parsed = ext.parse_reference(text, &prev);
         match parsed {
             hallucinator_pdf::extractor::ParsedRef::Ref(r) => Ok(Some(PyReference::from(r))),
-            hallucinator_pdf::extractor::ParsedRef::Skip(_) => Ok(None),
+            hallucinator_pdf::extractor::ParsedRef::Skip(..) => Ok(None),
         }
     }
 
@@ -264,7 +264,7 @@ impl PyPdfExtractor {
             hallucinator_pdf::extractor::ParsedRef::Ref(r) => {
                 Ok((Some(PyReference::from(r)), None))
             }
-            hallucinator_pdf::extractor::ParsedRef::Skip(reason) => {
+            hallucinator_pdf::extractor::ParsedRef::Skip(reason, _, _) => {
                 let reason_str = match reason {
                     hallucinator_pdf::extractor::SkipReason::UrlOnly => "url_only",
                     hallucinator_pdf::extractor::SkipReason::ShortTitle => "short_title",

@@ -8,6 +8,8 @@ pub enum RefPhase {
     #[allow(dead_code)] // used in verdict_label display, constructed when retry tracking is wired
     Retrying,
     Done,
+    /// Reference was skipped during extraction (URL-only, short title, etc.).
+    Skipped(String),
 }
 
 /// Reason a user marked a reference as a false positive.
@@ -98,12 +100,21 @@ impl RefState {
         if let Some(reason) = self.fp_reason {
             return format!("\u{2713} Safe ({})", reason.short_label());
         }
+        if let RefPhase::Skipped(reason) = &self.phase {
+            return match reason.as_str() {
+                "url_only" => "(skipped: URL-only)".to_string(),
+                "short_title" => "(skipped: short title)".to_string(),
+                "no_title" => "(skipped: no title)".to_string(),
+                other => format!("(skipped: {})", other),
+            };
+        }
         match &self.result {
             None => match self.phase {
                 RefPhase::Pending => "\u{2014}".to_string(),
                 RefPhase::Checking => "...".to_string(),
                 RefPhase::Retrying => "retrying...".to_string(),
                 RefPhase::Done => "\u{2014}".to_string(),
+                RefPhase::Skipped(_) => unreachable!(),
             },
             Some(r) => match r.status {
                 Status::Verified => {
@@ -120,6 +131,9 @@ impl RefState {
     }
 
     pub fn source_label(&self) -> &str {
+        if matches!(self.phase, RefPhase::Skipped(_)) {
+            return "\u{2014}";
+        }
         match &self.result {
             Some(r) => r.source.as_deref().unwrap_or("\u{2014}"),
             None => "\u{2014}",

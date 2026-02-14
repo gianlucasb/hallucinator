@@ -139,7 +139,7 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
         .map(|&ri| {
             let rs = &refs[ri];
             let num = format!("{}", rs.index + 1);
-            let title_display = match rs.phase {
+            let title_display = match &rs.phase {
                 RefPhase::Checking | RefPhase::Retrying => {
                     format!("{} {}", spinner_char(app.tick), rs.title)
                 }
@@ -149,7 +149,9 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
             let phase_style = theme.ref_phase_style(&rs.phase);
 
             let verdict = rs.verdict_label();
-            let verdict_style = if rs.is_marked_safe() {
+            let verdict_style = if matches!(rs.phase, RefPhase::Skipped(_)) {
+                phase_style
+            } else if rs.is_marked_safe() {
                 Style::default()
                     .fg(theme.verified)
                     .add_modifier(Modifier::DIM)
@@ -222,9 +224,18 @@ fn render_preview(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
     let text = if app.paper_cursor < indices.len() {
         let ri = indices[app.paper_cursor];
         let rs = &refs[ri];
-        match &rs.result {
-            Some(r) => r.raw_citation.clone(),
-            None => "Pending...".to_string(),
+        if matches!(rs.phase, RefPhase::Skipped(_)) {
+            // Show raw citation from extracted refs for skipped entries
+            app.paper_refs
+                .get(paper_index)
+                .and_then(|pr| pr.get(ri))
+                .map(|r| r.raw_citation.clone())
+                .unwrap_or_else(|| "(skipped)".to_string())
+        } else {
+            match &rs.result {
+                Some(r) => r.raw_citation.clone(),
+                None => "Pending...".to_string(),
+            }
         }
     } else {
         String::new()

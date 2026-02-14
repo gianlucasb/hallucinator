@@ -34,6 +34,8 @@ struct LoadedStats {
 #[derive(Deserialize)]
 struct LoadedRef {
     index: usize,
+    /// 1-based original reference number from the PDF (before skip filtering).
+    original_number: Option<usize>,
     title: Option<String>,
     raw_citation: Option<String>,
     status: String,
@@ -52,6 +54,8 @@ struct LoadedRef {
     fp_reason: Option<String>,
     /// Legacy boolean field — if true and no fp_reason, maps to KnownGood.
     marked_safe: Option<bool>,
+    /// Skip reason (e.g. "url_only", "short_title") — present when status is "skipped".
+    skip_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -93,7 +97,7 @@ fn parse_status(s: &str) -> Option<Status> {
         "verified" => Some(Status::Verified),
         "not_found" => Some(Status::NotFound),
         "author_mismatch" => Some(Status::AuthorMismatch),
-        _ => None, // "pending" or unknown
+        _ => None, // "pending", "skipped", or unknown
     }
 }
 
@@ -145,11 +149,39 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
         let fp_reason = parse_fp_reason(loaded_ref);
 
         // Parse status — skip pending/unknown entries (no result to reconstruct)
+        // original_number: use saved value, or fall back to index+1 for older exports
+        let orig_num = loaded_ref.original_number.unwrap_or(loaded_ref.index + 1);
+
+        // Handle skipped refs
+        if loaded_ref.status == "skipped" {
+            let reason = loaded_ref
+                .skip_reason
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            ref_states.push(RefState {
+                index: orig_num.saturating_sub(1),
+                title: title.clone(),
+                phase: RefPhase::Skipped(reason.clone()),
+                result: None,
+                fp_reason,
+            });
+            references.push(Reference {
+                raw_citation: loaded_ref.raw_citation.clone().unwrap_or_default(),
+                title: if title.is_empty() { None } else { Some(title) },
+                authors: loaded_ref.ref_authors.clone().unwrap_or_default(),
+                doi: None,
+                arxiv_id: None,
+                original_number: orig_num,
+                skip_reason: Some(reason),
+            });
+            continue;
+        }
+
         let status = match parse_status(&loaded_ref.status) {
             Some(s) => s,
             None => {
                 ref_states.push(RefState {
-                    index: loaded_ref.index,
+                    index: orig_num.saturating_sub(1),
                     title: title.clone(),
                     phase: RefPhase::Done,
                     result: None,
@@ -161,6 +193,8 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
                     authors: loaded_ref.ref_authors.clone().unwrap_or_default(),
                     doi: loaded_ref.doi_info.as_ref().map(|d| d.doi.clone()),
                     arxiv_id: loaded_ref.arxiv_info.as_ref().map(|a| a.arxiv_id.clone()),
+                    original_number: orig_num,
+                    skip_reason: None,
                 });
                 continue;
             }
@@ -239,7 +273,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
         paper.record_result(loaded_ref.index, result.clone());
 
         ref_states.push(RefState {
-            index: loaded_ref.index,
+            index: orig_num.saturating_sub(1),
             title: title.clone(),
             phase: RefPhase::Done,
             result: Some(result),
@@ -252,6 +286,8 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
             authors: loaded_ref.ref_authors.clone().unwrap_or_default(),
             doi: doi_info.map(|d| d.doi),
             arxiv_id: arxiv_info.map(|a| a.arxiv_id),
+            original_number: orig_num,
+            skip_reason: None,
         });
     }
 

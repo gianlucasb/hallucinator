@@ -7,6 +7,7 @@ use ratatui::Frame;
 use hallucinator_core::{DbStatus, Status};
 
 use crate::app::App;
+use crate::model::paper::RefPhase;
 use crate::theme::Theme;
 use crate::view::truncate;
 
@@ -35,7 +36,7 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         ),
         Span::styled(" > ", Style::default().fg(theme.dim)),
         Span::styled(
-            format!("#{} {}", ref_index + 1, title_short),
+            format!("#{} {}", rs.index + 1, title_short),
             Style::default().fg(theme.text),
         ),
     ]);
@@ -53,6 +54,23 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
             ),
             Style::default()
                 .fg(theme.verified)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    // Skipped reference banner
+    if let RefPhase::Skipped(reason) = &rs.phase {
+        let reason_desc = match reason.as_str() {
+            "url_only" => "URL-only (non-academic URL)",
+            "short_title" => "Short title (fewer than minimum words)",
+            "no_title" => "No title could be extracted",
+            other => other,
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  Skipped: {}", reason_desc),
+            Style::default()
+                .fg(theme.dim)
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));

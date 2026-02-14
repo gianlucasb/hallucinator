@@ -3,7 +3,7 @@ use std::path::Path;
 
 use hallucinator_core::{CheckStats, DbStatus, Status, ValidationResult};
 
-use crate::model::paper::RefState;
+use crate::model::paper::{RefPhase, RefState};
 use crate::model::queue::{PaperState, PaperVerdict};
 use crate::view::export::ExportFormat;
 
@@ -112,87 +112,94 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
             problematic_pct(s),
         ));
         let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
-        let ref_count = paper.results.iter().filter(|r| r.is_some()).count();
-        let mut written = 0;
+
+        // Collect all entries to write: normal results + skipped refs
+        let mut entries: Vec<String> = Vec::new();
+
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
-                written += 1;
                 let fp_json = paper_refs
                     .get(ri)
                     .and_then(|rs| rs.fp_reason)
                     .map(|fp| json_str(fp.as_str()))
                     .unwrap_or_else(|| "null".to_string());
-                out.push_str("      {\n");
-                out.push_str(&format!("        \"index\": {},\n", ri));
-                out.push_str(&format!("        \"title\": {},\n", json_str(&r.title)));
-                out.push_str(&format!(
+                let orig_num = paper_refs
+                    .get(ri)
+                    .map(|rs| rs.index + 1)
+                    .unwrap_or(ri + 1);
+                let mut entry = String::new();
+                entry.push_str("      {\n");
+                entry.push_str(&format!("        \"index\": {},\n", ri));
+                entry.push_str(&format!("        \"original_number\": {},\n", orig_num));
+                entry.push_str(&format!("        \"title\": {},\n", json_str(&r.title)));
+                entry.push_str(&format!(
                     "        \"raw_citation\": {},\n",
                     json_str(&r.raw_citation)
                 ));
-                out.push_str(&format!(
+                entry.push_str(&format!(
                     "        \"status\": {},\n",
                     json_str(status_str(&r.status))
                 ));
-                out.push_str(&format!("        \"fp_reason\": {},\n", fp_json));
-                out.push_str(&format!(
+                entry.push_str(&format!("        \"fp_reason\": {},\n", fp_json));
+                entry.push_str(&format!(
                     "        \"source\": {},\n",
                     json_opt_str(&r.source)
                 ));
-                out.push_str(&format!(
+                entry.push_str(&format!(
                     "        \"ref_authors\": {},\n",
                     json_str_array(&r.ref_authors)
                 ));
-                out.push_str(&format!(
+                entry.push_str(&format!(
                     "        \"found_authors\": {},\n",
                     json_str_array(&r.found_authors)
                 ));
-                out.push_str(&format!(
+                entry.push_str(&format!(
                     "        \"paper_url\": {},\n",
                     json_opt_str(&r.paper_url)
                 ));
-                out.push_str(&format!(
+                entry.push_str(&format!(
                     "        \"failed_dbs\": {},\n",
                     json_str_array(&r.failed_dbs)
                 ));
 
                 // DOI info
                 if let Some(doi) = &r.doi_info {
-                    out.push_str(&format!(
+                    entry.push_str(&format!(
                         "        \"doi_info\": {{\"doi\": {}, \"valid\": {}, \"title\": {}}},\n",
                         json_str(&doi.doi),
                         doi.valid,
                         json_opt_str(&doi.title)
                     ));
                 } else {
-                    out.push_str("        \"doi_info\": null,\n");
+                    entry.push_str("        \"doi_info\": null,\n");
                 }
 
                 // arXiv info
                 if let Some(ax) = &r.arxiv_info {
-                    out.push_str(&format!(
+                    entry.push_str(&format!(
                         "        \"arxiv_info\": {{\"arxiv_id\": {}, \"valid\": {}, \"title\": {}}},\n",
                         json_str(&ax.arxiv_id),
                         ax.valid,
                         json_opt_str(&ax.title)
                     ));
                 } else {
-                    out.push_str("        \"arxiv_info\": null,\n");
+                    entry.push_str("        \"arxiv_info\": null,\n");
                 }
 
                 // Retraction info
                 if let Some(ret) = &r.retraction_info {
-                    out.push_str(&format!(
+                    entry.push_str(&format!(
                         "        \"retraction_info\": {{\"is_retracted\": {}, \"retraction_doi\": {}, \"retraction_source\": {}}},\n",
                         ret.is_retracted,
                         json_opt_str(&ret.retraction_doi),
                         json_opt_str(&ret.retraction_source)
                     ));
                 } else {
-                    out.push_str("        \"retraction_info\": null,\n");
+                    entry.push_str("        \"retraction_info\": null,\n");
                 }
 
                 // Per-DB results
-                out.push_str("        \"db_results\": [");
+                entry.push_str("        \"db_results\": [");
                 for (di, db) in r.db_results.iter().enumerate() {
                     let db_status = match db.status {
                         DbStatus::Match => "match",
@@ -203,7 +210,7 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
                         DbStatus::Skipped => "skipped",
                     };
                     let elapsed_ms = db.elapsed.map(|d| d.as_millis()).unwrap_or(0);
-                    out.push_str(&format!(
+                    entry.push_str(&format!(
                         "{{\"db\": {}, \"status\": {}, \"elapsed_ms\": {}, \"authors\": {}, \"url\": {}}}",
                         json_str(&db.db_name),
                         json_str(db_status),
@@ -212,17 +219,47 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
                         json_opt_str(&db.paper_url),
                     ));
                     if di + 1 < r.db_results.len() {
-                        out.push_str(", ");
+                        entry.push_str(", ");
                     }
                 }
-                out.push_str("]\n");
-
-                out.push_str("      }");
-                if written < ref_count {
-                    out.push(',');
-                }
-                out.push('\n');
+                entry.push_str("]\n");
+                entry.push_str("      }");
+                entries.push(entry);
             }
+        }
+
+        // Add skipped refs from ref_states
+        for rs in paper_refs {
+            if let RefPhase::Skipped(reason) = &rs.phase {
+                let mut entry = String::new();
+                entry.push_str("      {\n");
+                entry.push_str(&format!("        \"index\": {},\n", rs.index));
+                entry.push_str(&format!("        \"original_number\": {},\n", rs.index + 1));
+                entry.push_str(&format!("        \"title\": {},\n", json_str(&rs.title)));
+                entry.push_str("        \"raw_citation\": \"\",\n");
+                entry.push_str("        \"status\": \"skipped\",\n");
+                entry.push_str(&format!("        \"skip_reason\": {},\n", json_str(reason)));
+                entry.push_str("        \"fp_reason\": null,\n");
+                entry.push_str("        \"source\": null,\n");
+                entry.push_str("        \"ref_authors\": [],\n");
+                entry.push_str("        \"found_authors\": [],\n");
+                entry.push_str("        \"paper_url\": null,\n");
+                entry.push_str("        \"failed_dbs\": [],\n");
+                entry.push_str("        \"doi_info\": null,\n");
+                entry.push_str("        \"arxiv_info\": null,\n");
+                entry.push_str("        \"retraction_info\": null,\n");
+                entry.push_str("        \"db_results\": []\n");
+                entry.push_str("      }");
+                entries.push(entry);
+            }
+        }
+
+        for (ei, entry) in entries.iter().enumerate() {
+            out.push_str(entry);
+            if ei + 1 < entries.len() {
+                out.push(',');
+            }
+            out.push('\n');
         }
         out.push_str("    ]\n  }");
         if pi + 1 < papers.len() {
@@ -257,6 +294,10 @@ fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                     .and_then(|rs| rs.fp_reason)
                     .map(|fp| fp.as_str())
                     .unwrap_or("");
+                let ref_num = paper_refs
+                    .get(ri)
+                    .map(|rs| rs.index + 1)
+                    .unwrap_or(ri + 1);
                 let authors = r.ref_authors.join("; ");
                 let found = r.found_authors.join("; ");
                 let url = r.paper_url.as_deref().unwrap_or("");
@@ -271,7 +312,7 @@ fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                     "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     csv_escape(&paper.filename),
                     csv_escape(verdict),
-                    ri + 1,
+                    ref_num,
                     csv_escape(&r.title),
                     status_str(&r.status),
                     csv_escape(fp),
@@ -283,6 +324,19 @@ fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                     csv_escape(doi),
                     csv_escape(arxiv),
                     csv_escape(&failed),
+                ));
+            }
+        }
+        // Add skipped refs
+        for rs in paper_refs {
+            if let RefPhase::Skipped(reason) = &rs.phase {
+                out.push_str(&format!(
+                    "{},{},{},{},skipped,{},,,,,,,,\n",
+                    csv_escape(&paper.filename),
+                    csv_escape(verdict),
+                    rs.index + 1,
+                    csv_escape(&rs.title),
+                    csv_escape(reason),
                 ));
             }
         }
@@ -337,7 +391,11 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
         if !problems.is_empty() {
             out.push_str("### Problematic References\n\n");
             for (ri, r) in &problems {
-                write_md_ref(&mut out, *ri, r);
+                let ref_num = paper_refs
+                    .get(*ri)
+                    .map(|rs| rs.index + 1)
+                    .unwrap_or(ri + 1);
+                write_md_ref(&mut out, ref_num, r);
                 if let Some(fp) = paper_refs.get(*ri).and_then(|rs| rs.fp_reason) {
                     out.push_str(&format!(
                         "- **User override:** Marked safe ({})\n\n",
@@ -352,6 +410,10 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
             out.push_str("| # | Title | Source | URL | FP Override |\n");
             out.push_str("|---|-------|--------|-----|-------------|\n");
             for (ri, r) in &verified {
+                let ref_num = paper_refs
+                    .get(*ri)
+                    .map(|rs| rs.index + 1)
+                    .unwrap_or(ri + 1);
                 let source = r.source.as_deref().unwrap_or("\u{2014}");
                 let url = r
                     .paper_url
@@ -365,11 +427,45 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
                     .unwrap_or_default();
                 out.push_str(&format!(
                     "| {} | {} | {} | {} | {} |\n",
-                    ri + 1,
+                    ref_num,
                     md_escape(&r.title),
                     source,
                     url,
                     fp_col,
+                ));
+            }
+            out.push('\n');
+        }
+
+        // Skipped references
+        let skipped: Vec<&RefState> = paper_refs
+            .iter()
+            .filter(|rs| matches!(rs.phase, RefPhase::Skipped(_)))
+            .collect();
+        if !skipped.is_empty() {
+            out.push_str("### Skipped References\n\n");
+            out.push_str("| # | Title | Reason |\n");
+            out.push_str("|---|-------|--------|\n");
+            for rs in &skipped {
+                let reason = match &rs.phase {
+                    RefPhase::Skipped(r) => match r.as_str() {
+                        "url_only" => "URL-only",
+                        "short_title" => "Short title",
+                        "no_title" => "No title",
+                        other => other,
+                    },
+                    _ => "",
+                };
+                let title = if rs.title.is_empty() {
+                    "\u{2014}"
+                } else {
+                    &rs.title
+                };
+                out.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    rs.index + 1,
+                    md_escape(title),
+                    reason,
                 ));
             }
             out.push('\n');
@@ -380,7 +476,7 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
     out
 }
 
-fn write_md_ref(out: &mut String, ri: usize, r: &ValidationResult) {
+fn write_md_ref(out: &mut String, ref_num: usize, r: &ValidationResult) {
     let status_icon = if is_retracted(r) {
         "\u{2620}\u{fe0f} RETRACTED"
     } else {
@@ -393,7 +489,7 @@ fn write_md_ref(out: &mut String, ri: usize, r: &ValidationResult) {
 
     out.push_str(&format!(
         "**[{}]** {} \u{2014} {}\n\n",
-        ri + 1,
+        ref_num,
         md_escape(&r.title),
         status_icon,
     ));
@@ -493,6 +589,10 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
 
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
+                let ref_num = paper_refs
+                    .get(ri)
+                    .map(|rs| rs.index + 1)
+                    .unwrap_or(ri + 1);
                 let status = match r.status {
                     Status::Verified => "Verified",
                     Status::NotFound => "NOT FOUND",
@@ -502,7 +602,7 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                 let source = r.source.as_deref().unwrap_or("-");
                 out.push_str(&format!(
                     "  [{}] {} - {} ({}){}\n",
-                    ri + 1,
+                    ref_num,
                     r.title,
                     status,
                     source,
@@ -564,6 +664,32 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
                 if let Some(fp) = paper_refs.get(ri).and_then(|rs| rs.fp_reason) {
                     out.push_str(&format!("       FP override: {}\n", fp.description()));
                 }
+            }
+        }
+
+        // Skipped references
+        let skipped: Vec<&RefState> = paper_refs
+            .iter()
+            .filter(|rs| matches!(rs.phase, RefPhase::Skipped(_)))
+            .collect();
+        if !skipped.is_empty() {
+            out.push_str("\n  Skipped references:\n");
+            for rs in &skipped {
+                let reason = match &rs.phase {
+                    RefPhase::Skipped(r) => match r.as_str() {
+                        "url_only" => "URL-only",
+                        "short_title" => "Short title",
+                        "no_title" => "No title",
+                        other => other,
+                    },
+                    _ => "",
+                };
+                let title = if rs.title.is_empty() {
+                    "(no title)"
+                } else {
+                    &rs.title
+                };
+                out.push_str(&format!("  [{}] {} - {}\n", rs.index + 1, title, reason));
             }
         }
     }
@@ -799,7 +925,42 @@ footer {
         for (ri, result) in paper.results.iter().enumerate() {
             if let Some(r) = result {
                 let fp = paper_refs.get(ri).and_then(|rs| rs.fp_reason);
-                write_html_ref(&mut out, ri, r, fp);
+                let ref_num = paper_refs
+                    .get(ri)
+                    .map(|rs| rs.index + 1)
+                    .unwrap_or(ri + 1);
+                write_html_ref(&mut out, ref_num, r, fp);
+            }
+        }
+
+        // Skipped refs
+        let skipped: Vec<&RefState> = paper_refs
+            .iter()
+            .filter(|rs| matches!(rs.phase, RefPhase::Skipped(_)))
+            .collect();
+        if !skipped.is_empty() {
+            out.push_str("<h3 style=\"color:var(--dim);margin-top:1.5rem\">Skipped References</h3>\n");
+            for rs in &skipped {
+                let reason = match &rs.phase {
+                    RefPhase::Skipped(r) => match r.as_str() {
+                        "url_only" => "URL-only",
+                        "short_title" => "Short title",
+                        "no_title" => "No title",
+                        other => other,
+                    },
+                    _ => "",
+                };
+                let title = if rs.title.is_empty() {
+                    "\u{2014}"
+                } else {
+                    &rs.title
+                };
+                out.push_str(&format!(
+                    "<div class=\"ref-card\" style=\"opacity:0.5\"><div class=\"ref-header\"><span class=\"ref-num\">[{}]</span><span class=\"ref-title\">{}</span><span class=\"badge\" style=\"background:var(--dim);color:#fff\">{}</span></div></div>\n",
+                    rs.index + 1,
+                    html_escape(title),
+                    html_escape(reason),
+                ));
             }
         }
 
@@ -837,7 +998,7 @@ fn write_stat_card(out: &mut String, class: &str, value: usize, label: &str) {
 
 fn write_html_ref(
     out: &mut String,
-    ri: usize,
+    ref_num: usize,
     r: &ValidationResult,
     fp: Option<crate::model::paper::FpReason>,
 ) {
@@ -854,7 +1015,7 @@ fn write_html_ref(
 
     out.push_str("<div class=\"ref-card\">\n");
     out.push_str("<div class=\"ref-header\">\n");
-    out.push_str(&format!("<span class=\"ref-num\">[{}]</span>\n", ri + 1));
+    out.push_str(&format!("<span class=\"ref-num\">[{}]</span>\n", ref_num));
     out.push_str(&format!(
         "<span class=\"ref-title\">{}</span>\n",
         html_escape(&r.title)

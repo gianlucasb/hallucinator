@@ -1559,21 +1559,28 @@ impl App {
                     paper.init_results(ref_count);
                     paper.phase = PaperPhase::Checking;
                 }
-                if paper_index < self.paper_refs.len() {
-                    self.paper_refs[paper_index] = references;
-                }
                 if paper_index < self.ref_states.len() {
                     self.ref_states[paper_index] = ref_titles
                         .into_iter()
-                        .enumerate()
-                        .map(|(i, title)| RefState {
-                            index: i,
-                            title,
-                            phase: RefPhase::Pending,
-                            result: None,
-                            fp_reason: None,
+                        .zip(references.iter())
+                        .map(|(title, r)| {
+                            let phase = if let Some(reason) = &r.skip_reason {
+                                RefPhase::Skipped(reason.clone())
+                            } else {
+                                RefPhase::Pending
+                            };
+                            RefState {
+                                index: r.original_number.saturating_sub(1),
+                                title,
+                                phase,
+                                result: None,
+                                fp_reason: None,
+                            }
                         })
                         .collect();
+                }
+                if paper_index < self.paper_refs.len() {
+                    self.paper_refs[paper_index] = references;
                 }
             }
             BackendEvent::ExtractionFailed { paper_index, error } => {
@@ -1940,6 +1947,9 @@ fn osc52_copy(text: &str) {
 }
 
 fn verdict_sort_key(rs: &RefState) -> u8 {
+    if matches!(rs.phase, RefPhase::Skipped(_)) {
+        return 5; // sort skipped refs last
+    }
     match &rs.result {
         Some(r) => {
             if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {

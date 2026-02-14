@@ -40,7 +40,11 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
 
     let mut references = Vec::new();
 
-    for entry in &entries {
+    for (raw_idx, entry) in entries.iter().enumerate() {
+        // Build raw citation for display (collapse whitespace) — needed for both skipped and normal refs
+        static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+        let raw_citation = WS_RE.replace_all(entry.trim(), " ").to_string();
+
         // Extract title
         let title = extract_title(entry).map(|t| strip_latex(&t));
 
@@ -49,14 +53,41 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
             Some(t) if !t.is_empty() && t.split_whitespace().count() >= 4 => t,
             Some(t) if t.is_empty() => {
                 stats.no_title += 1;
+                references.push(Reference {
+                    raw_citation,
+                    title: None,
+                    authors: vec![],
+                    doi: None,
+                    arxiv_id: None,
+                    original_number: raw_idx + 1,
+                    skip_reason: Some("no_title".to_string()),
+                });
                 continue;
             }
-            Some(_) => {
+            Some(t) => {
                 stats.short_title += 1;
+                references.push(Reference {
+                    raw_citation,
+                    title: Some(t),
+                    authors: vec![],
+                    doi: None,
+                    arxiv_id: None,
+                    original_number: raw_idx + 1,
+                    skip_reason: Some("short_title".to_string()),
+                });
                 continue;
             }
             None => {
                 stats.no_title += 1;
+                references.push(Reference {
+                    raw_citation,
+                    title: None,
+                    authors: vec![],
+                    doi: None,
+                    arxiv_id: None,
+                    original_number: raw_idx + 1,
+                    skip_reason: Some("no_title".to_string()),
+                });
                 continue;
             }
         };
@@ -75,6 +106,15 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
         // Skip URL-only entries (non-academic URLs without a real title)
         if is_url_only_entry(entry) {
             stats.url_only += 1;
+            references.push(Reference {
+                raw_citation,
+                title: Some(title),
+                authors,
+                doi: None,
+                arxiv_id: None,
+                original_number: raw_idx + 1,
+                skip_reason: Some("url_only".to_string()),
+            });
             continue;
         }
 
@@ -82,16 +122,14 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
         let doi = extract_doi_from_bbl(entry);
         let arxiv_id = hallucinator_pdf::identifiers::extract_arxiv_id(entry);
 
-        // Build raw citation for display (collapse whitespace)
-        static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
-        let raw_citation = WS_RE.replace_all(entry.trim(), " ").to_string();
-
         references.push(Reference {
             raw_citation,
             title: Some(title),
             authors,
             doi,
             arxiv_id,
+            original_number: raw_idx + 1,
+            skip_reason: None,
         });
     }
 
@@ -181,7 +219,7 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
     };
     let mut references = Vec::new();
 
-    for entry in entries {
+    for (raw_idx, entry) in entries.iter().enumerate() {
         // Extract title (convert chunks → string, then strip residual LaTeX)
         let title = entry
             .title()
@@ -194,14 +232,41 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
             Some(t) if !t.is_empty() && t.split_whitespace().count() >= 4 => t,
             Some(t) if t.is_empty() => {
                 stats.no_title += 1;
+                references.push(Reference {
+                    raw_citation: String::new(),
+                    title: None,
+                    authors: vec![],
+                    doi: None,
+                    arxiv_id: None,
+                    original_number: raw_idx + 1,
+                    skip_reason: Some("no_title".to_string()),
+                });
                 continue;
             }
-            Some(_) => {
+            Some(t) => {
                 stats.short_title += 1;
+                references.push(Reference {
+                    raw_citation: String::new(),
+                    title: Some(t),
+                    authors: vec![],
+                    doi: None,
+                    arxiv_id: None,
+                    original_number: raw_idx + 1,
+                    skip_reason: Some("short_title".to_string()),
+                });
                 continue;
             }
             None => {
                 stats.no_title += 1;
+                references.push(Reference {
+                    raw_citation: String::new(),
+                    title: None,
+                    authors: vec![],
+                    doi: None,
+                    arxiv_id: None,
+                    original_number: raw_idx + 1,
+                    skip_reason: Some("no_title".to_string()),
+                });
                 continue;
             }
         };
@@ -260,6 +325,8 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
             authors,
             doi,
             arxiv_id,
+            original_number: raw_idx + 1,
+            skip_reason: None,
         });
     }
 
@@ -900,7 +967,10 @@ Second entry content.
         let result = extract_references_from_bib_str(bib).unwrap();
         assert_eq!(result.skip_stats.total_raw, 2);
         assert_eq!(result.skip_stats.short_title, 1);
-        assert_eq!(result.references.len(), 1);
+        // Both refs are included (skipped ones have skip_reason set)
+        assert_eq!(result.references.len(), 2);
+        assert!(result.references[0].skip_reason.is_some(), "Short title should be skipped");
+        assert!(result.references[1].skip_reason.is_none(), "Long title should not be skipped");
     }
 
     #[test]

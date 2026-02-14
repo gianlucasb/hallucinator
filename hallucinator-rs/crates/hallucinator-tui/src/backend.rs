@@ -113,19 +113,28 @@ async fn process_single_paper(
     };
 
     let skip_stats = extraction.skip_stats.clone();
-    let refs = extraction.references;
-    let ref_titles: Vec<String> = refs
+    let all_refs = extraction.references;
+    let ref_titles: Vec<String> = all_refs
         .iter()
         .map(|r| r.title.clone().unwrap_or_default())
         .collect();
 
+    // Count only non-skipped refs for the ref_count (used for stats/progress)
+    let checkable_count = all_refs.iter().filter(|r| r.skip_reason.is_none()).count();
+
     let _ = tx.send(BackendEvent::ExtractionComplete {
         paper_index,
-        ref_count: refs.len(),
+        ref_count: checkable_count,
         ref_titles,
-        references: refs.clone(),
+        references: all_refs.clone(),
         skip_stats,
     });
+
+    // Filter to only checkable refs for validation
+    let refs: Vec<_> = all_refs
+        .into_iter()
+        .filter(|r| r.skip_reason.is_none())
+        .collect();
 
     if refs.is_empty() {
         let _ = tx.send(BackendEvent::PaperComplete {

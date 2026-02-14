@@ -98,6 +98,9 @@ impl Theme {
                 .fg(self.author_mismatch)
                 .add_modifier(Modifier::BOLD),
             RefPhase::Done => Style::default().fg(self.text),
+            RefPhase::Skipped(_) => Style::default()
+                .fg(self.dim)
+                .add_modifier(Modifier::DIM),
         }
     }
 
