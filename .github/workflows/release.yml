@@ -144,6 +144,10 @@ jobs:
           ${{ matrix.packages_install }}
       - name: Build artifacts
         working-directory: hallucinator-rs
+        env:
+          # mupdf-sys compiles MuPDF via MSBuild with /MD (dynamic CRT).
+          # Rust must match to avoid 60+ unresolved CRT symbol errors.
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=-crt-static' || '' }}
         run: |
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
@@ -226,7 +230,7 @@ jobs:
               --apple-id "$APPLE_ID" \
               --password "$APPLE_APP_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 10m
+              --wait --timeout 30m
 
             rm -f "$zip_path"
             rm -rf "$tmpdir"

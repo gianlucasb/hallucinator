@@ -1,4 +1,0 @@
-# mupdf-sys compiles MuPDF via MSBuild with /MD (dynamic CRT).
-# Rust must also use dynamic CRT on Windows to avoid linker errors.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=-crt-static"]
