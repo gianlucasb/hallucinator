@@ -9,8 +9,11 @@ members = [
     "crates/hallucinator-cli",
     "crates/hallucinator-web",
     "crates/hallucinator-tui",
-    "crates/hallucinator-python",
 ]
+# Python bindings are built separately via maturin; exclude from workspace
+# to avoid pyo3 compile errors when the system Python version exceeds what
+# pyo3 supports (e.g. Python 3.14 on macOS CI runners).
+exclude = ["crates/hallucinator-python"]
 
 [workspace.package]
 version = "0.1.0-alpha.2"

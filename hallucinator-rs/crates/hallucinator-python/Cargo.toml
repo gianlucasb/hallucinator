@@ -1,12 +1,9 @@
 [package]
 name = "hallucinator-python"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0-alpha.2"
+edition = "2024"
+license = "AGPL-3.0-or-later"
 description = "Python bindings for hallucinator PDF reference extraction"
-
-[package.metadata.dist]
-dist = false
 
 [lib]
 name = "_native"
@@ -17,11 +14,11 @@ default = ["pdf"]
 pdf = ["hallucinator-pdf/pdf"]
 
 [dependencies]
-hallucinator-pdf = { workspace = true }
-hallucinator-core = { workspace = true }
-hallucinator-dblp = { workspace = true }
-hallucinator-acl = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
-tokio-util = { workspace = true }
-pyo3 = { workspace = true }
-tempfile = { workspace = true }
+hallucinator-pdf = { path = "../hallucinator-pdf", default-features = false }
+hallucinator-core = { path = "../hallucinator-core" }
+hallucinator-dblp = { path = "../hallucinator-dblp" }
+hallucinator-acl = { path = "../hallucinator-acl" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio-util = "0.7"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+tempfile = "3"
