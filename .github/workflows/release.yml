@@ -222,11 +222,16 @@ jobs:
             zip_path="$RUNNER_TEMP/notarize-$(basename "$archive" .tar.xz).zip"
             ditto -c -k "$tmpdir" "$zip_path"
             echo "Submitting for notarization..."
-            xcrun notarytool submit "$zip_path" \
+            # TODO: re-enable --wait once Apple's notary service recovers
+            # (broken since early Feb 2026, submissions stuck "In Progress")
+            if xcrun notarytool submit "$zip_path" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_APP_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 30m
+              --team-id "$APPLE_TEAM_ID"; then
+              echo "Notarization submitted (not waiting — Apple notary service is degraded)"
+            else
+              echo "::warning::Notarization submission failed for $(basename "$archive") — binary is still codesigned"
+            fi
 
             rm -f "$zip_path"
             rm -rf "$tmpdir"
