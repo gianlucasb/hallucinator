@@ -9,7 +9,8 @@ use crate::model::config::{ConfigSection, ConfigState};
 use crate::theme::Theme;
 
 /// Render the config screen into the given area.
-pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
+/// `footer_area` is a full-width row below the main content + activity panel.
+pub fn render_in(f: &mut Frame, app: &App, area: Rect, footer_area: Rect) {
     let theme = &app.theme;
     let config = &app.config_state;
 
@@ -17,7 +18,6 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // header
         Constraint::Length(1), // config file path
         Constraint::Min(5),    // content
-        Constraint::Length(1), // footer
     ])
     .split(area);
 
@@ -71,7 +71,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
             render_api_keys(&mut lines, config, theme);
         }
         ConfigSection::Databases => {
-            render_databases(&mut lines, config, theme);
+            render_databases(&mut lines, config, theme, area.width);
         }
         ConfigSection::Concurrency => {
             render_concurrency(&mut lines, config, theme);
@@ -99,7 +99,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     } else {
         let section_hint = match config.section {
             ConfigSection::ApiKeys => "Enter:edit value",
-            ConfigSection::Databases => "Enter:edit/toggle  o:browse  Space:toggle",
+            ConfigSection::Databases => "Enter:edit/toggle  Space:toggle",
             ConfigSection::Concurrency => "Enter:edit value",
             ConfigSection::Display => "Space/Enter:cycle theme",
         };
@@ -121,7 +121,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         theme.footer_style()
     };
     let footer = Line::from(Span::styled(&footer_text, footer_style));
-    f.render_widget(Paragraph::new(footer), chunks[3]);
+    f.render_widget(Paragraph::new(footer), footer_area);
 }
 
 fn render_api_keys(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
@@ -162,7 +162,30 @@ fn render_api_keys(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
     }
 }
 
-fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
+fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, width: u16) {
+    // Explanation text
+    lines.push(Line::from(Span::styled(
+        "  Offline databases speed up validation by avoiding network requests to DBLP",
+        Style::default().fg(theme.dim),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  and ACL Anthology. Press b to download and build a database, or set a path",
+        Style::default().fg(theme.dim),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  to an existing one. Toggle individual sources on/off below.",
+        Style::default().fg(theme.dim),
+    )));
+    lines.push(Line::from(""));
+
+    // Label prefix is 24 chars ("  > " + padded label), hints are ~23 chars,
+    // plus 2 for border. Calculate max path display width from terminal width.
+    let label_width: usize = 24;
+    let hint_width: usize = 23; // "  (o:browse  b:build)"
+    let border: usize = 2;
+    let max_path_len = (width as usize)
+        .saturating_sub(label_width + hint_width + border);
+
     // Item 0: DBLP offline path (editable)
     let cursor = if config.item_cursor == 0 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 0 {
@@ -170,7 +193,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
     } else if config.dblp_offline_path.is_empty() {
         "(not set)".to_string()
     } else {
-        config.dblp_offline_path.clone()
+        truncate_path(&config.dblp_offline_path, max_path_len)
     };
     let val_style = if config.editing && config.item_cursor == 0 {
         Style::default().fg(theme.active)
@@ -185,9 +208,21 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
         Span::styled(display_val, val_style),
     ];
     if config.item_cursor == 0 && !config.editing {
-        spans.push(Span::styled("  (o:browse)", Style::default().fg(theme.dim)));
+        spans.push(Span::styled("  (o:browse  b:build)", Style::default().fg(theme.dim)));
     }
     lines.push(Line::from(spans));
+
+    // Show DBLP build status inline
+    if let Some(ref status) = config.dblp_build_status {
+        let style = if config.dblp_building {
+            Style::default().fg(theme.active)
+        } else if status.starts_with("Failed") {
+            Style::default().fg(theme.not_found)
+        } else {
+            Style::default().fg(theme.verified)
+        };
+        lines.push(Line::from(Span::styled(format!("      {}", status), style)));
+    }
 
     // Item 1: ACL offline path (editable)
     let cursor = if config.item_cursor == 1 { "> " } else { "  " };
@@ -196,7 +231,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
     } else if config.acl_offline_path.is_empty() {
         "(not set)".to_string()
     } else {
-        config.acl_offline_path.clone()
+        truncate_path(&config.acl_offline_path, max_path_len)
     };
     let val_style = if config.editing && config.item_cursor == 1 {
         Style::default().fg(theme.active)
@@ -211,9 +246,22 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
         Span::styled(display_val, val_style),
     ];
     if config.item_cursor == 1 && !config.editing {
-        spans.push(Span::styled("  (o:browse)", Style::default().fg(theme.dim)));
+        spans.push(Span::styled("  (o:browse  b:build)", Style::default().fg(theme.dim)));
     }
     lines.push(Line::from(spans));
+
+    // Show ACL build status inline
+    if let Some(ref status) = config.acl_build_status {
+        let style = if config.acl_building {
+            Style::default().fg(theme.active)
+        } else if status.starts_with("Failed") {
+            Style::default().fg(theme.not_found)
+        } else {
+            Style::default().fg(theme.verified)
+        };
+        lines.push(Line::from(Span::styled(format!("      {}", status), style)));
+    }
+
     lines.push(Line::from(""));
 
     // Items 2..N: DB toggles
@@ -312,4 +360,20 @@ fn render_display(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
         ),
         Span::styled(display_val, val_style),
     ]));
+}
+
+/// Truncate a path string for display. If longer than `max_len`, show `...` + the tail.
+fn truncate_path(path: &str, max_len: usize) -> String {
+    if max_len < 8 {
+        // Too narrow to truncate usefully — just show the filename
+        return std::path::Path::new(path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+    }
+    if path.len() <= max_len {
+        return path.to_string();
+    }
+    let tail = &path[path.len() - (max_len - 3)..];
+    format!("...{}", tail)
 }

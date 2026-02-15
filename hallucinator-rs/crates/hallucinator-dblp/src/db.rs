@@ -7,26 +7,29 @@ use crate::DblpError;
 /// Initialize the database with the required schema.
 /// Sets WAL mode and NORMAL synchronous for performance.
 pub fn init_database(conn: &Connection) -> Result<(), DblpError> {
+    // 8KB pages reduce B-tree depth and I/O overhead for bulk inserts.
+    // Must be set before creating any tables.
+    conn.pragma_update(None, "page_size", 8192)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
 
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS authors (
-            uri TEXT PRIMARY KEY,
-            name TEXT NOT NULL
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS publications (
             id INTEGER PRIMARY KEY,
-            uri TEXT UNIQUE NOT NULL,
+            key TEXT UNIQUE NOT NULL,
             title TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS publication_authors (
-            pub_uri TEXT NOT NULL,
-            author_uri TEXT NOT NULL,
-            PRIMARY KEY (pub_uri, author_uri)
+            pub_id INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            PRIMARY KEY (pub_id, author_id)
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS publications_fts USING fts5(
@@ -39,9 +42,6 @@ pub fn init_database(conn: &Connection) -> Result<(), DblpError> {
             key TEXT PRIMARY KEY,
             value TEXT
         );
-
-        CREATE INDEX IF NOT EXISTS idx_pub_authors_pub ON publication_authors(pub_uri);
-        CREATE INDEX IF NOT EXISTS idx_pub_authors_author ON publication_authors(author_uri);
         "#,
     )?;
 
@@ -49,93 +49,71 @@ pub fn init_database(conn: &Connection) -> Result<(), DblpError> {
 }
 
 /// Configure pragmas for fast bulk loading.
+/// Uses `synchronous = OFF` to skip fsync on periodic commits — safe because a
+/// crashed build just needs to be re-run from scratch.
 pub fn begin_bulk_load(conn: &Connection) -> Result<(), DblpError> {
     conn.execute_batch(
-        r#"
-        PRAGMA temp_store = MEMORY;
-        DROP INDEX IF EXISTS idx_pub_authors_pub;
-        DROP INDEX IF EXISTS idx_pub_authors_author;
-        "#,
+        "PRAGMA synchronous = OFF; \
+         PRAGMA temp_store = MEMORY; \
+         PRAGMA cache_size = -64000;",  // 64 MB page cache
     )?;
     Ok(())
 }
 
-/// Recreate indexes after bulk loading is complete.
-pub fn end_bulk_load(conn: &Connection) -> Result<(), DblpError> {
-    conn.execute_batch(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_pub_authors_pub ON publication_authors(pub_uri);
-        CREATE INDEX IF NOT EXISTS idx_pub_authors_author ON publication_authors(author_uri);
-        "#,
-    )?;
-    Ok(())
-}
-
-/// Batch of data to insert into the database.
+/// Batch of publication_author pairs for test helpers.
+#[cfg(test)]
 #[derive(Default)]
 pub struct InsertBatch {
-    pub authors: Vec<(String, String)>,             // (uri, name)
-    pub publications: Vec<(String, String)>,        // (uri, title)
-    pub publication_authors: Vec<(String, String)>, // (pub_uri, author_uri)
+    pub publication_authors: Vec<(i64, i64)>, // (pub_id, author_id)
 }
 
+#[cfg(test)]
 impl InsertBatch {
     pub fn new() -> Self {
         Self::default()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.authors.is_empty()
-            && self.publications.is_empty()
-            && self.publication_authors.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.authors.len() + self.publications.len() + self.publication_authors.len()
-    }
-
-    pub fn clear(&mut self) {
-        self.authors.clear();
-        self.publications.clear();
-        self.publication_authors.clear();
-    }
 }
 
-/// Insert a batch of data into the database using UPSERT semantics.
+/// Insert a batch of publication_author pairs (test helper).
+#[cfg(test)]
 pub fn insert_batch(conn: &Connection, batch: &InsertBatch) -> Result<(), DblpError> {
     let tx = conn.unchecked_transaction()?;
-
-    {
-        let mut author_stmt = tx.prepare_cached(
-            "INSERT INTO authors (uri, name) VALUES (?1, ?2) \
-             ON CONFLICT(uri) DO UPDATE SET name = excluded.name",
-        )?;
-        for (uri, name) in &batch.authors {
-            author_stmt.execute(params![uri, name])?;
-        }
-    }
-
-    {
-        let mut pub_stmt = tx.prepare_cached(
-            "INSERT INTO publications (uri, title) VALUES (?1, ?2) \
-             ON CONFLICT(uri) DO UPDATE SET title = excluded.title",
-        )?;
-        for (uri, title) in &batch.publications {
-            pub_stmt.execute(params![uri, title])?;
-        }
-    }
-
     {
         let mut rel_stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO publication_authors (pub_uri, author_uri) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO publication_authors (pub_id, author_id) VALUES (?1, ?2)",
         )?;
-        for (pub_uri, author_uri) in &batch.publication_authors {
-            rel_stmt.execute(params![pub_uri, author_uri])?;
+        for (pub_id, author_id) in &batch.publication_authors {
+            rel_stmt.execute(params![pub_id, author_id])?;
         }
     }
-
     tx.commit()?;
     Ok(())
+}
+
+/// Insert or get an author by name, returning the integer ID.
+/// Uses RETURNING clause for a single round-trip instead of INSERT + SELECT.
+pub fn insert_or_get_author(conn: &Connection, name: &str) -> Result<i64, DblpError> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO authors (name) VALUES (?1) \
+         ON CONFLICT(name) DO UPDATE SET name = name RETURNING id",
+    )?;
+    let id: i64 = stmt.query_row(params![name], |row| row.get(0))?;
+    Ok(id)
+}
+
+/// Insert or update a publication by key, returning the integer ID.
+/// Uses RETURNING clause for a single round-trip instead of INSERT + SELECT.
+pub fn insert_or_get_publication(
+    conn: &Connection,
+    key: &str,
+    title: &str,
+) -> Result<i64, DblpError> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO publications (key, title) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET title = excluded.title RETURNING id",
+    )?;
+    let id: i64 = stmt.query_row(params![key, title], |row| row.get(0))?;
+    Ok(id)
 }
 
 /// Rebuild the FTS5 index from the publications table.
@@ -144,6 +122,12 @@ pub fn rebuild_fts_index(conn: &Connection) -> Result<(), DblpError> {
         "INSERT INTO publications_fts(publications_fts) VALUES('rebuild')",
         [],
     )?;
+    Ok(())
+}
+
+/// Run VACUUM to compact the database file.
+pub fn vacuum(conn: &Connection) -> Result<(), DblpError> {
+    conn.execute_batch("VACUUM;")?;
     Ok(())
 }
 
@@ -174,18 +158,18 @@ pub fn get_counts(conn: &Connection) -> Result<(i64, i64, i64), DblpError> {
     Ok((pubs, authors, relations))
 }
 
-/// Get author names for a publication URI via JOIN.
+/// Get author names for a publication by its integer ID.
 pub fn get_authors_for_publication(
     conn: &Connection,
-    pub_uri: &str,
+    pub_id: i64,
 ) -> Result<Vec<String>, DblpError> {
     let mut stmt = conn.prepare_cached(
         "SELECT a.name FROM authors a \
-         JOIN publication_authors pa ON a.uri = pa.author_uri \
-         WHERE pa.pub_uri = ?1",
+         JOIN publication_authors pa ON a.id = pa.author_id \
+         WHERE pa.pub_id = ?1",
     )?;
     let authors = stmt
-        .query_map(params![pub_uri], |row| row.get::<_, String>(0))?
+        .query_map(params![pub_id], |row| row.get::<_, String>(0))?
         .filter_map(|r| r.ok())
         .collect();
     Ok(authors)
@@ -214,15 +198,11 @@ mod tests {
     #[test]
     fn test_insert_and_query_batch() {
         let conn = setup_db();
-        let mut batch = InsertBatch::new();
-        batch.authors.push(("pid/1".into(), "Alice Smith".into()));
-        batch
-            .publications
-            .push(("rec/1".into(), "Test Paper Title".into()));
-        batch
-            .publication_authors
-            .push(("rec/1".into(), "pid/1".into()));
+        let author_id = insert_or_get_author(&conn, "Alice Smith").unwrap();
+        let pub_id = insert_or_get_publication(&conn, "rec/1", "Test Paper Title").unwrap();
 
+        let mut batch = InsertBatch::new();
+        batch.publication_authors.push((pub_id, author_id));
         insert_batch(&conn, &batch).unwrap();
 
         let (pubs, authors, rels) = get_counts(&conn).unwrap();
@@ -235,21 +215,12 @@ mod tests {
     fn test_upsert_updates_existing() {
         let conn = setup_db();
 
-        let mut batch = InsertBatch::new();
-        batch
-            .publications
-            .push(("rec/1".into(), "Old Title".into()));
-        insert_batch(&conn, &batch).unwrap();
-
-        let mut batch2 = InsertBatch::new();
-        batch2
-            .publications
-            .push(("rec/1".into(), "New Title".into()));
-        insert_batch(&conn, &batch2).unwrap();
+        insert_or_get_publication(&conn, "rec/1", "Old Title").unwrap();
+        insert_or_get_publication(&conn, "rec/1", "New Title").unwrap();
 
         let title: String = conn
             .query_row(
-                "SELECT title FROM publications WHERE uri = ?1",
+                "SELECT title FROM publications WHERE key = ?1",
                 params!["rec/1"],
                 |row| row.get(0),
             )
@@ -275,40 +246,42 @@ mod tests {
     #[test]
     fn test_get_authors_for_publication() {
         let conn = setup_db();
+        let alice_id = insert_or_get_author(&conn, "Alice").unwrap();
+        let bob_id = insert_or_get_author(&conn, "Bob").unwrap();
+        let pub_id = insert_or_get_publication(&conn, "rec/1", "Paper").unwrap();
+
         let mut batch = InsertBatch::new();
-        batch.authors.push(("pid/1".into(), "Alice".into()));
-        batch.authors.push(("pid/2".into(), "Bob".into()));
-        batch.publications.push(("rec/1".into(), "Paper".into()));
-        batch
-            .publication_authors
-            .push(("rec/1".into(), "pid/1".into()));
-        batch
-            .publication_authors
-            .push(("rec/1".into(), "pid/2".into()));
+        batch.publication_authors.push((pub_id, alice_id));
+        batch.publication_authors.push((pub_id, bob_id));
         insert_batch(&conn, &batch).unwrap();
 
-        let mut authors = get_authors_for_publication(&conn, "rec/1").unwrap();
+        let mut authors = get_authors_for_publication(&conn, pub_id).unwrap();
         authors.sort();
         assert_eq!(authors, vec!["Alice", "Bob"]);
     }
 
     #[test]
+    fn test_insert_or_get_author_deduplicates() {
+        let conn = setup_db();
+        let id1 = insert_or_get_author(&conn, "Alice").unwrap();
+        let id2 = insert_or_get_author(&conn, "Alice").unwrap();
+        assert_eq!(id1, id2);
+
+        let (_, authors, _) = get_counts(&conn).unwrap();
+        assert_eq!(authors, 1);
+    }
+
+    #[test]
     fn test_fts_rebuild_and_query() {
         let conn = setup_db();
-        let mut batch = InsertBatch::new();
-        batch
-            .publications
-            .push(("rec/1".into(), "Attention is All you Need".into()));
-        batch
-            .publications
-            .push(("rec/2".into(), "BERT Pre-training".into()));
-        insert_batch(&conn, &batch).unwrap();
+        insert_or_get_publication(&conn, "rec/1", "Attention is All you Need").unwrap();
+        insert_or_get_publication(&conn, "rec/2", "BERT Pre-training").unwrap();
         rebuild_fts_index(&conn).unwrap();
 
         // FTS query
         let mut stmt = conn
             .prepare(
-                "SELECT p.uri, p.title FROM publications p \
+                "SELECT p.key, p.title FROM publications p \
                  WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?1)",
             )
             .unwrap();

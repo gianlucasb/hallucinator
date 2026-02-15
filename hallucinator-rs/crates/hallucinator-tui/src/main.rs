@@ -279,6 +279,18 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
+    // Set Windows timer resolution to 1ms for accurate frame pacing.
+    // Without this, timers round up to the default 15.6ms granularity,
+    // causing ~22 FPS instead of the target 30.
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "winmm")]
+        unsafe extern "system" {
+            fn timeBeginPeriod(uPeriod: u32) -> u32;
+        }
+        timeBeginPeriod(1);
+    }
+
     // Initialize terminal
     let mouse_enabled = cli.mouse;
     enable_raw_mode()?;
@@ -336,13 +348,12 @@ async fn main() -> anyhow::Result<()> {
     // Startup hints if no offline DBs configured (logged last so they show first)
     if app.config_state.acl_offline_path.is_empty() {
         app.activity.log_warn(
-            "No offline ACL DB. Run 'hallucinator-tui update-acl' for faster lookups.".to_string(),
+            "No offline ACL DB. Build one from Config > Databases (b) or run 'hallucinator-tui update-acl'.".to_string(),
         );
     }
     if app.config_state.dblp_offline_path.is_empty() {
         app.activity.log_warn(
-            "No offline DBLP DB. Run 'hallucinator-tui update-dblp' for faster lookups."
-                .to_string(),
+            "No offline DBLP DB. Build one from Config > Databases (b) or run 'hallucinator-tui update-dblp'.".to_string(),
         );
     }
     if app.config_state.crossref_mailto.is_empty() {
@@ -483,6 +494,66 @@ async fn main() -> anyhow::Result<()> {
                 tui_event::BackendCommand::CancelProcessing => {
                     batch_cancel.cancel();
                 }
+                tui_event::BackendCommand::BuildDblp { db_path } => {
+                    // Invalidate cached handle so the next ProcessFiles re-opens
+                    // the DB even if the path hasn't changed (e.g. rebuilding
+                    // an existing dblp.db that previously failed to open).
+                    cached_dblp_db = None;
+                    cached_dblp_path = None;
+                    let tx = event_tx_for_backend.clone();
+                    tokio::spawn(async move {
+                        let result = hallucinator_dblp::build_database(&db_path, |evt| {
+                            let _ =
+                                tx.send(tui_event::BackendEvent::DblpBuildProgress { event: evt });
+                        })
+                        .await;
+                        match result {
+                            Ok(_) => {
+                                let _ = tx.send(tui_event::BackendEvent::DblpBuildComplete {
+                                    success: true,
+                                    error: None,
+                                    db_path,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(tui_event::BackendEvent::DblpBuildComplete {
+                                    success: false,
+                                    error: Some(e.to_string()),
+                                    db_path,
+                                });
+                            }
+                        }
+                    });
+                }
+                tui_event::BackendCommand::BuildAcl { db_path } => {
+                    // Invalidate cached handle (same reason as DBLP above).
+                    cached_acl_db = None;
+                    cached_acl_path = None;
+                    let tx = event_tx_for_backend.clone();
+                    tokio::spawn(async move {
+                        let result = hallucinator_acl::build_database(&db_path, |evt| {
+                            let _ =
+                                tx.send(tui_event::BackendEvent::AclBuildProgress { event: evt });
+                        })
+                        .await;
+                        match result {
+                            Ok(_) => {
+                                let _ = tx.send(tui_event::BackendEvent::AclBuildComplete {
+                                    success: true,
+                                    error: None,
+                                    db_path,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(tui_event::BackendEvent::AclBuildComplete {
+                                    success: false,
+                                    error: Some(e.to_string()),
+                                    db_path,
+                                });
+                            }
+                        }
+                    });
+                }
             }
         }
     });
@@ -497,13 +568,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Main event loop
     let tick_rate = Duration::from_millis(1000 / app.config_state.fps.max(1) as u64);
+    let mut tick_timer = tokio::time::interval(tick_rate);
+    tick_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick_timer.tick().await; // consume first immediate tick
+    let mut tip_timer = tokio::time::interval(Duration::from_secs(8));
+    // Consume the first immediate tick so the initial tip stays for a full 8s.
+    tip_timer.tick().await;
+    let tip_count = view::banner::shuffled_tips().len().max(1);
+
+    // Initial draw so the screen isn't blank before the first tick fires.
+    terminal.draw(|f| app.view(f))?;
 
     loop {
-        // Draw
-        terminal.draw(|f| app.view(f))?;
-
-        // Always process terminal input first (non-blocking) so user actions
+        // 1. Process terminal input first (non-blocking) so user actions
         // like cancel are never starved by backend event floods.
+        let mut input_happened = false;
         while event::poll(Duration::ZERO).unwrap_or(false) {
             if let Ok(evt) = event::read() {
                 let action = if app.screen == Screen::Config {
@@ -521,10 +600,12 @@ async fn main() -> anyhow::Result<()> {
                     input::map_event(&evt, &app.input_mode)
                 };
                 app.update(action);
+                input_happened = true;
             }
         }
 
-        // Then wait for backend events or tick timeout
+        // 2. Wait for backend events, tick, or tip rotation — whichever first.
+        let mut tick_fired = false;
         tokio::select! {
             maybe_event = event_rx.recv() => {
                 match maybe_event {
@@ -549,16 +630,42 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            _ = tokio::time::sleep(tick_rate) => {}
+            _ = tick_timer.tick() => {
+                tick_fired = true;
+            }
+            _ = tip_timer.tick() => {
+                app.tip_index = (app.tip_index + 1) % tip_count;
+            }
         }
 
-        // Process tick
-        app.update(action::Action::Tick);
+        // 3. Process tick and draw.
+        // Tick fires via tokio::time::interval which handles drift correction,
+        // avoiding Windows timer resolution issues with manual sleep_dur.
+        if tick_fired {
+            app.update(action::Action::Tick);
+        }
+
+        // Draw on tick (animations/state) or immediately after user input.
+        // Backend events update state but render on the next tick (~33ms max).
+        if tick_fired || input_happened {
+            terminal.draw(|f| app.view(f))?;
+            app.record_frame();
+        }
 
         if app.should_quit {
             cancel.cancel();
             break;
         }
+    }
+
+    // Restore Windows timer resolution
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "winmm")]
+        unsafe extern "system" {
+            fn timeEndPeriod(uPeriod: u32) -> u32;
+        }
+        timeEndPeriod(1);
     }
 
     // Restore terminal
@@ -599,12 +706,12 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
         ProgressStyle::with_template("{spinner:.cyan} {msg} {bytes} ({bytes_per_sec})").unwrap();
 
     let parse_bar_style = ProgressStyle::with_template(
-        "{spinner:.green} {msg} [{bar:40.green/dim}] {percent}% (eta {eta})",
+        "{spinner:.green} [{elapsed_precise}] {msg} [{bar:40.green/dim}] {percent}% (eta {eta})",
     )
     .unwrap()
     .progress_chars("=> ");
 
-    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} {msg}").unwrap();
+    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
 
     let dl_bar = multi.add(ProgressBar::new(0));
     dl_bar.set_style(dl_unknown_style.clone());
@@ -613,8 +720,13 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
 
     let parse_bar = multi.add(ProgressBar::new(0));
     parse_bar.set_style(parse_spinner_style.clone());
-    parse_bar.enable_steady_tick(Duration::from_millis(120));
+    parse_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
 
+    let finalize_bar = multi.add(ProgressBar::new_spinner());
+    finalize_bar.set_style(parse_spinner_style.clone());
+    finalize_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+
+    let build_start = Instant::now();
     let parse_start = std::cell::Cell::new(None::<Instant>);
 
     let updated = hallucinator_dblp::build_database(db_path, |event| match event {
@@ -629,7 +741,7 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
                     dl_bar.set_style(dl_bar_style.clone());
                 }
                 dl_bar.set_position(bytes_downloaded);
-                dl_bar.set_message("dblp.xml.gz");
+                dl_bar.set_message("Downloading dblp.xml.gz");
                 if bytes_downloaded >= total && !dl_bar.is_finished() {
                     dl_bar.finish_with_message(format!(
                         "Downloaded {} in {:.0?}",
@@ -639,11 +751,10 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
                 }
             } else {
                 dl_bar.set_position(bytes_downloaded);
-                dl_bar.set_message("dblp.xml.gz");
+                dl_bar.set_message("Downloading dblp.xml.gz");
             }
         }
         hallucinator_dblp::BuildProgress::Parsing {
-            records_parsed,
             records_inserted,
             bytes_read,
             bytes_total,
@@ -657,6 +768,9 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
             }
             if parse_start.get().is_none() {
                 parse_start.set(Some(Instant::now()));
+                parse_bar.reset_elapsed();
+                parse_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+                parse_bar.enable_steady_tick(Duration::from_millis(120));
             }
             if bytes_total > 0 && parse_bar.length() == Some(0) {
                 parse_bar.set_length(bytes_total);
@@ -664,16 +778,15 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
             }
             parse_bar.set_position(bytes_read);
             let elapsed = parse_start.get().unwrap().elapsed().as_secs_f64();
-            let inserted_per_sec = if elapsed > 0.0 {
+            let per_sec = if elapsed > 0.0 {
                 records_inserted as f64 / elapsed
             } else {
                 0.0
             };
             parse_bar.set_message(format!(
-                "{} parsed, {} inserted ({}/s)",
-                HumanCount(records_parsed),
+                "{} publications ({}/s)",
                 HumanCount(records_inserted),
-                HumanCount(inserted_per_sec as u64),
+                HumanCount(per_sec as u64),
             ));
         }
         hallucinator_dblp::BuildProgress::RebuildingIndex => {
@@ -684,26 +797,39 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
                     dl_bar.elapsed()
                 ));
             }
-            parse_bar.set_style(parse_spinner_style.clone());
-            parse_bar.set_message("Rebuilding FTS search index...");
+            if !parse_bar.is_finished() {
+                let elapsed = parse_start.get().map(|s| s.elapsed());
+                parse_bar.finish_with_message(format!(
+                    "Inserted publications in {:.0?}",
+                    elapsed.unwrap_or_default()
+                ));
+            }
+            finalize_bar.reset_elapsed();
+            finalize_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+            finalize_bar.enable_steady_tick(Duration::from_millis(120));
+            finalize_bar.set_message("Rebuilding FTS search index...");
+        }
+        hallucinator_dblp::BuildProgress::Compacting => {
+            finalize_bar.set_message("Compacting database (VACUUM)...");
         }
         hallucinator_dblp::BuildProgress::Complete {
             publications,
             authors,
             skipped,
         } => {
-            let total_elapsed = parse_start
-                .get()
-                .map(|s| format!(" in {:.0?}", s.elapsed()))
-                .unwrap_or_default();
+            if !parse_bar.is_finished() {
+                parse_bar.finish_and_clear();
+            }
             if skipped {
-                parse_bar.finish_with_message("Database is already up to date (304 Not Modified)");
+                finalize_bar.finish_with_message(
+                    "Database is already up to date (304 Not Modified)",
+                );
             } else {
-                parse_bar.finish_with_message(format!(
-                    "Indexed {} publications, {} authors{}",
+                finalize_bar.finish_with_message(format!(
+                    "Indexed {} publications, {} authors (total {:.0?})",
                     HumanCount(publications),
                     HumanCount(authors),
-                    total_elapsed
+                    build_start.elapsed()
                 ));
             }
         }
@@ -746,12 +872,12 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
         ProgressStyle::with_template("{spinner:.cyan} {msg} {bytes} ({bytes_per_sec})").unwrap();
 
     let parse_bar_style = ProgressStyle::with_template(
-        "{spinner:.green} {msg} [{bar:40.green/dim}] {percent}% (eta {eta})",
+        "{spinner:.green} [{elapsed_precise}] {msg} [{bar:40.green/dim}] {percent}% (eta {eta})",
     )
     .unwrap()
     .progress_chars("=> ");
 
-    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} {msg}").unwrap();
+    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
 
     let dl_bar = multi.add(ProgressBar::new(0));
     dl_bar.set_style(dl_unknown_style.clone());
@@ -760,8 +886,13 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
 
     let parse_bar = multi.add(ProgressBar::new(0));
     parse_bar.set_style(parse_spinner_style.clone());
-    parse_bar.enable_steady_tick(Duration::from_millis(120));
+    parse_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
 
+    let finalize_bar = multi.add(ProgressBar::new_spinner());
+    finalize_bar.set_style(parse_spinner_style.clone());
+    finalize_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+
+    let build_start = Instant::now();
     let parse_start = std::cell::Cell::new(None::<Instant>);
 
     let updated = hallucinator_acl::build_database(db_path, |event| match event {
@@ -775,15 +906,20 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
                     dl_bar.set_style(dl_bar_style.clone());
                 }
                 dl_bar.set_position(bytes_downloaded);
-                dl_bar.set_message("acl-anthology.tar.gz");
+                dl_bar.set_message("Downloading acl-anthology.tar.gz");
             } else {
                 dl_bar.set_position(bytes_downloaded);
-                dl_bar.set_message("acl-anthology.tar.gz");
+                dl_bar.set_message("Downloading acl-anthology.tar.gz");
             }
         }
         hallucinator_acl::BuildProgress::Extracting { files_extracted } => {
             if !dl_bar.is_finished() {
                 dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
+            }
+            if parse_bar.is_hidden() {
+                parse_bar.reset_elapsed();
+                parse_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+                parse_bar.enable_steady_tick(Duration::from_millis(120));
             }
             parse_bar.set_message(format!("Extracting XML files... ({})", files_extracted));
         }
@@ -798,6 +934,9 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
             }
             if parse_start.get().is_none() {
                 parse_start.set(Some(Instant::now()));
+                parse_bar.reset_elapsed();
+                parse_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+                parse_bar.enable_steady_tick(Duration::from_millis(120));
             }
             if files_total > 0 && parse_bar.length() == Some(0) {
                 parse_bar.set_length(files_total);
@@ -805,7 +944,7 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
             }
             parse_bar.set_position(files_processed);
             let elapsed = parse_start.get().unwrap().elapsed().as_secs_f64();
-            let inserted_per_sec = if elapsed > 0.0 {
+            let per_sec = if elapsed > 0.0 {
                 records_inserted as f64 / elapsed
             } else {
                 0.0
@@ -814,33 +953,43 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
                 "{} parsed, {} inserted ({}/s)",
                 HumanCount(records_parsed),
                 HumanCount(records_inserted),
-                HumanCount(inserted_per_sec as u64),
+                HumanCount(per_sec as u64),
             ));
         }
         hallucinator_acl::BuildProgress::RebuildingIndex => {
             if !dl_bar.is_finished() {
                 dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
             }
-            parse_bar.set_style(parse_spinner_style.clone());
-            parse_bar.set_message("Rebuilding FTS search index...");
+            if !parse_bar.is_finished() {
+                let elapsed = parse_start.get().map(|s| s.elapsed());
+                parse_bar.finish_with_message(format!(
+                    "Inserted publications in {:.0?}",
+                    elapsed.unwrap_or_default()
+                ));
+            }
+            finalize_bar.reset_elapsed();
+            finalize_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+            finalize_bar.enable_steady_tick(Duration::from_millis(120));
+            finalize_bar.set_message("Rebuilding FTS search index...");
         }
         hallucinator_acl::BuildProgress::Complete {
             publications,
             authors,
             skipped,
         } => {
-            let total_elapsed = parse_start
-                .get()
-                .map(|s| format!(" in {:.0?}", s.elapsed()))
-                .unwrap_or_default();
+            if !parse_bar.is_finished() {
+                parse_bar.finish_and_clear();
+            }
             if skipped {
-                parse_bar.finish_with_message("Database is already up to date (same commit SHA)");
+                finalize_bar.finish_with_message(
+                    "Database is already up to date (same commit SHA)",
+                );
             } else {
-                parse_bar.finish_with_message(format!(
-                    "Indexed {} publications, {} authors{}",
+                finalize_bar.finish_with_message(format!(
+                    "Indexed {} publications, {} authors (total {:.0?})",
                     HumanCount(publications),
                     HumanCount(authors),
-                    total_elapsed
+                    build_start.elapsed()
                 ));
             }
         }

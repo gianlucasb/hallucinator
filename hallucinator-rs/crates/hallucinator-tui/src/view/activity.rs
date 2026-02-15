@@ -168,7 +168,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(theme.text),
     )));
     lines.push(Line::from(Span::styled(
-        format!(" FPS: {:.0}", app.measured_fps),
+        format!(" FPS: {:.2}", app.measured_fps),
         Style::default().fg(theme.dim),
     )));
 

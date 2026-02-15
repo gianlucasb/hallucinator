@@ -253,6 +253,9 @@ pub struct App {
     /// Whether to emit terminal bell (set on batch complete, consumed on next view).
     pub pending_bell: bool,
 
+    /// Current pro-tip index (rotated by a timer in the main loop).
+    pub tip_index: usize,
+
     // Phase 4 state
     /// Whether backend processing has been started (manual start).
     pub processing_started: bool,
@@ -328,6 +331,7 @@ impl App {
             export_state: ExportState::default(),
             banner_dismiss_tick: None, // set after config_state is applied
             pending_bell: false,
+            tip_index: 0,
             processing_started: false,
             backend_cmd_tx: None,
             file_paths: Vec::new(),
@@ -1008,11 +1012,7 @@ impl App {
                             // In db mode: if a file was selected, write it to config
                             let config_item = *config_item;
                             if let Some(path) = self.file_picker.selected.first() {
-                                let canonical = path
-                                    .canonicalize()
-                                    .unwrap_or_else(|_| path.clone())
-                                    .display()
-                                    .to_string();
+                                let canonical = clean_canonicalize(path);
                                 if config_item == 0 {
                                     self.config_state.dblp_offline_path = canonical;
                                 } else {
@@ -1089,12 +1089,7 @@ impl App {
                             if entry.is_dir {
                                 self.file_picker.enter_directory();
                             } else if entry.is_db {
-                                let canonical = entry
-                                    .path
-                                    .canonicalize()
-                                    .unwrap_or_else(|_| entry.path.clone())
-                                    .display()
-                                    .to_string();
+                                let canonical = clean_canonicalize(&entry.path);
                                 if let FilePickerContext::SelectDatabase { config_item } =
                                     self.file_picker_context
                                 {
@@ -1497,6 +1492,9 @@ impl App {
             Action::SaveConfig => {
                 self.save_config();
             }
+            Action::BuildDatabase => {
+                self.handle_build_database();
+            }
             Action::Retry => {
                 self.handle_retry_single();
             }
@@ -1508,15 +1506,6 @@ impl App {
             }
             Action::Tick => {
                 self.tick = self.tick.wrapping_add(1);
-                self.frame_count += 1;
-
-                // Measure FPS every second
-                let elapsed = self.last_fps_instant.elapsed();
-                if elapsed.as_secs_f32() >= 1.0 {
-                    self.measured_fps = self.frame_count as f32 / elapsed.as_secs_f32();
-                    self.frame_count = 0;
-                    self.last_fps_instant = Instant::now();
-                }
 
                 // Drain streaming archive channel (if active)
                 if self.archive_rx.is_some() {
@@ -1728,22 +1717,14 @@ impl App {
                     self.config_state.dblp_offline_path = if buf.is_empty() {
                         buf
                     } else {
-                        PathBuf::from(&buf)
-                            .canonicalize()
-                            .unwrap_or_else(|_| PathBuf::from(&buf))
-                            .display()
-                            .to_string()
+                        clean_canonicalize(&PathBuf::from(&buf))
                     };
                 }
                 1 => {
                     self.config_state.acl_offline_path = if buf.is_empty() {
                         buf
                     } else {
-                        PathBuf::from(&buf)
-                            .canonicalize()
-                            .unwrap_or_else(|_| PathBuf::from(&buf))
-                            .display()
-                            .to_string()
+                        clean_canonicalize(&PathBuf::from(&buf))
                     };
                 }
                 _ => {}
@@ -1773,6 +1754,57 @@ impl App {
             }
             Err(e) => {
                 self.activity.log(format!("Config save failed: {}", e));
+            }
+        }
+    }
+
+    fn handle_build_database(&mut self) {
+        if self.screen != Screen::Config
+            || self.config_state.section != crate::model::config::ConfigSection::Databases
+        {
+            return;
+        }
+
+        let item = self.config_state.item_cursor;
+        if item == 0 {
+            // DBLP
+            if self.config_state.dblp_building {
+                return; // already building
+            }
+            let db_path = if self.config_state.dblp_offline_path.is_empty() {
+                default_db_path("dblp.db")
+            } else {
+                PathBuf::from(&self.config_state.dblp_offline_path)
+            };
+            self.config_state.dblp_building = true;
+            self.config_state.dblp_build_status = Some("Starting...".to_string());
+            self.config_state.dblp_build_started = Some(Instant::now());
+            self.config_state.dblp_parse_started = None;
+            self.activity.log(format!(
+                "Building DBLP database at {}...",
+                db_path.display()
+            ));
+            if let Some(tx) = &self.backend_cmd_tx {
+                let _ = tx.send(BackendCommand::BuildDblp { db_path });
+            }
+        } else if item == 1 {
+            // ACL
+            if self.config_state.acl_building {
+                return;
+            }
+            let db_path = if self.config_state.acl_offline_path.is_empty() {
+                default_db_path("acl.db")
+            } else {
+                PathBuf::from(&self.config_state.acl_offline_path)
+            };
+            self.config_state.acl_building = true;
+            self.config_state.acl_build_status = Some("Starting...".to_string());
+            self.config_state.acl_build_started = Some(Instant::now());
+            self.config_state.acl_parse_started = None;
+            self.activity
+                .log(format!("Building ACL database at {}...", db_path.display()));
+            if let Some(tx) = &self.backend_cmd_tx {
+                let _ = tx.send(BackendCommand::BuildAcl { db_path });
             }
         }
     }
@@ -1850,6 +1882,79 @@ impl App {
                 self.frozen_elapsed = Some(self.elapsed());
                 self.batch_complete = true;
                 self.pending_bell = true;
+            }
+            BackendEvent::DblpBuildProgress { event } => {
+                // Track parse phase start for records/s calculation
+                if matches!(event, hallucinator_dblp::BuildProgress::Parsing { .. })
+                    && self.config_state.dblp_parse_started.is_none()
+                {
+                    self.config_state.dblp_parse_started = Some(Instant::now());
+                }
+                self.config_state.dblp_build_status = Some(format_dblp_progress(
+                    &event,
+                    self.config_state.dblp_build_started,
+                    self.config_state.dblp_parse_started,
+                ));
+            }
+            BackendEvent::DblpBuildComplete {
+                success,
+                error,
+                db_path,
+            } => {
+                self.config_state.dblp_building = false;
+                if success {
+                    let elapsed = self
+                        .config_state
+                        .dblp_build_started
+                        .map(|s| s.elapsed())
+                        .unwrap_or_default();
+                    self.config_state.dblp_build_status =
+                        Some(format!("Build complete! (total {:.0?})", elapsed));
+                    self.config_state.dblp_offline_path = db_path.display().to_string();
+                    self.activity
+                        .log(format!("DBLP database built: {}", db_path.display()));
+                } else {
+                    let msg = error.unwrap_or_else(|| "unknown error".to_string());
+                    self.config_state.dblp_build_status = Some(format!("Failed: {}", msg));
+                    self.activity
+                        .log_warn(format!("DBLP build failed: {}", msg));
+                }
+            }
+            BackendEvent::AclBuildProgress { event } => {
+                // Track parse phase start for records/s calculation
+                if matches!(event, hallucinator_acl::BuildProgress::Parsing { .. })
+                    && self.config_state.acl_parse_started.is_none()
+                {
+                    self.config_state.acl_parse_started = Some(Instant::now());
+                }
+                self.config_state.acl_build_status = Some(format_acl_progress(
+                    &event,
+                    self.config_state.acl_build_started,
+                    self.config_state.acl_parse_started,
+                ));
+            }
+            BackendEvent::AclBuildComplete {
+                success,
+                error,
+                db_path,
+            } => {
+                self.config_state.acl_building = false;
+                if success {
+                    let elapsed = self
+                        .config_state
+                        .acl_build_started
+                        .map(|s| s.elapsed())
+                        .unwrap_or_default();
+                    self.config_state.acl_build_status =
+                        Some(format!("Build complete! (total {:.0?})", elapsed));
+                    self.config_state.acl_offline_path = db_path.display().to_string();
+                    self.activity
+                        .log(format!("ACL database built: {}", db_path.display()));
+                } else {
+                    let msg = error.unwrap_or_else(|| "unknown error".to_string());
+                    self.config_state.acl_build_status = Some(format!("Failed: {}", msg));
+                    self.activity.log_warn(format!("ACL build failed: {}", msg));
+                }
             }
         }
     }
@@ -1940,6 +2045,17 @@ impl App {
 
     /// Elapsed processing time. Returns zero before processing starts,
     /// frozen value after cancel/complete, or live value during processing.
+    /// Record that a frame was drawn; updates the measured FPS counter.
+    pub fn record_frame(&mut self) {
+        self.frame_count += 1;
+        let elapsed = self.last_fps_instant.elapsed();
+        if elapsed.as_secs_f32() >= 1.0 {
+            self.measured_fps = self.frame_count as f32 / elapsed.as_secs_f32();
+            self.frame_count = 0;
+            self.last_fps_instant = Instant::now();
+        }
+    }
+
     pub fn elapsed(&self) -> std::time::Duration {
         if let Some(frozen) = self.frozen_elapsed {
             frozen
@@ -2131,39 +2247,47 @@ impl App {
         }
 
         // Persistent logo bar at top of every content screen
-        let content_area = crate::view::banner::render_logo_bar(
-            f,
-            area,
-            &self.theme,
-            self.tick,
-            self.config_state.fps,
-        );
+        let content_area =
+            crate::view::banner::render_logo_bar(f, area, &self.theme, self.tip_index);
 
-        // Activity panel split
+        // Split footer row out first so it spans the full terminal width.
+        // Use direct Rect arithmetic instead of Layout to avoid constraint solver overhead.
+        let footer_area = Rect {
+            x: content_area.x,
+            y: content_area.y + content_area.height.saturating_sub(1),
+            width: content_area.width,
+            height: 1.min(content_area.height),
+        };
+        let body_area = Rect {
+            height: content_area.height.saturating_sub(1),
+            ..content_area
+        };
+
+        // Activity panel split (on body_area, so it doesn't cover the footer)
         let main_area = if self.activity_panel_visible {
-            let panel_width = if content_area.width > 120 {
+            let panel_width = if body_area.width > 120 {
                 45
             } else {
-                (content_area.width / 3).max(30)
+                (body_area.width / 3).max(30)
             };
             let chunks = Layout::horizontal([Constraint::Min(40), Constraint::Length(panel_width)])
-                .split(content_area);
+                .split(body_area);
 
             crate::view::activity::render(f, chunks[1], self);
             chunks[0]
         } else {
-            content_area
+            body_area
         };
 
         // Clone screen to avoid borrow conflict with &mut self
         let screen = self.screen.clone();
         match screen {
-            Screen::Queue => crate::view::queue::render_in(f, self, main_area),
-            Screen::Paper(idx) => crate::view::paper::render_in(f, self, idx, main_area),
+            Screen::Queue => crate::view::queue::render_in(f, self, main_area, footer_area),
+            Screen::Paper(idx) => crate::view::paper::render_in(f, self, idx, main_area, footer_area),
             Screen::RefDetail(paper_idx, ref_idx) => {
-                crate::view::detail::render_in(f, self, paper_idx, ref_idx, main_area)
+                crate::view::detail::render_in(f, self, paper_idx, ref_idx, main_area, footer_area)
             }
-            Screen::Config => crate::view::config::render_in(f, self, main_area),
+            Screen::Config => crate::view::config::render_in(f, self, main_area, footer_area),
             Screen::Banner | Screen::FilePicker => unreachable!(),
         }
 
@@ -2185,6 +2309,225 @@ fn osc52_copy(text: &str) {
     // Write directly to stdout, bypassing the terminal backend buffer
     let _ = std::io::stdout().write_all(format!("\x1b]52;c;{}\x07", encoded).as_bytes());
     let _ = std::io::stdout().flush();
+}
+
+/// Default path for offline databases: `~/.local/share/hallucinator/<filename>`.
+fn default_db_path(filename: &str) -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("hallucinator")
+        .join(filename)
+}
+
+/// Format a DBLP build progress event into a short status string.
+fn format_dblp_progress(
+    event: &hallucinator_dblp::BuildProgress,
+    build_started: Option<Instant>,
+    parse_started: Option<Instant>,
+) -> String {
+    match event {
+        hallucinator_dblp::BuildProgress::Downloading {
+            bytes_downloaded,
+            total_bytes,
+            ..
+        } => {
+            let speed = build_started
+                .map(|s| {
+                    let elapsed = s.elapsed().as_secs_f64();
+                    if elapsed > 0.5 {
+                        format!(" {}/s", format_bytes((*bytes_downloaded as f64 / elapsed) as u64))
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            if let Some(total) = total_bytes {
+                let pct = (*bytes_downloaded as f64 / *total as f64 * 100.0) as u32;
+                let eta = format_eta(*bytes_downloaded, *total, build_started);
+                format!(
+                    "Downloading... {} / {} ({}%){}{}", format_bytes(*bytes_downloaded),
+                    format_bytes(*total), pct, speed, eta
+                )
+            } else {
+                format!("Downloading... {}{}", format_bytes(*bytes_downloaded), speed)
+            }
+        }
+        hallucinator_dblp::BuildProgress::Parsing {
+            records_inserted,
+            bytes_read,
+            bytes_total,
+        } => {
+            let pct = if *bytes_total > 0 {
+                (*bytes_read as f64 / *bytes_total as f64 * 100.0) as u32
+            } else {
+                0
+            };
+            let rate = parse_started
+                .map(|s| {
+                    let elapsed = s.elapsed().as_secs_f64();
+                    if elapsed > 0.5 {
+                        format!(" ({}/s)", format_number((*records_inserted as f64 / elapsed) as u64))
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            let eta = format_eta(*bytes_read, *bytes_total, parse_started);
+            format!(
+                "Parsing... {} publications ({}%){}{}", format_number(*records_inserted), pct,
+                rate, eta
+            )
+        }
+        hallucinator_dblp::BuildProgress::RebuildingIndex => "Rebuilding FTS index...".to_string(),
+        hallucinator_dblp::BuildProgress::Compacting => "Compacting database (VACUUM)...".to_string(),
+        hallucinator_dblp::BuildProgress::Complete {
+            publications,
+            authors,
+            skipped,
+        } => {
+            if *skipped {
+                "Already up to date (304 Not Modified)".to_string()
+            } else {
+                format!(
+                    "Complete: {} publications, {} authors", format_number(*publications),
+                    format_number(*authors)
+                )
+            }
+        }
+    }
+}
+
+/// Format an ACL build progress event into a short status string.
+fn format_acl_progress(
+    event: &hallucinator_acl::BuildProgress,
+    build_started: Option<Instant>,
+    parse_started: Option<Instant>,
+) -> String {
+    match event {
+        hallucinator_acl::BuildProgress::Downloading {
+            bytes_downloaded,
+            total_bytes,
+        } => {
+            let speed = build_started
+                .map(|s| {
+                    let elapsed = s.elapsed().as_secs_f64();
+                    if elapsed > 0.5 {
+                        format!(" {}/s", format_bytes((*bytes_downloaded as f64 / elapsed) as u64))
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            if let Some(total) = total_bytes {
+                let pct = (*bytes_downloaded as f64 / *total as f64 * 100.0) as u32;
+                let eta = format_eta(*bytes_downloaded, *total, build_started);
+                format!(
+                    "Downloading... {} / {} ({}%){}{}", format_bytes(*bytes_downloaded),
+                    format_bytes(*total), pct, speed, eta
+                )
+            } else {
+                format!("Downloading... {}{}", format_bytes(*bytes_downloaded), speed)
+            }
+        }
+        hallucinator_acl::BuildProgress::Extracting { files_extracted } => {
+            format!("Extracting... {} files", format_number(*files_extracted))
+        }
+        hallucinator_acl::BuildProgress::Parsing {
+            records_parsed,
+            records_inserted,
+            files_processed,
+            files_total,
+        } => {
+            let rate = parse_started
+                .map(|s| {
+                    let elapsed = s.elapsed().as_secs_f64();
+                    if elapsed > 0.5 {
+                        format!(" ({}/s)", format_number((*records_inserted as f64 / elapsed) as u64))
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            let eta = format_eta(*files_processed, *files_total, parse_started);
+            format!(
+                "Parsing... {} records, {} inserted ({}/{}){}{}", format_number(*records_parsed),
+                format_number(*records_inserted), files_processed, files_total, rate, eta
+            )
+        }
+        hallucinator_acl::BuildProgress::RebuildingIndex => "Rebuilding FTS index...".to_string(),
+        hallucinator_acl::BuildProgress::Complete {
+            publications,
+            authors,
+            skipped,
+        } => {
+            if *skipped {
+                "Already up to date (same commit SHA)".to_string()
+            } else {
+                format!(
+                    "Complete: {} publications, {} authors", format_number(*publications),
+                    format_number(*authors)
+                )
+            }
+        }
+    }
+}
+
+/// Format an ETA string from progress and elapsed time.
+fn format_eta(done: u64, total: u64, started: Option<Instant>) -> String {
+    if done == 0 || total == 0 {
+        return String::new();
+    }
+    let Some(started) = started else {
+        return String::new();
+    };
+    let elapsed = started.elapsed().as_secs_f64();
+    if elapsed < 1.0 {
+        return String::new();
+    }
+    let fraction = done as f64 / total as f64;
+    if fraction <= 0.0 || fraction > 1.0 {
+        return String::new();
+    }
+    let remaining_secs = (elapsed / fraction - elapsed).max(0.0) as u64;
+    if remaining_secs < 60 {
+        format!(", eta {}s", remaining_secs)
+    } else {
+        format!(", eta {}m{}s", remaining_secs / 60, remaining_secs % 60)
+    }
+}
+
+/// Format a number with comma separators (e.g. 1,234,567).
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
+/// Canonicalize a path and strip the Windows `\\?\` extended-length prefix.
+fn clean_canonicalize(path: &std::path::Path) -> String {
+    let canonical = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+    let s = canonical.display().to_string();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 fn verdict_sort_key(rs: &RefState) -> u8 {

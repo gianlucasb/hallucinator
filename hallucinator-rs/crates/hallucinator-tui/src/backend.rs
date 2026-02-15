@@ -306,7 +306,7 @@ pub fn open_dblp_db(
 ) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
     if !path.exists() {
         anyhow::bail!(
-            "Offline DBLP database not found at {}. Run 'hallucinator-tui update-dblp' to build it.",
+            "Offline DBLP database not found at {}. Build from Config > Databases (b) or run 'hallucinator-tui update-dblp'.",
             path.display()
         );
     }
@@ -320,7 +320,7 @@ pub fn open_acl_db(
 ) -> anyhow::Result<Arc<Mutex<hallucinator_acl::AclDatabase>>> {
     if !path.exists() {
         anyhow::bail!(
-            "Offline ACL database not found at {}. Use 'hallucinator-tui update-acl' to build it.",
+            "Offline ACL database not found at {}. Build from Config > Databases (b) or run 'hallucinator-tui update-acl'.",
             path.display(),
         );
     }

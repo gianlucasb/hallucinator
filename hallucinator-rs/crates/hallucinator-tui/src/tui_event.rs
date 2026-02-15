@@ -22,6 +22,10 @@ pub enum BackendCommand {
     },
     /// Cancel the current batch.
     CancelProcessing,
+    /// Build/update the offline DBLP database.
+    BuildDblp { db_path: PathBuf },
+    /// Build/update the offline ACL Anthology database.
+    BuildAcl { db_path: PathBuf },
 }
 
 /// Events flowing from the backend processing task to the TUI.
@@ -52,4 +56,24 @@ pub enum BackendEvent {
     },
     /// All papers have been processed.
     BatchComplete,
+    /// Progress from a DBLP database build.
+    DblpBuildProgress {
+        event: hallucinator_dblp::BuildProgress,
+    },
+    /// DBLP database build completed.
+    DblpBuildComplete {
+        success: bool,
+        error: Option<String>,
+        db_path: PathBuf,
+    },
+    /// Progress from an ACL database build.
+    AclBuildProgress {
+        event: hallucinator_acl::BuildProgress,
+    },
+    /// ACL database build completed.
+    AclBuildComplete {
+        success: bool,
+        error: Option<String>,
+        db_path: PathBuf,
+    },
 }
