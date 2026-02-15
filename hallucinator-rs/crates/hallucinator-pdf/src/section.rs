@@ -89,6 +89,11 @@ pub(crate) fn segment_references_with_config(
         return refs;
     }
 
+    // Strategy 3b: NeurIPS/ML (". \n I. Surname and I. Surname. Title.")
+    if let Some(refs) = try_neurips(ref_text) {
+        return refs;
+    }
+
     // Strategy 4: Springer/Nature (line starts with capital + has (Year))
     if let Some(refs) = try_springer_nature(ref_text) {
         return refs;
@@ -253,6 +258,53 @@ fn try_aaai(ref_text: &str) -> Option<Vec<String>> {
             refs.push(content.to_string());
         }
     }
+    Some(refs)
+}
+
+fn try_neurips(ref_text: &str) -> Option<Vec<String>> {
+    // NeurIPS/ML format: "I. Surname and I. Surname. Title. Venue, Year."
+    // Split at ". \n I. Surname" boundaries
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(\.\s*)\n+([A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-zA-Z\u{00C0}-\u{024F}\-]+(?:\s+and\s+[A-Z]\.|,\s+[A-Z]\.))",
+        )
+        .unwrap()
+    });
+
+    let matches: Vec<_> = RE.find_iter(ref_text).collect();
+    if matches.len() < 5 {
+        return None;
+    }
+
+    let mut refs = Vec::new();
+
+    // First reference: everything before the first boundary
+    let first_end = matches[0].start()
+        + RE.captures(&ref_text[matches[0].start()..])
+            .and_then(|c| c.get(1))
+            .map(|m| m.end())
+            .unwrap_or(0);
+    let first_ref = ref_text[..first_end].trim();
+    if !first_ref.is_empty() && first_ref.len() > 20 {
+        refs.push(first_ref.to_string());
+    }
+
+    // Each subsequent reference starts at the second capture group
+    for i in 0..matches.len() {
+        let caps = RE.captures(&ref_text[matches[i].start()..]).unwrap();
+        let ref_start = matches[i].start() + caps.get(2).unwrap().start();
+        let ref_end = if i + 1 < matches.len() {
+            let next_caps = RE.captures(&ref_text[matches[i + 1].start()..]).unwrap();
+            matches[i + 1].start() + next_caps.get(1).unwrap().end()
+        } else {
+            ref_text.len()
+        };
+        let content = ref_text[ref_start..ref_end].trim();
+        if !content.is_empty() {
+            refs.push(content.to_string());
+        }
+    }
+
     Some(refs)
 }
 

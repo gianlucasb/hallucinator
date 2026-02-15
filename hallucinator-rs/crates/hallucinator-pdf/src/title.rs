@@ -227,6 +227,22 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
+    // FIX 3a (IEEE): Reject IEEE ALL CAPS author lists
+    if is_likely_author_list(&title) {
+        return String::new();
+    }
+
+    // FIX 3b (NeurIPS/ML): Reject "I. Surname, I. Surname, and I. Surname" author lists
+    static ML_AUTHOR_LIST_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"^[A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-z]+,\s+[A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-z]+,\s+and\s+[A-Z]\.",
+        )
+        .unwrap()
+    });
+    if ML_AUTHOR_LIST_RE.is_match(&title) {
+        return String::new();
+    }
+
     // FIX 4 (NeurIPS): Reject non-reference content (checklists, acknowledgments)
     static NON_REFERENCE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
@@ -474,6 +490,33 @@ fn is_venue_only(text: &str) -> bool {
     VENUE_ONLY_PATTERNS.iter().any(|re| re.is_match(text))
 }
 
+/// Check if extracted text is an IEEE ALL CAPS author list, not a paper title.
+fn is_likely_author_list(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+
+    static AUTHOR_LIST_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            // SURNAME, I., SURNAME, I.
+            Regex::new(r"^[A-Z]{2,}\s*,\s*[A-Z]\.\s*,\s*[A-Z]{2,}\s*,\s*[A-Z]\.").unwrap(),
+            // SURNAME, I., AND SURNAME
+            Regex::new(r"^[A-Z]{2,}\s*,\s*[A-Z]\.\s*,?\s*AND\s+[A-Z]").unwrap(),
+            // SURNAME, AND I. SURNAME
+            Regex::new(r"^[A-Z]{2,}\s*,\s*AND\s+[A-Z]\.\s*[A-Z]").unwrap(),
+            // EL HOUSNI AND G. BOTREL (multi-word surname + AND)
+            Regex::new(r"^[A-Z]{2,}\s+[A-Z]{2,}\s+AND\s+[A-Z]\.\s*[A-Z]").unwrap(),
+            // SURNAME AND SURNAME, (two ALL CAPS surnames)
+            Regex::new(r"^[A-Z]{2,}\s+AND\s+[A-Z]\.\s*[A-Z]{2,}\s*,").unwrap(),
+            // Broken umlaut: B ¨UNZ, P. (diacritic separated from letter)
+            Regex::new(r"^[A-Z]\s*[\u{00A8}\u{00B4}\u{0060}]\s*[A-Z]+\s*,\s*[A-Z]\.").unwrap(),
+        ]
+    });
+
+    AUTHOR_LIST_PATTERNS.iter().any(|re| re.is_match(text))
+}
+
 fn try_org_doc(ref_text: &str) -> Option<(String, bool)> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z][a-zA-Z\s]+):\s*(.+)").unwrap());
 
@@ -530,6 +573,11 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Journal after ? with volume:pages: "? JournalName, vol: pages"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
+            // ". Journal Name (Year)" — e.g., ". Journal of Legal Analysis (2021)"
+            Regex::new(
+                r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
+            )
+            .unwrap(),
         ]
     });
 
@@ -586,6 +634,13 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
             // Period then journal name + comma + volume (no parens/colon): ". JournalName, vol"
             // Catches "Foundations and Trends® in Human–Computer Interaction, 14(4–5)"
             Regex::new(&format!(r"\.\s*[A-Z]{}{{10,}},\s*\d+", j)).unwrap(),
+            // ". Journal Name (Year)" — e.g., ". Journal of Legal Analysis (2021)"
+            Regex::new(
+                r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
+            )
+            .unwrap(),
+            // ". https://" — URL after period
+            Regex::new(r"\.\s*https?://").unwrap(),
         ]
     });
 
@@ -1101,6 +1156,14 @@ fn truncate_at_sentence_end(title: &str) -> String {
         if segment.len() > 2 || (segment.len() == 2 && segment.chars().all(|c| c.is_uppercase())) {
             // Skip if period is immediately followed by a letter (product names)
             if pos + 1 < title.len() && title.as_bytes()[pos + 1].is_ascii_alphabetic() {
+                continue;
+            }
+            // Skip if followed by space + digit (version number like "Flux. 1")
+            let bytes = title.as_bytes();
+            if pos + 2 < title.len()
+                && bytes.get(pos + 1) == Some(&b' ')
+                && bytes.get(pos + 2).is_some_and(|b| b.is_ascii_digit())
+            {
                 continue;
             }
             return title[..pos].to_string();

@@ -88,6 +88,13 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &PdfParsingConfig)
         let after_word = format!("{}{}", after_char, after_rest);
         let after_lower = after_word.to_lowercase();
 
+        // If the character before the hyphen is a digit, keep the hyphen
+        // (product/model names like "Qwen2-VL", "GPT-4-turbo")
+        let before_chars: Vec<char> = before.chars().collect();
+        if before_chars.last().is_some_and(|c| c.is_ascii_digit()) {
+            return format!("{}-{}", before, after_word);
+        }
+
         // Check if the word after the hyphen is a common compound suffix
         for suffix in suffix_set.iter() {
             if after_lower == *suffix
