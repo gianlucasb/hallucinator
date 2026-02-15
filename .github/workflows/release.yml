@@ -214,9 +214,16 @@ jobs:
               continue
             fi
 
-            # Re-archive with signed binary and update checksum
+            # Re-archive with signed binary and update checksums
             (cd "$tmpdir" && tar cf - *) | xz > "$archive"
-            shasum -a 256 "$archive" | awk '{print $1}' > "${archive}.sha256"
+            new_hash=$(shasum -a 256 "$archive" | awk '{print $1}')
+            echo "$new_hash" > "${archive}.sha256"
+
+            # Update the checksum in dist-manifest.json so the installer verifies correctly
+            archive_name=$(basename "$archive")
+            jq --arg name "$archive_name" --arg hash "$new_hash" \
+              '(.artifacts[] | select(.name == $name) | .checksum) = $hash' \
+              dist-manifest.json > dist-manifest.json.tmp && mv dist-manifest.json.tmp dist-manifest.json
 
             # Submit for notarization and wait
             zip_path="$RUNNER_TEMP/notarize-$(basename "$archive" .tar.xz).zip"
