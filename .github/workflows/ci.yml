@@ -26,12 +26,12 @@ jobs:
 
       - run: sudo apt-get update && sudo apt-get -y install libfontconfig1-dev
 
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-        working-directory: hallucinator-rs
-
       - name: cargo fmt
         run: cargo fmt --all --check
+        working-directory: hallucinator-rs
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: hallucinator-rs
 
   test-python:
