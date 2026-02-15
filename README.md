@@ -10,6 +10,30 @@ Created by Gianluca Stringhini with Claude Code and ChatGPT.
 
 ---
 
+
+
+## Rust TUI (Recommended for Batch Processing)
+
+If you're willing to install Rust, the **[hallucinator-rs](hallucinator-rs/)** version includes a full terminal UI for batch-processing PDFs and archives interactively, with real-time progress, sorting/filtering, result export, and persistent configuration.
+
+[Install Rust](https://rust-lang.org/tools/install/), then:
+
+```bash
+cd hallucinator-rs
+
+# Interactive TUI
+cargo build -p hallucinator-tui --release
+./target/release/hallucinator-tui
+
+# CLI
+cargo build -p hallucinator-cli --release
+./target/release/hallucinator-cli check paper.pdf
+```
+
+See **[hallucinator-rs/README.md](hallucinator-rs/README.md)** for full documentation.
+
+---
+
 ## Python Bindings (Early Release)
 
 Pre-compiled wheels are available for Python 3.12 on Linux (x86_64), macOS (x86_64 + Apple Silicon), and Windows (x86_64). These provide Rust-native performance from Python — no Rust toolchain required.
@@ -35,28 +59,6 @@ for r in results:
 ```
 
 See **[hallucinator-rs/PYTHON_BINDINGS.md](hallucinator-rs/PYTHON_BINDINGS.md)** for full API docs, configuration options, progress callbacks, and examples.
-
----
-
-## Rust TUI (Recommended for Batch Processing)
-
-If you're willing to install Rust, the **[hallucinator-rs](hallucinator-rs/)** version includes a full terminal UI for batch-processing PDFs and archives interactively, with real-time progress, sorting/filtering, result export, and persistent configuration.
-
-[Install Rust](https://rust-lang.org/tools/install/), then:
-
-```bash
-cd hallucinator-rs
-
-# Interactive TUI
-cargo build -p hallucinator-tui --release
-./target/release/hallucinator-tui
-
-# CLI
-cargo build -p hallucinator-cli --release
-./target/release/hallucinator-cli check paper.pdf
-```
-
-See **[hallucinator-rs/README.md](hallucinator-rs/README.md)** for full documentation.
 
 ---
 
