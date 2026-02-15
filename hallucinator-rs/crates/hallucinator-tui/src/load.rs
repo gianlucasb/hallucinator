@@ -313,6 +313,15 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
         });
     }
 
+    // Sort ref_states and references by original position so they align
+    // with paper.results (which is indexed by original position).
+    // This handles JSON files where entries are sorted by severity.
+    let mut pairs: Vec<(RefState, Reference)> = ref_states.into_iter().zip(references).collect();
+    pairs.sort_by_key(|(rs, _)| rs.index);
+    let (sorted_states, sorted_refs): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+    ref_states = sorted_states;
+    references = sorted_refs;
+
     // Set total and skipped from loaded stats if available
     if let Some(stats) = &loaded.stats {
         let total = stats.total.filter(|&t| t > 0).unwrap_or(ref_count);
