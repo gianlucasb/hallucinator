@@ -61,6 +61,7 @@ fn map_key_normal(key: &KeyEvent) -> Action {
         KeyCode::Char(',') => Action::OpenConfig,
         KeyCode::Char(' ') => Action::ToggleSafe,
         KeyCode::Tab => Action::ToggleActivityPanel,
+        KeyCode::Char('b') => Action::BuildDatabase,
         KeyCode::Char('?') => Action::ToggleHelp,
         KeyCode::PageDown => Action::PageDown,
         KeyCode::PageUp => Action::PageUp,

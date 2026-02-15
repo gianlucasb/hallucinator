@@ -66,9 +66,7 @@ pub enum BuildProgress {
         bytes_decompressed: u64,
     },
     Parsing {
-        /// Publications found by the XML parser.
-        records_parsed: u64,
-        /// DB operations committed to SQLite.
+        /// Publications inserted into the database.
         records_inserted: u64,
         /// Compressed bytes consumed from the .xml.gz file.
         bytes_read: u64,
@@ -76,6 +74,7 @@ pub enum BuildProgress {
         bytes_total: u64,
     },
     RebuildingIndex,
+    Compacting,
     Complete {
         publications: u64,
         authors: u64,
@@ -100,7 +99,7 @@ pub struct DblpDatabase {
 impl DblpDatabase {
     /// Open an existing offline DBLP database.
     ///
-    /// Verifies that the schema tables exist.
+    /// Verifies that the schema tables exist and the schema version is compatible.
     pub fn open(path: &Path) -> Result<Self, DblpError> {
         let conn = Connection::open(path)?;
 
@@ -113,6 +112,27 @@ impl DblpDatabase {
 
         if !table_exists {
             return Err(DblpError::Database(rusqlite::Error::QueryReturnedNoRows));
+        }
+
+        // Check schema version — v3 uses integer IDs; older versions are incompatible
+        let version = db::get_metadata(&conn, "schema_version")?;
+        match version.as_deref() {
+            Some("3") => {}
+            Some(v) => {
+                return Err(DblpError::Parse(format!(
+                    "DBLP database at {} has schema version {}, but version 3 is required. \
+                     Please rebuild with 'hallucinator-tui update-dblp'.",
+                    path.display(),
+                    v
+                )));
+            }
+            None => {
+                return Err(DblpError::Parse(format!(
+                    "DBLP database at {} has no schema version. \
+                     Please rebuild with 'hallucinator-tui update-dblp'.",
+                    path.display()
+                )));
+            }
         }
 
         Ok(Self {

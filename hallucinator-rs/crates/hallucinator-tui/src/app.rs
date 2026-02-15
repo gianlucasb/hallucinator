@@ -1497,6 +1497,9 @@ impl App {
             Action::SaveConfig => {
                 self.save_config();
             }
+            Action::BuildDatabase => {
+                self.handle_build_database();
+            }
             Action::Retry => {
                 self.handle_retry_single();
             }
@@ -1777,6 +1780,53 @@ impl App {
         }
     }
 
+    fn handle_build_database(&mut self) {
+        if self.screen != Screen::Config
+            || self.config_state.section != crate::model::config::ConfigSection::Databases
+        {
+            return;
+        }
+
+        let item = self.config_state.item_cursor;
+        if item == 0 {
+            // DBLP
+            if self.config_state.dblp_building {
+                return; // already building
+            }
+            let db_path = if self.config_state.dblp_offline_path.is_empty() {
+                default_db_path("dblp.db")
+            } else {
+                PathBuf::from(&self.config_state.dblp_offline_path)
+            };
+            self.config_state.dblp_building = true;
+            self.config_state.dblp_build_status = Some("Starting...".to_string());
+            self.activity.log(format!(
+                "Building DBLP database at {}...",
+                db_path.display()
+            ));
+            if let Some(tx) = &self.backend_cmd_tx {
+                let _ = tx.send(BackendCommand::BuildDblp { db_path });
+            }
+        } else if item == 1 {
+            // ACL
+            if self.config_state.acl_building {
+                return;
+            }
+            let db_path = if self.config_state.acl_offline_path.is_empty() {
+                default_db_path("acl.db")
+            } else {
+                PathBuf::from(&self.config_state.acl_offline_path)
+            };
+            self.config_state.acl_building = true;
+            self.config_state.acl_build_status = Some("Starting...".to_string());
+            self.activity
+                .log(format!("Building ACL database at {}...", db_path.display()));
+            if let Some(tx) = &self.backend_cmd_tx {
+                let _ = tx.send(BackendCommand::BuildAcl { db_path });
+            }
+        }
+    }
+
     /// Process a backend event and update model state.
     pub fn handle_backend_event(&mut self, event: BackendEvent) {
         match event {
@@ -1850,6 +1900,47 @@ impl App {
                 self.frozen_elapsed = Some(self.elapsed());
                 self.batch_complete = true;
                 self.pending_bell = true;
+            }
+            BackendEvent::DblpBuildProgress { event } => {
+                self.config_state.dblp_build_status = Some(format_dblp_progress(&event));
+            }
+            BackendEvent::DblpBuildComplete {
+                success,
+                error,
+                db_path,
+            } => {
+                self.config_state.dblp_building = false;
+                if success {
+                    self.config_state.dblp_build_status = Some("Build complete!".to_string());
+                    self.config_state.dblp_offline_path = db_path.display().to_string();
+                    self.activity
+                        .log(format!("DBLP database built: {}", db_path.display()));
+                } else {
+                    let msg = error.unwrap_or_else(|| "unknown error".to_string());
+                    self.config_state.dblp_build_status = Some(format!("Failed: {}", msg));
+                    self.activity
+                        .log_warn(format!("DBLP build failed: {}", msg));
+                }
+            }
+            BackendEvent::AclBuildProgress { event } => {
+                self.config_state.acl_build_status = Some(format_acl_progress(&event));
+            }
+            BackendEvent::AclBuildComplete {
+                success,
+                error,
+                db_path,
+            } => {
+                self.config_state.acl_building = false;
+                if success {
+                    self.config_state.acl_build_status = Some("Build complete!".to_string());
+                    self.config_state.acl_offline_path = db_path.display().to_string();
+                    self.activity
+                        .log(format!("ACL database built: {}", db_path.display()));
+                } else {
+                    let msg = error.unwrap_or_else(|| "unknown error".to_string());
+                    self.config_state.acl_build_status = Some(format!("Failed: {}", msg));
+                    self.activity.log_warn(format!("ACL build failed: {}", msg));
+                }
             }
         }
     }
@@ -2185,6 +2276,122 @@ fn osc52_copy(text: &str) {
     // Write directly to stdout, bypassing the terminal backend buffer
     let _ = std::io::stdout().write_all(format!("\x1b]52;c;{}\x07", encoded).as_bytes());
     let _ = std::io::stdout().flush();
+}
+
+/// Default path for offline databases: `~/.local/share/hallucinator/<filename>`.
+fn default_db_path(filename: &str) -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("hallucinator")
+        .join(filename)
+}
+
+/// Format a DBLP build progress event into a short status string.
+fn format_dblp_progress(event: &hallucinator_dblp::BuildProgress) -> String {
+    match event {
+        hallucinator_dblp::BuildProgress::Downloading {
+            bytes_downloaded,
+            total_bytes,
+            ..
+        } => {
+            if let Some(total) = total_bytes {
+                let pct = (*bytes_downloaded as f64 / *total as f64 * 100.0) as u32;
+                format!(
+                    "Downloading... {} / {} ({}%)",
+                    format_bytes(*bytes_downloaded),
+                    format_bytes(*total),
+                    pct
+                )
+            } else {
+                format!("Downloading... {}", format_bytes(*bytes_downloaded))
+            }
+        }
+        hallucinator_dblp::BuildProgress::Parsing {
+            records_inserted,
+            bytes_read,
+            bytes_total,
+        } => {
+            let pct = if *bytes_total > 0 {
+                (*bytes_read as f64 / *bytes_total as f64 * 100.0) as u32
+            } else {
+                0
+            };
+            format!("Parsing... {} publications ({}%)", records_inserted, pct)
+        }
+        hallucinator_dblp::BuildProgress::RebuildingIndex => "Rebuilding FTS index...".to_string(),
+        hallucinator_dblp::BuildProgress::Compacting => "Compacting database...".to_string(),
+        hallucinator_dblp::BuildProgress::Complete {
+            publications,
+            skipped,
+            ..
+        } => {
+            if *skipped {
+                "Already up to date".to_string()
+            } else {
+                format!("Complete ({} publications)", publications)
+            }
+        }
+    }
+}
+
+/// Format an ACL build progress event into a short status string.
+fn format_acl_progress(event: &hallucinator_acl::BuildProgress) -> String {
+    match event {
+        hallucinator_acl::BuildProgress::Downloading {
+            bytes_downloaded,
+            total_bytes,
+        } => {
+            if let Some(total) = total_bytes {
+                let pct = (*bytes_downloaded as f64 / *total as f64 * 100.0) as u32;
+                format!(
+                    "Downloading... {} / {} ({}%)",
+                    format_bytes(*bytes_downloaded),
+                    format_bytes(*total),
+                    pct
+                )
+            } else {
+                format!("Downloading... {}", format_bytes(*bytes_downloaded))
+            }
+        }
+        hallucinator_acl::BuildProgress::Extracting { files_extracted } => {
+            format!("Extracting... {} files", files_extracted)
+        }
+        hallucinator_acl::BuildProgress::Parsing {
+            records_parsed,
+            files_processed,
+            files_total,
+            ..
+        } => {
+            format!(
+                "Parsing... {} records ({}/{})",
+                records_parsed, files_processed, files_total
+            )
+        }
+        hallucinator_acl::BuildProgress::RebuildingIndex => "Rebuilding FTS index...".to_string(),
+        hallucinator_acl::BuildProgress::Complete {
+            publications,
+            skipped,
+            ..
+        } => {
+            if *skipped {
+                "Already up to date".to_string()
+            } else {
+                format!("Complete ({} publications)", publications)
+            }
+        }
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 fn verdict_sort_key(rs: &RefState) -> u8 {

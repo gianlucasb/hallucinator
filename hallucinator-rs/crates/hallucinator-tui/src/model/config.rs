@@ -40,6 +40,15 @@ pub struct ConfigState {
     /// Whether the "unsaved changes" confirmation prompt is showing.
     pub confirm_exit: bool,
 
+    /// Whether a DBLP database build is in progress.
+    pub dblp_building: bool,
+    /// Status message for the DBLP build progress.
+    pub dblp_build_status: Option<String>,
+    /// Whether an ACL database build is in progress.
+    pub acl_building: bool,
+    /// Status message for the ACL build progress.
+    pub acl_build_status: Option<String>,
+
     // Editable fields
     pub openalex_key: String,
     pub s2_api_key: String,
@@ -77,6 +86,10 @@ impl Default for ConfigState {
             prev_screen: None,
             dirty: false,
             confirm_exit: false,
+            dblp_building: false,
+            dblp_build_status: None,
+            acl_building: false,
+            acl_build_status: None,
             openalex_key: String::new(),
             s2_api_key: String::new(),
             crossref_mailto: String::new(),

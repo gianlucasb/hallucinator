@@ -57,14 +57,18 @@ pub fn query_fts(
     let fts_query = words.join(" ");
 
     let mut stmt = conn.prepare_cached(
-        "SELECT p.uri, p.title FROM publications p \
+        "SELECT p.id, p.key, p.title FROM publications p \
          WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?1) \
          LIMIT 50",
     )?;
 
-    let candidates: Vec<(String, String)> = stmt
+    let candidates: Vec<(i64, String, String)> = stmt
         .query_map(params![fts_query], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -79,9 +83,9 @@ pub fn query_fts(
         return Ok(None);
     }
 
-    let mut best_match: Option<(f64, String, String)> = None;
+    let mut best_match: Option<(f64, i64, String, String)> = None;
 
-    for (uri, candidate_title) in &candidates {
+    for (id, key, candidate_title) in &candidates {
         let norm_candidate = normalize_title(candidate_title);
         if norm_candidate.is_empty() {
             continue;
@@ -89,19 +93,24 @@ pub fn query_fts(
 
         let score = rapidfuzz::fuzz::ratio(norm_query.chars(), norm_candidate.chars());
 
-        if score >= threshold && best_match.as_ref().is_none_or(|(best, _, _)| score > *best) {
-            best_match = Some((score, uri.clone(), candidate_title.clone()));
+        if score >= threshold
+            && best_match
+                .as_ref()
+                .is_none_or(|(best, _, _, _)| score > *best)
+        {
+            best_match = Some((score, *id, key.clone(), candidate_title.clone()));
         }
     }
 
     match best_match {
-        Some((score, uri, matched_title)) => {
-            let authors = db::get_authors_for_publication(conn, &uri)?;
+        Some((score, id, key, matched_title)) => {
+            let authors = db::get_authors_for_publication(conn, id)?;
+            let url = format!("https://dblp.org/rec/{}", key);
             Ok(Some(DblpQueryResult {
                 record: DblpRecord {
                     title: matched_title,
                     authors,
-                    url: Some(uri),
+                    url: Some(url),
                 },
                 score,
             }))
@@ -113,32 +122,33 @@ pub fn query_fts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{InsertBatch, init_database, insert_batch, rebuild_fts_index};
+    use crate::db::{
+        InsertBatch, init_database, insert_batch, insert_or_get_author, insert_or_get_publication,
+        rebuild_fts_index,
+    };
 
     fn setup_db_with_data() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         init_database(&conn).unwrap();
 
+        let vaswani_id = insert_or_get_author(&conn, "Ashish Vaswani").unwrap();
+        let shazeer_id = insert_or_get_author(&conn, "Noam Shazeer").unwrap();
+        let attention_id = insert_or_get_publication(
+            &conn,
+            "conf/nips/VaswaniSPUJGKP17",
+            "Attention is All you Need",
+        )
+        .unwrap();
+        insert_or_get_publication(
+            &conn,
+            "conf/naacl/DevlinCLT19",
+            "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+        )
+        .unwrap();
+
         let mut batch = InsertBatch::new();
-        batch
-            .authors
-            .push(("pid/1".into(), "Ashish Vaswani".into()));
-        batch.authors.push(("pid/2".into(), "Noam Shazeer".into()));
-        batch.publications.push((
-            "rec/conf/nips/VaswaniSPUJGKP17".into(),
-            "Attention is All you Need".into(),
-        ));
-        batch.publications.push((
-            "rec/conf/naacl/DevlinCLT19".into(),
-            "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
-                .into(),
-        ));
-        batch
-            .publication_authors
-            .push(("rec/conf/nips/VaswaniSPUJGKP17".into(), "pid/1".into()));
-        batch
-            .publication_authors
-            .push(("rec/conf/nips/VaswaniSPUJGKP17".into(), "pid/2".into()));
+        batch.publication_authors.push((attention_id, vaswani_id));
+        batch.publication_authors.push((attention_id, shazeer_id));
         insert_batch(&conn, &batch).unwrap();
         rebuild_fts_index(&conn).unwrap();
 
@@ -169,6 +179,10 @@ mod tests {
         assert!(result.score >= DEFAULT_THRESHOLD);
         assert_eq!(result.record.title, "Attention is All you Need");
         assert_eq!(result.record.authors.len(), 2);
+        assert_eq!(
+            result.record.url,
+            Some("https://dblp.org/rec/conf/nips/VaswaniSPUJGKP17".to_string())
+        );
     }
 
     #[test]

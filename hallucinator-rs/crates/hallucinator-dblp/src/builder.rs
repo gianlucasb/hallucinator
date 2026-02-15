@@ -4,6 +4,7 @@
 //! XML parser, and builds a normalized SQLite database with FTS5 full-text search.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
@@ -12,15 +13,16 @@ use std::rc::Rc;
 use futures_util::StreamExt;
 use rusqlite::Connection;
 
-use crate::db::{self, InsertBatch};
+use crate::db;
 use crate::xml_parser;
 use crate::{BuildProgress, DblpError};
 
 /// Default DBLP XML dump URL (~1 GB compressed).
 pub const DEFAULT_DBLP_URL: &str = "https://dblp.uni-trier.de/xml/dblp.xml.gz";
 
-/// Batch size for database inserts — large batches reduce transaction overhead.
-const BATCH_SIZE: usize = 100_000;
+/// How many publication records to process before committing the transaction.
+/// Keeps WAL size reasonable while avoiding per-record fsync overhead.
+const COMMIT_INTERVAL: u64 = 50_000;
 
 /// Build (or update) the offline DBLP database by downloading from dblp.org.
 ///
@@ -134,13 +136,12 @@ pub async fn build(
         })?;
 
         let _ = progress_tx.blocking_send(BuildProgress::RebuildingIndex);
-        db::end_bulk_load(&conn)?;
         db::rebuild_fts_index(&conn)?;
 
         // Update metadata
         let timestamp = now_unix_timestamp();
         db::set_metadata(&conn, "last_updated", &timestamp)?;
-        db::set_metadata(&conn, "schema_version", "2")?;
+        db::set_metadata(&conn, "schema_version", "3")?;
 
         if let Some(etag) = new_etag {
             db::set_metadata(&conn, "etag", &etag)?;
@@ -152,6 +153,9 @@ pub async fn build(
         let (pubs, authors, _) = db::get_counts(&conn)?;
         db::set_metadata(&conn, "publication_count", &pubs.to_string())?;
         db::set_metadata(&conn, "author_count", &authors.to_string())?;
+
+        let _ = progress_tx.blocking_send(BuildProgress::Compacting);
+        db::vacuum(&conn)?;
 
         Ok::<(i64, i64), DblpError>((pubs, authors))
     });
@@ -187,16 +191,18 @@ pub fn build_from_file(
     parse_and_insert(&conn, xml_gz_path, &mut progress)?;
 
     progress(BuildProgress::RebuildingIndex);
-    db::end_bulk_load(&conn)?;
     db::rebuild_fts_index(&conn)?;
 
     let timestamp = now_unix_timestamp();
     db::set_metadata(&conn, "last_updated", &timestamp)?;
-    db::set_metadata(&conn, "schema_version", "2")?;
+    db::set_metadata(&conn, "schema_version", "3")?;
 
     let (pubs, authors, _) = db::get_counts(&conn)?;
     db::set_metadata(&conn, "publication_count", &pubs.to_string())?;
     db::set_metadata(&conn, "author_count", &authors.to_string())?;
+
+    progress(BuildProgress::Compacting);
+    db::vacuum(&conn)?;
 
     progress(BuildProgress::Complete {
         publications: pubs as u64,
@@ -222,6 +228,10 @@ impl<R: Read> Read for CountingReader<R> {
 }
 
 /// Parse a `.xml.gz` file and insert publications into the database.
+///
+/// All inserts run inside an explicit transaction (committed every `COMMIT_INTERVAL`
+/// records) so individual writes don't trigger per-statement fsync. ID resolution
+/// uses `RETURNING` for a single round-trip and a HashMap cache for repeats.
 fn parse_and_insert(
     conn: &Connection,
     gz_path: &Path,
@@ -240,39 +250,81 @@ fn parse_and_insert(
     let decoder = flate2::read::GzDecoder::new(counting);
     let reader = BufReader::with_capacity(1024 * 1024, decoder);
 
-    let mut batch = InsertBatch::new();
-    let mut records_parsed: u64 = 0;
+    // In-memory cache for author name→integer ID resolution.
+    // Publications are rarely duplicated in the DBLP XML, so caching their IDs
+    // isn't worth the ~450MB of RAM it costs.
+    let mut author_ids: HashMap<String, i64> = HashMap::new();
+
     let mut records_inserted: u64 = 0;
     let mut insert_error: Option<DblpError> = None;
+
+    // Start a long-running transaction — individual inserts are fast within a
+    // transaction because SQLite only fsyncs on COMMIT, not per-statement.
+    conn.execute_batch("BEGIN")?;
 
     xml_parser::parse_xml(reader, |pub_record| {
         if insert_error.is_some() {
             return;
         }
 
-        records_parsed += 1;
+        records_inserted += 1;
 
-        let uri = format!("https://dblp.org/rec/{}", pub_record.key);
-
-        batch.publications.push((uri.clone(), pub_record.title));
-
+        // Resolve author IDs (insert-or-get + cache)
+        let mut author_id_list = Vec::with_capacity(pub_record.authors.len());
         for author in &pub_record.authors {
-            batch.authors.push((author.clone(), author.clone()));
-            batch
-                .publication_authors
-                .push((uri.clone(), author.clone()));
+            let aid = if let Some(&cached) = author_ids.get(author) {
+                cached
+            } else {
+                match db::insert_or_get_author(conn, author) {
+                    Ok(id) => {
+                        author_ids.insert(author.clone(), id);
+                        id
+                    }
+                    Err(e) => {
+                        insert_error = Some(e);
+                        return;
+                    }
+                }
+            };
+            author_id_list.push(aid);
         }
 
-        if batch.len() >= BATCH_SIZE {
-            records_inserted += batch.len() as u64;
-            if let Err(e) = db::insert_batch(conn, &batch) {
+        // Resolve publication ID (always hits SQLite — pubs rarely repeat)
+        let pub_id = match db::insert_or_get_publication(conn, &pub_record.key, &pub_record.title) {
+            Ok(id) => id,
+            Err(e) => {
                 insert_error = Some(e);
                 return;
             }
-            batch.clear();
+        };
 
+        // Insert publication_authors directly (within the active transaction)
+        {
+            let pa_stmt = conn.prepare_cached(
+                "INSERT OR IGNORE INTO publication_authors (pub_id, author_id) VALUES (?1, ?2)",
+            );
+            let mut pa_stmt = match pa_stmt {
+                Ok(s) => s,
+                Err(e) => {
+                    insert_error = Some(e.into());
+                    return;
+                }
+            };
+            for aid in author_id_list {
+                if let Err(e) = pa_stmt.execute(rusqlite::params![pub_id, aid]) {
+                    insert_error = Some(e.into());
+                    return;
+                }
+            }
+        }
+
+        // Periodic commit to keep WAL size reasonable + report progress
+        if records_inserted.is_multiple_of(COMMIT_INTERVAL) {
+            if let Err(e) = conn.execute_batch("COMMIT; BEGIN") {
+                insert_error = Some(e.into());
+                return;
+            }
             progress(BuildProgress::Parsing {
-                records_parsed,
                 records_inserted,
                 bytes_read: bytes_read_for_progress.get(),
                 bytes_total: file_size,
@@ -281,17 +333,14 @@ fn parse_and_insert(
     });
 
     if let Some(err) = insert_error {
+        let _ = conn.execute_batch("ROLLBACK");
         return Err(err);
     }
 
-    // Flush remaining
-    if !batch.is_empty() {
-        records_inserted += batch.len() as u64;
-        db::insert_batch(conn, &batch)?;
-    }
+    // Final commit
+    conn.execute_batch("COMMIT")?;
 
     progress(BuildProgress::Parsing {
-        records_parsed,
         records_inserted,
         bytes_read: file_size, // done
         bytes_total: file_size,
@@ -362,7 +411,7 @@ mod tests {
 
         // Verify metadata
         let schema = db::get_metadata(&conn, "schema_version").unwrap();
-        assert_eq!(schema, Some("2".into()));
+        assert_eq!(schema, Some("3".into()));
 
         let last_updated = db::get_metadata(&conn, "last_updated").unwrap();
         assert!(last_updated.is_some());
@@ -382,8 +431,9 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], "Attention is All you Need.");
 
-        // Verify progress was reported
+        // Verify progress was reported (should include Compacting)
         assert!(!progress_events.is_empty());
+        assert!(progress_events.iter().any(|e| e.contains("Compacting")));
     }
 
     #[test]
@@ -404,12 +454,15 @@ mod tests {
         assert_eq!(authors, 3);
         assert_eq!(rels, 3);
 
-        // Verify author lookup works with name-based URIs
-        let mut paper_authors = db::get_authors_for_publication(
-            &conn,
-            "https://dblp.org/rec/conf/nips/VaswaniSPUJGKP17",
-        )
-        .unwrap();
+        // Verify author lookup works with integer IDs
+        let pub_id: i64 = conn
+            .query_row(
+                "SELECT id FROM publications WHERE key = ?1",
+                rusqlite::params!["conf/nips/VaswaniSPUJGKP17"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut paper_authors = db::get_authors_for_publication(&conn, pub_id).unwrap();
         paper_authors.sort();
         assert_eq!(paper_authors, vec!["Ashish Vaswani", "Noam Shazeer"]);
     }

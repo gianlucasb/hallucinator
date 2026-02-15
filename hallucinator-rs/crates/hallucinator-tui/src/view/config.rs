@@ -99,7 +99,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     } else {
         let section_hint = match config.section {
             ConfigSection::ApiKeys => "Enter:edit value",
-            ConfigSection::Databases => "Enter:edit/toggle  o:browse  Space:toggle",
+            ConfigSection::Databases => "Enter:edit/toggle  o:browse  b:build/update  Space:toggle",
             ConfigSection::Concurrency => "Enter:edit value",
             ConfigSection::Display => "Space/Enter:cycle theme",
         };
@@ -189,6 +189,18 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
     }
     lines.push(Line::from(spans));
 
+    // Show DBLP build status inline
+    if let Some(ref status) = config.dblp_build_status {
+        let style = if config.dblp_building {
+            Style::default().fg(theme.active)
+        } else if status.starts_with("Failed") {
+            Style::default().fg(theme.not_found)
+        } else {
+            Style::default().fg(theme.verified)
+        };
+        lines.push(Line::from(Span::styled(format!("      {}", status), style)));
+    }
+
     // Item 1: ACL offline path (editable)
     let cursor = if config.item_cursor == 1 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 1 {
@@ -214,6 +226,19 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
         spans.push(Span::styled("  (o:browse)", Style::default().fg(theme.dim)));
     }
     lines.push(Line::from(spans));
+
+    // Show ACL build status inline
+    if let Some(ref status) = config.acl_build_status {
+        let style = if config.acl_building {
+            Style::default().fg(theme.active)
+        } else if status.starts_with("Failed") {
+            Style::default().fg(theme.not_found)
+        } else {
+            Style::default().fg(theme.verified)
+        };
+        lines.push(Line::from(Span::styled(format!("      {}", status), style)));
+    }
+
     lines.push(Line::from(""));
 
     // Items 2..N: DB toggles

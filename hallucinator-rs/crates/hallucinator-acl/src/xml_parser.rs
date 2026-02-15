@@ -31,7 +31,9 @@ pub struct AclPaper {
 /// Parse an ACL Anthology XML file, calling `on_paper` for each paper found.
 pub fn parse_xml<R: BufRead>(reader: R, mut on_paper: impl FnMut(AclPaper)) {
     let mut xml_reader = Reader::from_reader(reader);
-    xml_reader.config_mut().trim_text(true);
+    // Do NOT trim_text — it strips whitespace around inline markup (e.g.
+    // <fixed-case>, <tex-math>) within <title> elements, merging words.
+    // All field consumers already call .trim() where needed.
 
     let mut buf = Vec::new();
 

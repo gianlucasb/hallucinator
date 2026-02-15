@@ -29,6 +29,7 @@ pub enum Action {
     OpenConfig,
     ToggleActivityPanel,
     SaveConfig,
+    BuildDatabase,
     StartProcessing,
     ToggleSafe,
     ClickAt(u16, u16),
