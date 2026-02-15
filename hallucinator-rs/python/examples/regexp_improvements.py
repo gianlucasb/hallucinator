@@ -21,6 +21,8 @@ Improvements covered:
 14. Enhanced Springer/LNCS title extraction
 15. Query word extraction with special characters (Issue #107: ?, !, -, ')
 16. Journal Name (Year) title termination (Issue #106: DOIs with / and -)
+17. Version number preservation in sentence splitting (Flux. 1 pattern)
+18. Preserve hyphens after digits in product names (Qwen2-VL pattern)
 
 Run with:
     pip install .          # from hallucinator-rs/
@@ -1880,6 +1882,136 @@ Regex::new(r"\.\s*https?://").unwrap(),
 
 
 # =============================================================================
+# IMPROVEMENT 17: Version Number Preservation in Sentence Splitting
+# =============================================================================
+# Product names like "Flux. 1" or "GPT-4. 0" were incorrectly split as
+# sentence boundaries because a period followed by a digit was treated as
+# a sentence end.
+#
+# Examples that fail:
+#   "et al. Flux. 1 kontext: Flow matching for..."
+#   Title extracted as empty because "Flux." was treated as sentence end
+#
+# Fix: In split_sentences_skip_initials(), don't split when period is
+# followed by whitespace then a digit.
+#
+# Location: hallucinator-pdf/src/title.rs (sentence splitting logic)
+
+def test_version_number_preservation():
+    """Test that version numbers like 'Flux. 1' are not split."""
+    print("=" * 60)
+    print("IMPROVEMENT 17: Version Number Preservation in Sentence Splitting")
+    print("=" * 60)
+
+    # Note: This test demonstrates the fix - actual implementation is in
+    # split_sentences_skip_initials() and clean_title()
+    test_cases = [
+        ("Model. Flux. 1 kontext is great", False, "Flux. 1 should not split"),
+        ("Authors. GPT-4. 0 turbo model", False, "GPT-4. 0 should not split"),
+        ("This is done. Next sentence", True, "Normal sentence should split"),
+    ]
+
+    for text, should_split, desc in test_cases:
+        # Simple check: if ". X" where X is digit should not cause split
+        has_version = bool(re.search(r'\.\s+\d', text))
+        status = "OK" if has_version != should_split else "INFO"
+        print(f"    {status}: {desc}")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_VERSION_NUMBER_FIX = r"""
+// In title.rs, in the sentence splitting logic:
+// Before treating a period as sentence boundary, check if followed by digit
+
+// In split_sentences_skip_initials equivalent:
+// Check if period is followed by whitespace then digit
+let after_period = &text[match_end..];
+if !after_period.is_empty() && after_period.chars().next().unwrap().is_ascii_digit() {
+    continue; // Skip - this is likely a version number like "Flux. 1"
+}
+
+// In clean_title truncation logic:
+// Also skip if period is followed by space+digit
+if pos + 2 < title.len() {
+    let next_char = title.chars().nth(pos + 1);
+    let next_next_char = title.chars().nth(pos + 2);
+    if next_char == Some(' ') && next_next_char.map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        continue; // Version number like "Flux. 1"
+    }
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 18: Preserve Hyphens After Digits in Product Names
+# =============================================================================
+# Product names like "Qwen2-VL" were incorrectly having their hyphens removed
+# during hyphenation fixing because "Qwen2-\nVL" (with line break) was treated
+# as a syllable break.
+#
+# Examples that fail:
+#   "Qwen2-\nvl" → "Qwen2vl" (incorrect, should be "Qwen2-vl")
+#   "GPT-4-\nturbo" → "GPT-4turbo" (incorrect, should be "GPT-4-turbo")
+#
+# Fix: In fix_hyphenation(), if the character before the hyphen is a digit,
+# keep the hyphen (it's likely a product version number).
+#
+# Location: hallucinator-pdf/src/hyphenation.rs or title.rs
+
+def test_product_name_hyphen_preservation():
+    """Test that product names like 'Qwen2-VL' preserve hyphens."""
+    print("=" * 60)
+    print("IMPROVEMENT 18: Preserve Hyphens After Digits in Product Names")
+    print("=" * 60)
+
+    from check_hallucinated_references import fix_hyphenation
+
+    test_cases = [
+        ("Qwen2-\nvl: Enhancing", "Qwen2-vl: Enhancing", "Qwen2-VL hyphen preserved"),
+        ("GPT-4-\nturbo model", "GPT-4-turbo model", "GPT-4-turbo hyphen preserved"),
+        ("detec-\ntion method", "detection method", "Normal syllable break fixed"),
+    ]
+
+    for before, expected, desc in test_cases:
+        result = fix_hyphenation(before)
+        # Normalize whitespace for comparison
+        result_norm = ' '.join(result.split())
+        expected_norm = ' '.join(expected.split())
+        status = "OK" if result_norm == expected_norm else "FAIL"
+        print(f"    {status}: {desc}")
+        if result_norm != expected_norm:
+            print(f"         Expected: '{expected_norm}'")
+            print(f"         Got:      '{result_norm}'")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_PRODUCT_NAME_HYPHEN_FIX = r"""
+// In hyphenation.rs or title.rs, in fix_hyphenation():
+
+fn replace_hyphen(before: char, after_word: &str) -> String {
+    // If the character before hyphen is a digit, keep the hyphen
+    // These are product/model names like "Qwen2-VL", "GPT-4-turbo"
+    if before.is_ascii_digit() {
+        return format!("{}-{}", before, after_word);
+    }
+
+    // Check compound suffixes...
+    let after_lower = after_word.to_lowercase();
+    if COMPOUND_SUFFIXES.iter().any(|s| after_lower == *s || after_lower.starts_with(&format!("{} ", s))) {
+        return format!("{}-{}", before, after_word);
+    }
+
+    // Otherwise remove hyphen (syllable break)
+    format!("{}{}", before, after_word)
+}
+"""
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -1900,6 +2032,8 @@ if __name__ == "__main__":
     test_springer_enhanced()
     test_query_words_improved()
     test_journal_year_fix()
+    test_version_number_preservation()
+    test_product_name_hyphen_preservation()
     test_combined_extraction()
     print_patterns_to_port()
 

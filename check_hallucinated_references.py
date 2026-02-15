@@ -1027,6 +1027,12 @@ def fix_hyphenation(text):
         after_rest = match.group(3)  # rest of word after hyphen
 
         after_word = after_char + after_rest
+
+        # If the part before hyphen ends with a digit, keep the hyphen
+        # These are product/model names like "Qwen2-VL", "GPT-4-turbo", "BERT-base"
+        if before.isdigit():
+            return f'{before}-{after_word}'
+
         # If the word after hyphen is a common compound suffix, keep the hyphen
         after_lower = after_word.lower()
         for suffix in COMPOUND_SUFFIXES:
@@ -1543,6 +1549,9 @@ def clean_title(title, from_quotes=False):
                 # But skip if period is immediately followed by a letter (no space) - product names like "big.LITTLE", "Node.js"
                 if pos + 1 < len(title) and title[pos + 1].isalpha():
                     continue
+                # Also skip if period is followed by space+digit - version numbers like "Flux. 1", "GPT-4. 0"
+                if pos + 2 < len(title) and title[pos + 1] == ' ' and title[pos + 2].isdigit():
+                    continue
                 title = title[:pos]
                 break
 
@@ -1674,6 +1683,12 @@ def split_sentences_skip_initials(text):
 
             # "et al." is a sentence boundary (ends author list)
             # Don't skip it - let it be treated as a sentence boundary
+
+            # Check if period is followed by a digit (version numbers like "Flux. 1", "GPT-4. 0")
+            # These are NOT sentence boundaries - they're part of product/model names
+            after_period = text[match.end():]
+            if after_period and after_period[0].isdigit():
+                continue  # Skip - this is likely a version number
 
         # This is a real sentence boundary
         sentences.append(text[current_start:pos].strip())
