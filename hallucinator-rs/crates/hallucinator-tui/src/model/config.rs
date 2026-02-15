@@ -35,6 +35,10 @@ pub struct ConfigState {
     pub editing: bool,
     pub edit_buffer: String,
     pub prev_screen: Option<super::super::app::Screen>,
+    /// Whether config has been modified since last save.
+    pub dirty: bool,
+    /// Whether the "unsaved changes" confirmation prompt is showing.
+    pub confirm_exit: bool,
 
     // Editable fields
     pub openalex_key: String,
@@ -71,6 +75,8 @@ impl Default for ConfigState {
             editing: false,
             edit_buffer: String::new(),
             prev_screen: None,
+            dirty: false,
+            confirm_exit: false,
             openalex_key: String::new(),
             s2_api_key: String::new(),
             crossref_mailto: String::new(),

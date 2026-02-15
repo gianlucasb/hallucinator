@@ -92,12 +92,14 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(content, chunks[2]);
 
     // Footer — context-aware per section
-    let footer_text = if config.editing {
+    let footer_text = if config.confirm_exit {
+        " Unsaved config changes. Save before leaving?  y:save  n:discard  Esc:cancel".to_string()
+    } else if config.editing {
         " Type value, Enter:confirm, Esc:cancel".to_string()
     } else {
         let section_hint = match config.section {
             ConfigSection::ApiKeys => "Enter:edit value",
-            ConfigSection::Databases => "Enter:edit/toggle  Space:toggle",
+            ConfigSection::Databases => "Enter:edit/toggle  o:browse  Space:toggle",
             ConfigSection::Concurrency => "Enter:edit value",
             ConfigSection::Display => "Space/Enter:cycle theme",
         };
@@ -111,7 +113,14 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
             section_hint, active_note
         )
     };
-    let footer = Line::from(Span::styled(&footer_text, theme.footer_style()));
+    let footer_style = if config.confirm_exit {
+        Style::default()
+            .fg(theme.not_found)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme.footer_style()
+    };
+    let footer = Line::from(Span::styled(&footer_text, footer_style));
     f.render_widget(Paragraph::new(footer), chunks[3]);
 }
 
@@ -168,13 +177,17 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
     } else {
         Style::default().fg(theme.dim)
     };
-    lines.push(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!("  {}{:<20}", cursor, "DBLP Offline Path"),
             Style::default().fg(theme.text),
         ),
         Span::styled(display_val, val_style),
-    ]));
+    ];
+    if config.item_cursor == 0 && !config.editing {
+        spans.push(Span::styled("  (o:browse)", Style::default().fg(theme.dim)));
+    }
+    lines.push(Line::from(spans));
 
     // Item 1: ACL offline path (editable)
     let cursor = if config.item_cursor == 1 { "> " } else { "  " };
@@ -190,13 +203,17 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
     } else {
         Style::default().fg(theme.dim)
     };
-    lines.push(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!("  {}{:<20}", cursor, "ACL Offline Path"),
             Style::default().fg(theme.text),
         ),
         Span::styled(display_val, val_style),
-    ]));
+    ];
+    if config.item_cursor == 1 && !config.editing {
+        spans.push(Span::styled("  (o:browse)", Style::default().fg(theme.dim)));
+    }
+    lines.push(Line::from(spans));
     lines.push(Line::from(""));
 
     // Items 2..N: DB toggles

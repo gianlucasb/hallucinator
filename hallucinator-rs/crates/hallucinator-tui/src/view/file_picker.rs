@@ -4,15 +4,19 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, FilePickerContext};
 use crate::view::spinner_char;
 
 /// Render the file picker screen into the given area.
 pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let picker = &app.file_picker;
+    let is_db_mode = matches!(
+        app.file_picker_context,
+        FilePickerContext::SelectDatabase { .. }
+    );
 
-    let has_extracting = app.extracting_archive.is_some();
+    let has_extracting = app.extracting_archive.is_some() && !is_db_mode;
 
     let mut constraints = vec![
         Constraint::Length(1), // header
@@ -27,11 +31,18 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
 
     let chunks = Layout::vertical(constraints).split(area);
 
-    // Header
+    // Header — context-aware
+    let header_text =
+        if let FilePickerContext::SelectDatabase { config_item } = &app.file_picker_context {
+            let db_name = if *config_item == 0 { "DBLP" } else { "ACL" };
+            format!(" > Select {} Database (.db / .sqlite)", db_name)
+        } else {
+            " > Select PDFs / .bbl / .bib / Archives / Results (.json)".to_string()
+        };
     let header = Line::from(vec![
         Span::styled(" HALLUCINATOR ", theme.header_style()),
         Span::styled(
-            " > Select PDFs / .bbl / .bib / Archives / Results (.json)",
+            header_text,
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -61,6 +72,23 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         .map(|entry| {
             let (icon, style) = if entry.is_dir {
                 ("\u{1F4C1} ", Style::default().fg(theme.active))
+            } else if is_db_mode {
+                // In database selection mode: only .db files are selectable
+                if entry.is_db {
+                    let selected = picker.is_selected(&entry.path);
+                    if selected {
+                        (
+                            "\u{2713} ",
+                            Style::default()
+                                .fg(theme.verified)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else {
+                        ("\u{1F5C3} ", Style::default().fg(theme.text))
+                    }
+                } else {
+                    ("  ", Style::default().fg(theme.dim))
+                }
             } else if entry.is_pdf
                 || entry.is_bbl
                 || entry.is_bib
@@ -107,9 +135,40 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     state.select(Some(adjusted_cursor));
     f.render_stateful_widget(list, chunks[2], &mut state);
 
-    // Selected summary
+    // Selected summary — context-aware
     let selected_count = picker.selected.len();
-    let summary_lines = if selected_count == 0 {
+    let summary_lines = if is_db_mode {
+        if selected_count == 0 {
+            vec![
+                Line::from(Span::styled(
+                    "  No database selected",
+                    Style::default().fg(theme.dim),
+                )),
+                Line::from(Span::styled(
+                    "  Navigate to a .db or .sqlite file and press Enter to select",
+                    Style::default().fg(theme.dim),
+                )),
+            ]
+        } else {
+            let name = picker
+                .selected
+                .first()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_default();
+            vec![
+                Line::from(vec![Span::styled(
+                    "  Selected: ",
+                    Style::default()
+                        .fg(theme.verified)
+                        .add_modifier(Modifier::BOLD),
+                )]),
+                Line::from(Span::styled(
+                    format!("  {}", name),
+                    Style::default().fg(theme.text),
+                )),
+            ]
+        }
+    } else if selected_count == 0 {
         vec![
             Line::from(Span::styled(
                 "  No files selected",
@@ -154,9 +213,9 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     );
     f.render_widget(summary, chunks[3]);
 
-    // Extracting indicator
+    // Extracting indicator (only in AddFiles mode)
     let mut footer_idx = 4;
-    if let Some(archive_name) = &app.extracting_archive {
+    if has_extracting && let Some(archive_name) = &app.extracting_archive {
         let remaining = app.pending_archive_extractions.len();
         let count_part = if app.extracted_count > 0 {
             format!("{} extracted", app.extracted_count)
@@ -200,10 +259,12 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         footer_idx += 1;
     }
 
-    // Footer
-    let footer = Line::from(Span::styled(
-        " j/k:navigate  Space/Enter:select  Enter:open dir  Esc:done  ?:help  q:quit",
-        theme.footer_style(),
-    ));
+    // Footer — context-aware
+    let footer_text = if is_db_mode {
+        " j/k:navigate  Enter:select & confirm  Esc:cancel  ?:help  q:quit"
+    } else {
+        " j/k:navigate  Space/Enter:select  Enter:open dir  Esc:done  ?:help  q:quit"
+    };
+    let footer = Line::from(Span::styled(footer_text, theme.footer_style()));
     f.render_widget(Paragraph::new(footer), chunks[footer_idx]);
 }

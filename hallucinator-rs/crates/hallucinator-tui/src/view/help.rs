@@ -9,7 +9,7 @@ use crate::theme::Theme;
 /// Render the help overlay as a centered popup.
 pub fn render(f: &mut Frame, theme: &Theme) {
     let area = f.area();
-    let popup = centered_rect(72, 43, area);
+    let popup = centered_rect(72, 44, area);
 
     let lines = vec![
         Line::from(Span::styled(
@@ -46,6 +46,7 @@ pub fn render(f: &mut Frame, theme: &Theme) {
         key_line("R", "Retry all failed references", theme),
         key_line("e", "Export results", theme),
         key_line("o / a", "Open file picker (add files)", theme),
+        key_line("o", "Browse for database file (Config > Databases)", theme),
         key_line("y", "Copy reference to clipboard (OSC 52)", theme),
         key_line("Tab", "Toggle activity panel", theme),
         key_line(",", "Open config", theme),
