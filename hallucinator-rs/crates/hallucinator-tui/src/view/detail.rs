@@ -388,7 +388,7 @@ fn url_line(lines: &mut Vec<Line<'_>>, label: &str, url: &str, theme: &Theme) {
 
 fn render_footer(f: &mut Frame, area: Rect, theme: &Theme) {
     let footer = Line::from(Span::styled(
-        " j/k:scroll  Space:cycle FP reason  Ctrl+r:retry  y:copy ref  Esc:back  ?:help",
+        " j/k:scroll  Space:cycle FP reason  Ctrl+r:retry  y:copy ref  e:export  Esc:back  ?:help",
         theme.footer_style(),
     ));
     f.render_widget(Paragraph::new(footer), area);

@@ -280,7 +280,7 @@ fn render_footer(
     }
 
     spans.push(Span::styled(
-        " | Space:FP reason  Enter:detail  Ctrl+r:retry  R:retry all  s:sort  f:filter  c:config  Esc:back",
+        " | Space:FP reason  Enter:detail  Ctrl+r:retry  R:retry all  s:sort  f:filter  c:config  e:export  Esc:back",
         theme.footer_style(),
     ));
 

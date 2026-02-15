@@ -337,7 +337,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  Enter:open  o:add  c:config  ?:help  q:quit",
+            " Space:mark  Enter:open  o:add  c:config  e:export  ?:help  q:quit",
             theme.footer_style(),
         ));
     } else if app.processing_started && !app.batch_complete {
@@ -349,12 +349,12 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  Enter:open  s:sort  f:filter  c:config  ?:help",
+            " Space:mark  Enter:open  s:sort  f:filter  c:config  e:export  ?:help",
             theme.footer_style(),
         ));
     } else {
         spans.push(Span::styled(
-            " | Space:mark  Enter:open  s:sort  f:filter  o:add  c:config  ?:help  q:quit",
+            " | Space:mark  Enter:open  s:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
             theme.footer_style(),
         ));
     }
