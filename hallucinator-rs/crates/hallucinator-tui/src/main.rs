@@ -226,10 +226,17 @@ async fn main() -> anyhow::Result<()> {
         Some(PathBuf::from(&config_state.dblp_offline_path))
     };
 
-    // Open DBLP database if configured
+    // Open DBLP database if configured (fall back to None if file missing or corrupt)
+    let mut startup_warnings: Vec<String> = Vec::new();
     let dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> =
         if let Some(ref path) = dblp_offline_path {
-            Some(backend::open_dblp_db(path)?)
+            match backend::open_dblp_db(path) {
+                Ok(db) => Some(db),
+                Err(e) => {
+                    startup_warnings.push(format!("{e}"));
+                    None
+                }
+            }
         } else {
             None
         };
@@ -241,10 +248,16 @@ async fn main() -> anyhow::Result<()> {
         Some(PathBuf::from(&config_state.acl_offline_path))
     };
 
-    // Open ACL database if configured
+    // Open ACL database if configured (fall back to None if file missing or corrupt)
     let acl_offline_db: Option<Arc<Mutex<hallucinator_acl::AclDatabase>>> =
         if let Some(ref path) = acl_offline_path {
-            Some(backend::open_acl_db(path)?)
+            match backend::open_acl_db(path) {
+                Ok(db) => Some(db),
+                Err(e) => {
+                    startup_warnings.push(format!("{e}"));
+                    None
+                }
+            }
         } else {
             None
         };
@@ -313,6 +326,11 @@ async fn main() -> anyhow::Result<()> {
     {
         app.activity
             .log(format!("Config loaded from {}", path.display()));
+    }
+
+    // Show any startup warnings from failed DB opens
+    for warn in &startup_warnings {
+        app.activity.log_warn(warn.clone());
     }
 
     // Startup hints if no offline DBs configured (logged last so they show first)
