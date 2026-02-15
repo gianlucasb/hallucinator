@@ -8,7 +8,9 @@
 //! Each test mirrors the Python test functions and verifies that the Rust
 //! implementation produces the same outcomes.
 
-use hallucinator_pdf::identifiers::extract_doi;
+use hallucinator_pdf::identifiers::{extract_doi, get_query_words};
+use hallucinator_pdf::section::segment_references;
+use hallucinator_pdf::text_processing::fix_hyphenation;
 use hallucinator_pdf::title::{clean_title, extract_title_from_reference};
 
 // =============================================================================
@@ -557,5 +559,269 @@ fn doi_url_in_parenthetical_context() {
     assert_eq!(
         extract_doi("(https://doi.org/10.1016/0021-9681(87)90171-8)"),
         Some("10.1016/0021-9681(87)90171-8".into()),
+    );
+}
+
+// =============================================================================
+// FIX 3a: IEEE ALL CAPS Author List Rejection
+// =============================================================================
+// Ported from Python: ieee_fps_regexps.py
+
+#[test]
+fn fix3a_reject_ieee_all_caps_surname_initial() {
+    assert_eq!(
+        clean_title("SMITH, J., JONES, K., AND BROWN, L.", false),
+        "",
+        "IEEE ALL CAPS author list 'SURNAME, I.' should be rejected"
+    );
+}
+
+#[test]
+fn fix3a_reject_el_housni_all_caps() {
+    assert_eq!(
+        clean_title("EL HOUSNI AND G. BOTREL, Edmsm", false),
+        "",
+        "ALL CAPS author with mixed case suffix should be rejected"
+    );
+}
+
+#[test]
+fn fix3a_reject_bunz_umlaut_all_caps() {
+    assert_eq!(
+        clean_title("B \u{00A8}UNZ, P. CAMACHO", false),
+        "",
+        "ALL CAPS author with umlaut should be rejected"
+    );
+}
+
+#[test]
+fn fix3a_reject_horesh_all_caps() {
+    assert_eq!(
+        clean_title("HORESH, AND M. RIABZEV, Fast", false),
+        "",
+        "ALL CAPS author list with trailing word should be rejected"
+    );
+}
+
+#[test]
+fn fix3a_accept_https_everywhere_title() {
+    assert_ne!(
+        clean_title("HTTPS Everywhere: Securing the Web", false),
+        "",
+        "'HTTPS Everywhere: Securing the Web' should NOT be rejected"
+    );
+}
+
+#[test]
+fn fix3a_accept_bert_pretraining_title() {
+    assert_ne!(
+        clean_title("BERT: Pre-training of Deep Bidirectional", false),
+        "",
+        "'BERT: Pre-training...' should NOT be rejected"
+    );
+}
+
+// =============================================================================
+// FIX 3b: NeurIPS/ML Author List Rejection ("I. Surname, I. Surname, and I.")
+// =============================================================================
+// Ported from Python: neurips_fps_regexps.py
+
+#[test]
+fn fix3b_reject_hassibi_ml_author_list() {
+    assert_eq!(
+        clean_title("B. Hassibi, D. G. Stork, and G. J. Wolff", false),
+        "",
+        "NeurIPS/ML author list 'I. Surname, I. I. Surname, and I.' should be rejected"
+    );
+}
+
+#[test]
+fn fix3b_reject_smith_jones_williams() {
+    assert_eq!(
+        clean_title("A. Smith, B. Jones, and C. Williams", false),
+        "",
+        "NeurIPS/ML author list 'I. Surname, I. Surname, and I.' should be rejected"
+    );
+}
+
+#[test]
+fn fix3b_reject_doe_lee_brown() {
+    assert_eq!(
+        clean_title("J. Doe, M. K. Lee, and P. Brown", false),
+        "",
+        "NeurIPS/ML author list with double initials should be rejected"
+    );
+}
+
+#[test]
+fn fix3b_accept_deep_learning_for_nlp() {
+    assert_ne!(
+        clean_title("Deep Learning for NLP", false),
+        "",
+        "'Deep Learning for NLP' should NOT be rejected as author list"
+    );
+}
+
+#[test]
+fn fix3b_accept_attention_is_all_you_need() {
+    assert_ne!(
+        clean_title("Attention Is All You Need", false),
+        "",
+        "'Attention Is All You Need' should NOT be rejected as author list"
+    );
+}
+
+// =============================================================================
+// NeurIPS Reference Segmentation
+// =============================================================================
+
+#[test]
+fn neurips_segmentation_7_refs() {
+    let block = "\n\
+[1] A. Author. First paper title. In NeurIPS, 2020.
+[2] B. Author. Second paper title. In ICML, 2021.
+[3] C. Author. Third paper title. In ICLR, 2019.
+[4] D. Author. Fourth paper title. In AAAI, 2022.
+[5] E. Author. Fifth paper title. In NeurIPS, 2023.
+[6] F. Author. Sixth paper title. In ICML, 2018.
+[7] G. Author. Seventh paper title. In ICLR, 2024.";
+    let refs = segment_references(block);
+    assert_eq!(
+        refs.len(),
+        7,
+        "Should segment into 7 references, got {}: {:?}",
+        refs.len(),
+        refs
+    );
+}
+
+// =============================================================================
+// Query Words with Special Characters
+// =============================================================================
+
+#[test]
+fn query_words_apostrophe_preserved() {
+    let words = get_query_words("What's Next for NLP?", 10);
+    assert!(
+        words.contains(&"What's".to_string()),
+        "Should preserve apostrophe in \"What's\": {:?}",
+        words
+    );
+}
+
+#[test]
+fn query_words_question_mark_preserved() {
+    let words = get_query_words("What's Next for NLP?", 10);
+    assert!(
+        words.contains(&"NLP?".to_string()),
+        "Should preserve trailing '?' in \"NLP?\": {:?}",
+        words
+    );
+}
+
+#[test]
+fn query_words_hyphen_preserved() {
+    let words = get_query_words("Machine-Learning in Practice", 10);
+    assert!(
+        words.contains(&"Machine-Learning".to_string()),
+        "Should preserve hyphen in \"Machine-Learning\": {:?}",
+        words
+    );
+}
+
+#[test]
+fn query_words_short_title_question_mark() {
+    let words = get_query_words("Is AI Safe?", 10);
+    assert!(
+        words.contains(&"Safe?".to_string()),
+        "Should preserve trailing '?' in \"Safe?\": {:?}",
+        words
+    );
+}
+
+// =============================================================================
+// Journal Name (Year) Termination
+// =============================================================================
+
+#[test]
+fn journal_year_termination_dark_patterns() {
+    let result = clean_title(
+        "Shining a Light on Dark Patterns. Journal of Legal Analysis (2021)",
+        false,
+    );
+    assert_eq!(
+        result, "Shining a Light on Dark Patterns",
+        "Should truncate at '. Journal Name (Year)'"
+    );
+}
+
+#[test]
+fn journal_year_termination_springer_pipeline() {
+    // Full extraction pipeline: Springer (Year) format with journal-year cutoff
+    let ref_text = "Mathur, A., Acar, G., Friedman, M., Lucherini, E., Mayer, J., Chetty, M., and Narayanan, A. (2019). Dark patterns at scale: Findings from a crawl of 11k shopping websites. Proceedings of the ACM on Human-Computer Interaction, 3(CSCW):1\u{2013}32.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    let cleaned = clean_title(&title, false);
+    assert!(
+        cleaned.contains("Dark patterns at scale"),
+        "Should extract 'Dark patterns at scale' from Springer-year format: '{}'",
+        cleaned
+    );
+    assert!(
+        !cleaned.contains("Proceedings of the ACM"),
+        "Should NOT include venue in extracted title: '{}'",
+        cleaned
+    );
+}
+
+// =============================================================================
+// Version Number Preservation (Flux. 1)
+// =============================================================================
+
+#[test]
+fn version_number_flux_not_truncated() {
+    let result = clean_title("Flux. 1 kontext is great", false);
+    assert_eq!(
+        result, "Flux. 1 kontext is great",
+        "Should NOT truncate at 'Flux.' when followed by space+digit"
+    );
+}
+
+#[test]
+fn normal_sentence_end_still_truncated() {
+    let result = clean_title("This is done. Next sentence here", false);
+    assert_eq!(
+        result, "This is done",
+        "Should truncate at normal sentence-ending period"
+    );
+}
+
+// =============================================================================
+// Digit-Hyphen Preservation in fix_hyphenation
+// =============================================================================
+
+#[test]
+fn digit_hyphen_qwen2_preserved() {
+    assert_eq!(
+        fix_hyphenation("Qwen2- vl"),
+        "Qwen2-vl",
+        "Digit before hyphen should preserve it (model name)"
+    );
+}
+
+#[test]
+fn digit_hyphen_gpt4_turbo_preserved() {
+    assert_eq!(
+        fix_hyphenation("GPT-4- turbo"),
+        "GPT-4-turbo",
+        "Digit before hyphen should preserve it (model name with version)"
+    );
+}
+
+#[test]
+fn syllable_break_detection_still_works() {
+    assert_eq!(
+        fix_hyphenation("detec- tion"),
+        "detection",
+        "Non-digit syllable break should still be joined"
     );
 }
