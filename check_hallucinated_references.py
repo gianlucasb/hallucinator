@@ -1662,7 +1662,8 @@ def split_sentences_skip_initials(text):
                                  re.match(rf'^{surname_prefix}\s+[A-Z]', after_period, re.IGNORECASE) or \
                                  re.match(rf'^([A-Z]{surname_char}+)\s+([A-Z]{surname_char}+)\.', after_period) or \
                                  re.match(rf'^([A-Z]{surname_char}+)\.\s+\d', after_period) or \
-                                 re.match(rf'^([A-Z]{surname_char}+)\.\s+[A-Z][a-z]+\s+[a-z]', after_period)
+                                 re.match(rf'^([A-Z]{surname_char}+)\.\s+[A-Z][a-z]+\s+[a-z]', after_period) or \
+                                 re.match(rf'^[A-Z]\s+([A-Z]{surname_char}+)\s*,', after_period)
 
                 if author_pattern:
                     # This clearly looks like another author - skip this period
@@ -2680,6 +2681,9 @@ def titles_match(ref_title, found_title, threshold=95):
     Returns True if:
     - Fuzzy match score >= threshold, OR
     - One title is a prefix of the other (handles subtitles/truncation)
+
+    Prefix matching is conservative when titles have subtitles after ? or !
+    to avoid false positives like matching "Title?" to "Title? Subtitle".
     """
     ref_norm = normalize_title(ref_title)
     found_norm = normalize_title(found_title)
@@ -2695,6 +2699,19 @@ def titles_match(ref_title, found_title, threshold=95):
         # Check if shorter is prefix of longer
         shorter, longer = (ref_norm, found_norm) if len(ref_norm) <= len(found_norm) else (found_norm, ref_norm)
         if longer.startswith(shorter):
+            # Issue #119: Be conservative when reference has subtitle after ? or !
+            # If ref has "Title? Subtitle" and found is just "Title?", they may be
+            # different papers with similar titles.
+            ref_has_subtitle = bool(re.search(r'[?!].*[a-zA-Z]', ref_title))
+            found_has_subtitle = bool(re.search(r'[?!].*[a-zA-Z]', found_title))
+
+            # If reference has subtitle but found doesn't, be skeptical - require
+            # the prefix to cover at least 70% of the title to match
+            if ref_has_subtitle and not found_has_subtitle:
+                coverage = len(shorter) / len(longer)
+                if coverage < 0.70:
+                    return False  # Likely different papers with similar title prefix
+
             return True
 
     return False

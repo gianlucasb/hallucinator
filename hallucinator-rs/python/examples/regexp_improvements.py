@@ -23,6 +23,8 @@ Improvements covered:
 16. Journal Name (Year) title termination (Issue #106: DOIs with / and -)
 17. Version number preservation in sentence splitting (Flux. 1 pattern)
 18. Preserve hyphens after digits in product names (Qwen2-VL pattern)
+19. Conservative prefix matching for titles with subtitles (Issue #119)
+20. Middle initial without period (Issue #123: "J. D Kaplan" pattern)
 
 Run with:
     pip install .          # from hallucinator-rs/
@@ -2012,6 +2014,229 @@ fn replace_hyphen(before: char, after_word: &str) -> String {
 
 
 # =============================================================================
+# IMPROVEMENT 19: Conservative Prefix Matching for Titles with Subtitles
+# =============================================================================
+# Issue #119: When two papers have similar titles where one is a prefix of the
+# other, false matches can occur. Example:
+#   - Paper A: "Won't Somebody Think of the Children?" (Jo Johnson)
+#   - Paper B: "Won't Somebody Think of the Children?" Examining COPPA... (Reyes et al.)
+#
+# The prefix matching was too permissive: if Paper B is the reference and
+# Paper A is found in the database, the normalized title of A is a prefix of B,
+# causing a false match.
+#
+# Fix: When the reference has a subtitle (text after ? or !) but the found title
+# doesn't, require the prefix to cover at least 70% of the longer title.
+#
+# Location in Python: titles_match() function
+# Rust location: hallucinator-core/src/matching.rs (titles_match)
+
+# Pattern to detect subtitle after punctuation
+SUBTITLE_AFTER_PUNCTUATION_PATTERN = re.compile(r'[?!].*[a-zA-Z]')
+
+
+def titles_match_improved(ref_title: str, found_title: str, threshold: int = 95) -> bool:
+    """Check if two titles match with conservative prefix matching.
+
+    Args:
+        ref_title: The reference title (from the paper being checked)
+        found_title: The title found in the database
+        threshold: Fuzzy match threshold (default 95%)
+
+    Returns:
+        True if titles match, False otherwise
+    """
+    def normalize(title: str) -> str:
+        # Simplified normalization for demonstration
+        return re.sub(r'\W+', '', title.lower())
+
+    ref_norm = normalize(ref_title)
+    found_norm = normalize(found_title)
+
+    # Standard fuzzy match would be done here (using rapidfuzz in actual code)
+    # For demo, we just check exact match as fuzzy substitute
+    if ref_norm == found_norm:
+        return True
+
+    # Check prefix matching with subtitle-aware logic
+    min_len = min(len(ref_norm), len(found_norm))
+    if min_len >= 30:
+        shorter = ref_norm if len(ref_norm) <= len(found_norm) else found_norm
+        longer = found_norm if len(ref_norm) <= len(found_norm) else ref_norm
+
+        if longer.startswith(shorter):
+            # Check for subtitle after ? or !
+            ref_has_subtitle = bool(SUBTITLE_AFTER_PUNCTUATION_PATTERN.search(ref_title))
+            found_has_subtitle = bool(SUBTITLE_AFTER_PUNCTUATION_PATTERN.search(found_title))
+
+            # If reference has subtitle but found doesn't, be skeptical
+            if ref_has_subtitle and not found_has_subtitle:
+                coverage = len(shorter) / len(longer)
+                if coverage < 0.70:
+                    return False  # Likely different papers
+
+            return True
+
+    return False
+
+
+def test_subtitle_prefix_matching():
+    """Test conservative prefix matching for issue #119."""
+    print("IMPROVEMENT 19: Conservative Prefix Matching for Subtitles")
+    print("-" * 60)
+
+    test_cases = [
+        # (ref_title, found_title, expected_match, description)
+        (
+            '"won\'t somebody think of the children?" examining COPPA compliance at scale',
+            '"Won\'t Somebody Think of the Children?"',
+            False,
+            "Ref has subtitle, found doesn't - REJECT"
+        ),
+        (
+            '"won\'t somebody think of the children?" examining COPPA compliance at scale',
+            '"Won\'t Somebody Think of the Children?" Examining COPPA Compliance at Scale',
+            True,
+            "Both have subtitle - ACCEPT"
+        ),
+        (
+            '"Won\'t Somebody Think of the Children?"',
+            '"Won\'t Somebody Think of the Children?" Examining COPPA Compliance at Scale',
+            True,
+            "Ref short, found has subtitle - ACCEPT (ref truncated)"
+        ),
+        (
+            'Introduction to Machine Learning',
+            'Introduction to Machine Learning',
+            True,
+            "Exact match - ACCEPT"
+        ),
+    ]
+
+    for ref, found, expected, desc in test_cases:
+        result = titles_match_improved(ref, found)
+        status = "PASS" if result == expected else "FAIL"
+        print(f"  [{status}] {desc}")
+        if result != expected:
+            print(f"       Expected {expected}, got {result}")
+            print(f"       Ref: {ref[:50]}...")
+            print(f"       Found: {found[:50]}...")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_SUBTITLE_PREFIX_MATCHING = r"""
+// In matching.rs, in titles_match():
+
+fn titles_match(ref_title: &str, found_title: &str, threshold: u8) -> bool {
+    let ref_norm = normalize_for_comparison(ref_title);
+    let found_norm = normalize_for_comparison(found_title);
+
+    // Standard fuzzy match
+    if fuzzy_ratio(&ref_norm, &found_norm) >= threshold {
+        return true;
+    }
+
+    // Prefix matching with subtitle awareness
+    let min_len = ref_norm.len().min(found_norm.len());
+    if min_len >= 30 {
+        let (shorter, longer) = if ref_norm.len() <= found_norm.len() {
+            (&ref_norm, &found_norm)
+        } else {
+            (&found_norm, &ref_norm)
+        };
+
+        if longer.starts_with(shorter.as_str()) {
+            // Issue #119: Check for subtitle after ? or !
+            let subtitle_pattern = regex::Regex::new(r"[?!].*[a-zA-Z]").unwrap();
+            let ref_has_subtitle = subtitle_pattern.is_match(ref_title);
+            let found_has_subtitle = subtitle_pattern.is_match(found_title);
+
+            // If reference has subtitle but found doesn't, require high coverage
+            if ref_has_subtitle && !found_has_subtitle {
+                let coverage = shorter.len() as f64 / longer.len() as f64;
+                if coverage < 0.70 {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    false
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 20: Middle Initial Without Period
+# =============================================================================
+# Issue #123: References with missing periods after middle initials cause
+# misparsing. Example: "J. D Kaplan" (missing period after D) causes the
+# sentence splitter to incorrectly identify "D Kaplan" as a title start.
+#
+# Fix: Add a pattern to recognize "X Surname," (single capital letter followed
+# by space and surname with comma) as an author pattern, not a sentence boundary.
+#
+# Location in Python: split_sentences_skip_initials() function
+# Rust location: hallucinator-pdf/src/sentence.rs
+
+# Pattern to match: single capital letter + space + surname + comma
+# Examples: "D Kaplan,", "A Smith,", "E Brown,"
+MIDDLE_INITIAL_NO_PERIOD_PATTERN = re.compile(r'^[A-Z]\s+([A-Z][a-zA-Z\u00A0-\u017F\'\'\-]+)\s*,')
+
+
+def test_middle_initial_no_period():
+    """Test middle initial without period handling for issue #123."""
+    print("IMPROVEMENT 20: Middle Initial Without Period")
+    print("-" * 60)
+
+    test_cases = [
+        # (after_period_text, should_match_author, description)
+        ("D Kaplan, P. Dhariwal", True, "Missing period: D Kaplan,"),
+        ("A Smith, B. Jones", True, "Missing period: A Smith,"),
+        ("E Brown, et al.", True, "Missing period: E Brown,"),
+        ("A great paper title", False, "Title starting with A"),
+        ("Deep learning methods", False, "Normal title"),
+        ("Brown, T.", True, "Normal surname pattern"),
+    ]
+
+    for text, expected_is_author, desc in test_cases:
+        # Check if our new pattern matches
+        match = MIDDLE_INITIAL_NO_PERIOD_PATTERN.match(text)
+        is_author = match is not None
+
+        # For the last case "Brown, T.", we need different pattern
+        if text == "Brown, T.":
+            is_author = bool(re.match(r'^[A-Z][a-zA-Z]+\s*,', text))
+
+        status = "PASS" if is_author == expected_is_author else "FAIL"
+        print(f"  [{status}] {desc}: match={is_author}")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_MIDDLE_INITIAL_NO_PERIOD = r"""
+// In sentence.rs, in split_sentences_skip_initials():
+// Add this pattern to the list of author patterns that indicate
+// the period should be skipped (it's an author initial, not sentence end)
+
+// Pattern: single capital letter + space + surname + comma
+// Examples: "D Kaplan,", "A Smith,"
+// This handles missing periods after middle initials: "J. D Kaplan" instead of "J. D. Kaplan"
+let middle_initial_pattern = Regex::new(r"^[A-Z]\s+([A-Z][a-zA-Z\u{00A0}-\u{017F}''\-]+)\s*,").unwrap();
+
+// In the author pattern check chain:
+let is_author_pattern =
+    // ... existing patterns ...
+    || middle_initial_pattern.is_match(after_period);  // Issue #123 fix
+"""
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -2034,6 +2259,8 @@ if __name__ == "__main__":
     test_journal_year_fix()
     test_version_number_preservation()
     test_product_name_hyphen_preservation()
+    test_subtitle_prefix_matching()
+    test_middle_initial_no_period()
     test_combined_extraction()
     print_patterns_to_port()
 
