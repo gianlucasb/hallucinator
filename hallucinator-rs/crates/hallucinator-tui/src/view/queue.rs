@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
@@ -142,17 +142,32 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
     let wide = area.width >= 75;
 
     // Build header row
-    let header_cells = if wide {
+    let hdr_style = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
+    let header_cells: Vec<Cell> = if wide {
         vec![
-            "#", "Paper", "Refs", "OK", "Mis", "NF", "Ret", "%", "Status",
+            ("#", Alignment::Right),
+            ("Paper", Alignment::Left),
+            ("Refs", Alignment::Right),
+            ("OK", Alignment::Right),
+            ("Mis", Alignment::Right),
+            ("NF", Alignment::Right),
+            ("Ret", Alignment::Right),
+            ("%", Alignment::Right),
+            ("Status", Alignment::Left),
         ]
     } else {
-        vec!["#", "Paper", "Refs", "Prob", "Status"]
-    };
-    let header = Row::new(header_cells.iter().map(|h| {
-        Cell::from(*h).style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
-    }))
-    .height(1);
+        vec![
+            ("#", Alignment::Right),
+            ("Paper", Alignment::Left),
+            ("Refs", Alignment::Right),
+            ("Prob", Alignment::Right),
+            ("Status", Alignment::Left),
+        ]
+    }
+    .into_iter()
+    .map(|(h, align)| Cell::from(Line::from(h).alignment(align)).style(hdr_style))
+    .collect();
+    let header = Row::new(header_cells).height(1);
 
     // Use the pre-computed sorted/filtered indices
     let indices = &app.queue_sorted;
@@ -221,18 +236,18 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(theme.dim)
                 };
                 Row::new(vec![
-                    Cell::from(num),
+                    Cell::from(Line::from(num).alignment(Alignment::Right)),
                     Cell::from(name).style(name_style),
-                    Cell::from(refs),
-                    Cell::from(format!("{}", paper.stats.verified))
+                    Cell::from(Line::from(refs).alignment(Alignment::Right)),
+                    Cell::from(Line::from(format!("{}", paper.stats.verified)).alignment(Alignment::Right))
                         .style(Style::default().fg(theme.verified)),
-                    Cell::from(format!("{}", paper.stats.author_mismatch))
+                    Cell::from(Line::from(format!("{}", paper.stats.author_mismatch)).alignment(Alignment::Right))
                         .style(Style::default().fg(theme.author_mismatch)),
-                    Cell::from(format!("{}", paper.stats.not_found))
+                    Cell::from(Line::from(format!("{}", paper.stats.not_found)).alignment(Alignment::Right))
                         .style(Style::default().fg(theme.not_found)),
-                    Cell::from(format!("{}", paper.stats.retracted))
+                    Cell::from(Line::from(format!("{}", paper.stats.retracted)).alignment(Alignment::Right))
                         .style(Style::default().fg(theme.retracted)),
-                    Cell::from(pct_text).style(pct_style),
+                    Cell::from(Line::from(pct_text).alignment(Alignment::Right)).style(pct_style),
                     Cell::from(status_text).style(phase_style),
                 ])
             } else {
@@ -243,14 +258,14 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(theme.dim)
                 };
                 Row::new(vec![
-                    Cell::from(num),
+                    Cell::from(Line::from(num).alignment(Alignment::Right)),
                     Cell::from(name).style(name_style),
-                    Cell::from(if paper.total_refs > 0 {
+                    Cell::from(Line::from(if paper.total_refs > 0 {
                         format!("{}", paper.total_refs)
                     } else {
                         "\u{2014}".to_string()
-                    }),
-                    Cell::from(format!("{}", problems)).style(prob_style),
+                    }).alignment(Alignment::Right)),
+                    Cell::from(Line::from(format!("{}", problems)).alignment(Alignment::Right)).style(prob_style),
                     Cell::from(status_text).style(phase_style),
                 ])
             }
@@ -260,7 +275,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
     let widths = if wide {
         vec![
             Constraint::Length(4),
-            Constraint::Min(15),
+            Constraint::Fill(1),
             Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(5),
@@ -272,7 +287,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
     } else {
         vec![
             Constraint::Length(4),
-            Constraint::Min(10),
+            Constraint::Fill(1),
             Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(14),
