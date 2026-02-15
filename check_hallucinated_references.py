@@ -382,52 +382,83 @@ def extract_doi(text):
     Returns the DOI string (e.g., "10.1234/example") or None if not found.
     """
     # First, fix DOIs that are split across lines (apply to all text before pattern matching)
+    # Note: Allow parentheses in DOI patterns (e.g., 10.1016/0021-9681(87)90171-8)
     # Pattern 1: DOI ending with a period followed by newline and 3+ digits
     # e.g., "10.1145/3442381.\n3450048" -> "10.1145/3442381.3450048"
     # e.g., "10.48550/arXiv.2404.\n06011" -> "10.48550/arXiv.2404.06011"
     # Requires 3+ digits to avoid joining sentence periods with short page numbers (e.g., ".\n18")
-    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d{3,})', r'\1\2', text)
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>,]+\.)\s*\n\s*(\d{3,})', r'\1\2', text)
 
     # Pattern 1b: DOI ending with digits followed by newline and DOI continuation
     # e.g., "10.1109/SP40000.20\n20.00038" -> "10.1109/SP40000.2020.00038"
     # e.g., "10.1145/2884781.2884\n807" -> "10.1145/2884781.2884807"
     # e.g., "10.1109/TSE.20\n18.2884955" -> "10.1109/TSE.2018.2884955"
     # Continuation must look like DOI content: digits optionally followed by .digits
-    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\d)\s*\n\s*(\d+(?:\.\d+)*)', r'\1\2', text_fixed)
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>,]+\d)\s*\n\s*(\d+(?:\.\d+)*)', r'\1\2', text_fixed)
 
     # Pattern 2: DOI ending with a dash followed by newline and continuation
     # e.g., "10.2478/popets-\n2019-0037" -> "10.2478/popets-2019-0037"
-    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+-)\s*\n\s*(\S+)', r'\1\2', text_fixed)
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>,]+-)\s*\n\s*(\S+)', r'\1\2', text_fixed)
 
     # Pattern 3: URL split across lines - doi.org URL followed by newline and DOI continuation
     # e.g., "https://doi.org/10.48550/arXiv.2404.\n06011"
-    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d+)', r'\1\2', text_fixed, flags=re.IGNORECASE)
+    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>,]+\.)\s*\n\s*(\d+)', r'\1\2', text_fixed, flags=re.IGNORECASE)
 
     # Pattern 3b: URL split mid-number
-    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>)}]+\d)\s*\n\s*(\d[^\s\]>)}]*)', r'\1\2', text_fixed, flags=re.IGNORECASE)
+    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>,]+\d)\s*\n\s*(\d[^\s\]>,]*)', r'\1\2', text_fixed, flags=re.IGNORECASE)
 
     # Priority 1: Extract from URL format (most reliable - clear boundaries)
     # Matches https://doi.org/... or http://dx.doi.org/... or http://doi.org/...
-    url_pattern = r'https?://(?:dx\.)?doi\.org/(10\.\d{4,}/[^\s\]>)},]+)'
+    # Allow parentheses in DOI (e.g., 10.1016/0021-9681(87)90171-8)
+    url_pattern = r'https?://(?:dx\.)?doi\.org/(10\.\d{4,}/[^\s\]>},]+)'
     url_match = re.search(url_pattern, text_fixed, re.IGNORECASE)
     if url_match:
         doi = url_match.group(1)
-        # Clean trailing punctuation
-        doi = doi.rstrip('.,;:')
+        # Clean trailing punctuation and fix unbalanced parentheses
+        doi = _clean_doi(doi)
         return doi
 
     # Priority 2: DOI pattern without URL prefix
-    # 10.XXXX/suffix where suffix can contain various characters
+    # 10.XXXX/suffix where suffix can contain various characters including parentheses
     # The suffix ends at whitespace, or common punctuation at end of reference
-    doi_pattern = r'10\.\d{4,}/[^\s\]>)}]+'
+    # Allow parentheses (e.g., 10.1016/0021-9681(87)90171-8)
+    doi_pattern = r'10\.\d{4,}/[^\s\]>},]+'
 
     match = re.search(doi_pattern, text_fixed)
     if match:
         doi = match.group(0)
-        # Clean trailing punctuation that might have been captured
-        doi = doi.rstrip('.,;:')
+        # Clean trailing punctuation and fix unbalanced parentheses
+        doi = _clean_doi(doi)
         return doi
     return None
+
+
+def _clean_doi(doi):
+    """Clean a DOI string by removing trailing punctuation and unbalanced parentheses.
+
+    DOIs can legitimately contain parentheses (e.g., 10.1016/0021-9681(87)90171-8),
+    but trailing unbalanced ')' are likely reference delimiters, not part of the DOI.
+    """
+    # First, strip common trailing punctuation
+    doi = doi.rstrip('.,;:')
+
+    # Handle unbalanced parentheses at the end
+    # If DOI ends with ')' and parens are unbalanced, strip trailing ')'
+    while doi.endswith(')'):
+        open_count = doi.count('(')
+        close_count = doi.count(')')
+        if close_count > open_count:
+            doi = doi[:-1].rstrip('.,;:')
+        else:
+            break
+
+    # Similarly for brackets and braces (less common but possible)
+    while doi.endswith(']') and doi.count(']') > doi.count('['):
+        doi = doi[:-1].rstrip('.,;:')
+    while doi.endswith('}') and doi.count('}') > doi.count('{'):
+        doi = doi[:-1].rstrip('.,;:')
+
+    return doi
 
 
 def validate_doi(doi):

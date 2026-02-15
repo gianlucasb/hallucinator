@@ -665,6 +665,14 @@ def print_summary():
     print("   Add as validation after title extraction")
     print()
 
+    print("Location: hallucinator-core/src/doi.rs (or hallucinator-pdf)")
+    print("-" * 40)
+    print("5. DOI cleaning (parentheses handling)")
+    print("   - Allow parens in DOI pattern: [^\\s\\]>,]+ instead of [^\\s\\]>)}]+")
+    print("   - Add clean_doi() to strip unbalanced trailing parens")
+    print("   - Fixes: 10.1016/0021-9681(87)90171-8")
+    print()
+
     print("Impact: ~79 titles with special characters in NDSS'26 dataset")
     print("  - 9 Greek letters")
     print("  - 8 broken diacritics")
@@ -672,6 +680,140 @@ def print_summary():
     print("  - 9 accented chars (already handled)")
     print("  - 2 author-as-title")
     print()
+
+
+# =============================================================================
+# FIX 6: DOI Cleaning (Parentheses Handling)
+# =============================================================================
+# DOIs can legitimately contain parentheses, e.g., 10.1016/0021-9681(87)90171-8
+# However, trailing unbalanced ')' are likely reference delimiters, not part of DOI.
+#
+# Issue: DOI regex patterns that exclude ')' will truncate these DOIs incorrectly.
+# Fix: Allow parentheses in DOI patterns, then clean up unbalanced trailing parens.
+#
+# Examples:
+#   10.1016/0021-9681(87)90171-8  -> keep as-is (balanced)
+#   10.1016/0021-9681(87)90171-8) -> strip trailing ) (unbalanced)
+#   (doi: 10.1016/0021-9681(87)90171-8) -> extract 10.1016/0021-9681(87)90171-8
+#
+# Location: hallucinator-core/src/doi.rs or hallucinator-pdf/src/doi.rs
+
+
+def clean_doi(doi: str) -> str:
+    """Clean a DOI string by removing trailing punctuation and unbalanced parentheses.
+
+    DOIs can legitimately contain parentheses (e.g., 10.1016/0021-9681(87)90171-8),
+    but trailing unbalanced ')' are likely reference delimiters, not part of the DOI.
+    """
+    # First, strip common trailing punctuation
+    doi = doi.rstrip('.,;:')
+
+    # Handle unbalanced parentheses at the end
+    # If DOI ends with ')' and parens are unbalanced, strip trailing ')'
+    while doi.endswith(')'):
+        open_count = doi.count('(')
+        close_count = doi.count(')')
+        if close_count > open_count:
+            doi = doi[:-1].rstrip('.,;:')
+        else:
+            break
+
+    # Similarly for brackets and braces (less common but possible)
+    while doi.endswith(']') and doi.count(']') > doi.count('['):
+        doi = doi[:-1].rstrip('.,;:')
+    while doi.endswith('}') and doi.count('}') > doi.count('{'):
+        doi = doi[:-1].rstrip('.,;:')
+
+    return doi
+
+
+def test_clean_doi():
+    """Test DOI cleaning with parentheses."""
+    print("=" * 60)
+    print("FIX 6: DOI Cleaning (Parentheses Handling)")
+    print("=" * 60)
+
+    test_cases = [
+        # Balanced parentheses - should not strip
+        ("10.1016/0021-9681(87)90171-8", "10.1016/0021-9681(87)90171-8"),
+        # Unbalanced - trailing ) should be stripped
+        ("10.1016/0021-9681(87)90171-8)", "10.1016/0021-9681(87)90171-8"),
+        # Double unbalanced
+        ("10.1016/0021-9681(87)90171-8))", "10.1016/0021-9681(87)90171-8"),
+        # Trailing punctuation
+        ("10.1016/0021-9681(87)90171-8.,", "10.1016/0021-9681(87)90171-8"),
+        # Normal DOI (no parens)
+        ("10.1145/3442381.3450048", "10.1145/3442381.3450048"),
+        # Multiple balanced parens
+        ("10.1000/test(1)(2)suffix", "10.1000/test(1)(2)suffix"),
+        # Mixed punctuation and unbalanced
+        ("10.1016/test(1).,)", "10.1016/test(1)"),
+    ]
+
+    for doi, expected in test_cases:
+        result = clean_doi(doi)
+        status = "OK" if result == expected else "FAIL"
+        print(f"  {status}: '{doi}' -> '{result}'")
+        if result != expected:
+            print(f"       Expected: '{expected}'")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_CLEAN_DOI = '''
+// In doi.rs:
+
+/// Clean a DOI string by removing trailing punctuation and unbalanced parentheses.
+///
+/// DOIs can legitimately contain parentheses (e.g., 10.1016/0021-9681(87)90171-8),
+/// but trailing unbalanced ')' are likely reference delimiters, not part of the DOI.
+fn clean_doi(doi: &str) -> String {
+    let mut doi = doi.trim_end_matches(|c| c == '.' || c == ',' || c == ';' || c == ':');
+
+    // Handle unbalanced parentheses at the end
+    loop {
+        if doi.ends_with(')') {
+            let open_count = doi.matches('(').count();
+            let close_count = doi.matches(')').count();
+            if close_count > open_count {
+                doi = &doi[..doi.len() - 1];
+                doi = doi.trim_end_matches(|c| c == '.' || c == ',' || c == ';' || c == ':');
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Similarly for brackets
+    loop {
+        if doi.ends_with(']') && doi.matches(']').count() > doi.matches('[').count() {
+            doi = &doi[..doi.len() - 1];
+            doi = doi.trim_end_matches(|c| c == '.' || c == ',' || c == ';' || c == ':');
+        } else {
+            break;
+        }
+    }
+
+    // Similarly for braces
+    loop {
+        if doi.ends_with('}') && doi.matches('}').count() > doi.matches('{').count() {
+            doi = &doi[..doi.len() - 1];
+            doi = doi.trim_end_matches(|c| c == '.' || c == ',' || c == ';' || c == ':');
+        } else {
+            break;
+        }
+    }
+
+    doi.to_string()
+}
+
+// DOI extraction pattern - allow parentheses in DOI suffix:
+// Old: r"10\\.\\d{4,}/[^\\s\\]>)}]+"
+// New: r"10\\.\\d{4,}/[^\\s\\]>,]+"
+'''
 
 
 # =============================================================================
@@ -685,6 +827,7 @@ if __name__ == "__main__":
     test_author_list_detection()
     test_dash_normalization()
     test_combined_normalization()
+    test_clean_doi()
     print_summary()
 
     print("=" * 60)
