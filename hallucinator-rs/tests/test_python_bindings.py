@@ -139,7 +139,9 @@ def test_parse_reference_no_prev_authors():
 
 def test_min_title_words_default_skips_short():
     ext = PdfExtractor()
-    ref = ext.parse_reference('J. Smith, "Three Word Title," in Proc. IEEE, 2023.')
+    # Input must NOT look like a citation (venue+year), otherwise the
+    # looks_like_citation strong-signal bypass keeps the short title.
+    ref = ext.parse_reference('J. Smith, "Three Word Title," publisher, city.')
     assert ref is None  # default min=4, "Three Word Title" = 3 words
 
 
@@ -432,9 +434,10 @@ def test_parse_reference_detailed():
     assert ref is None
     assert reason == "url_only"
 
-    # Short title skip
+    # Short title skip (input must NOT look like a citation, otherwise
+    # the looks_like_citation strong-signal bypass keeps it)
     ref, reason = ext._native.parse_reference_detailed(
-        'J. Smith, "Short Title," in Proc. IEEE, 2023.'
+        'J. Smith, "Short Title," publisher, city.'
     )
     assert ref is None
     assert reason == "short_title"

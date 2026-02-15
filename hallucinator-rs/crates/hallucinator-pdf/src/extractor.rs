@@ -193,9 +193,7 @@ fn parse_single_reference(
         // Note: from_quotes alone is not a strong signal — most IEEE/ACM refs
         // use quoted titles, which would bypass min_title_words for nearly everything.
         let has_strong_signal = !cleaned_title.is_empty()
-            && (doi.is_some()
-                || arxiv_id.is_some()
-                || looks_like_citation(&ref_text));
+            && (doi.is_some() || arxiv_id.is_some() || looks_like_citation(&ref_text));
 
         if !has_strong_signal {
             static WS_SKIP_RE2: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
