@@ -44,10 +44,18 @@ pub struct ConfigState {
     pub dblp_building: bool,
     /// Status message for the DBLP build progress.
     pub dblp_build_status: Option<String>,
+    /// When the DBLP build started (for ETA/speed calculations).
+    pub dblp_build_started: Option<std::time::Instant>,
+    /// When the DBLP parse phase started (for records/s calculations).
+    pub dblp_parse_started: Option<std::time::Instant>,
     /// Whether an ACL database build is in progress.
     pub acl_building: bool,
     /// Status message for the ACL build progress.
     pub acl_build_status: Option<String>,
+    /// When the ACL build started (for ETA/speed calculations).
+    pub acl_build_started: Option<std::time::Instant>,
+    /// When the ACL parse phase started (for records/s calculations).
+    pub acl_parse_started: Option<std::time::Instant>,
 
     // Editable fields
     pub openalex_key: String,
@@ -88,8 +96,12 @@ impl Default for ConfigState {
             confirm_exit: false,
             dblp_building: false,
             dblp_build_status: None,
+            dblp_build_started: None,
+            dblp_parse_started: None,
             acl_building: false,
             acl_build_status: None,
+            acl_build_started: None,
+            acl_parse_started: None,
             openalex_key: String::new(),
             s2_api_key: String::new(),
             crossref_mailto: String::new(),

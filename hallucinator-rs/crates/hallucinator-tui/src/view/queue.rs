@@ -10,7 +10,8 @@ use crate::theme::Theme;
 use crate::view::{spinner_char, truncate};
 
 /// Render the Queue screen into the given area.
-pub fn render_in(f: &mut Frame, app: &mut App, area: Rect) {
+/// `footer_area` is a full-width row below the main content + activity panel.
+pub fn render_in(f: &mut Frame, app: &mut App, area: Rect, footer_area: Rect) {
     let theme = &app.theme;
 
     let has_search = app.input_mode == InputMode::Search || !app.search_query.is_empty();
@@ -23,7 +24,6 @@ pub fn render_in(f: &mut Frame, app: &mut App, area: Rect) {
         constraints.push(Constraint::Length(1)); // search bar
     }
     constraints.push(Constraint::Min(5)); // table (fills all available space)
-    constraints.push(Constraint::Length(1)); // footer / stats
 
     let chunks = Layout::vertical(constraints).split(area);
     let mut chunk_idx = 0;
@@ -42,9 +42,8 @@ pub fn render_in(f: &mut Frame, app: &mut App, area: Rect) {
     let table_area = chunks[chunk_idx];
     render_table(f, table_area, app);
     app.last_table_area = Some(table_area);
-    chunk_idx += 1;
 
-    render_footer(f, chunks[chunk_idx], app);
+    render_footer(f, footer_area, app);
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -140,7 +139,7 @@ fn render_search_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
 fn render_table(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let wide = area.width >= 100;
+    let wide = area.width >= 75;
 
     // Build header row
     let header_cells = if wide {
@@ -261,7 +260,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
     let widths = if wide {
         vec![
             Constraint::Length(4),
-            Constraint::Min(20),
+            Constraint::Min(15),
             Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(5),
@@ -273,7 +272,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
     } else {
         vec![
             Constraint::Length(4),
-            Constraint::Min(15),
+            Constraint::Min(10),
             Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(14),
@@ -338,7 +337,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  j/k:nav  Enter:open  o:add  ,:config  ?:help  q:quit",
+            " Space:mark  Enter:open  o:add  c:config  ?:help  q:quit",
             theme.footer_style(),
         ));
     } else if app.processing_started && !app.batch_complete {
@@ -350,12 +349,12 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  j/k:nav  Enter:open  s:sort  f:filter  /:search  ?:help",
+            " Space:mark  Enter:open  s:sort  f:filter  c:config  ?:help",
             theme.footer_style(),
         ));
     } else {
         spans.push(Span::styled(
-            " | Space:mark  j/k:nav  Enter:open  s:sort  f:filter  /:search  o:add  ?:help  q:quit",
+            " | Space:mark  Enter:open  s:sort  f:filter  o:add  c:config  ?:help  q:quit",
             theme.footer_style(),
         ));
     }

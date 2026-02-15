@@ -279,6 +279,18 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
+    // Set Windows timer resolution to 1ms for accurate frame pacing.
+    // Without this, timers round up to the default 15.6ms granularity,
+    // causing ~22 FPS instead of the target 30.
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "winmm")]
+        unsafe extern "system" {
+            fn timeBeginPeriod(uPeriod: u32) -> u32;
+        }
+        timeBeginPeriod(1);
+    }
+
     // Initialize terminal
     let mouse_enabled = cli.mouse;
     enable_raw_mode()?;
@@ -336,13 +348,12 @@ async fn main() -> anyhow::Result<()> {
     // Startup hints if no offline DBs configured (logged last so they show first)
     if app.config_state.acl_offline_path.is_empty() {
         app.activity.log_warn(
-            "No offline ACL DB. Run 'hallucinator-tui update-acl' for faster lookups.".to_string(),
+            "No offline ACL DB. Build one from Config > Databases (b) or run 'hallucinator-tui update-acl'.".to_string(),
         );
     }
     if app.config_state.dblp_offline_path.is_empty() {
         app.activity.log_warn(
-            "No offline DBLP DB. Run 'hallucinator-tui update-dblp' for faster lookups."
-                .to_string(),
+            "No offline DBLP DB. Build one from Config > Databases (b) or run 'hallucinator-tui update-dblp'.".to_string(),
         );
     }
     if app.config_state.crossref_mailto.is_empty() {
@@ -484,6 +495,11 @@ async fn main() -> anyhow::Result<()> {
                     batch_cancel.cancel();
                 }
                 tui_event::BackendCommand::BuildDblp { db_path } => {
+                    // Invalidate cached handle so the next ProcessFiles re-opens
+                    // the DB even if the path hasn't changed (e.g. rebuilding
+                    // an existing dblp.db that previously failed to open).
+                    cached_dblp_db = None;
+                    cached_dblp_path = None;
                     let tx = event_tx_for_backend.clone();
                     tokio::spawn(async move {
                         let result = hallucinator_dblp::build_database(&db_path, |evt| {
@@ -510,6 +526,9 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
                 tui_event::BackendCommand::BuildAcl { db_path } => {
+                    // Invalidate cached handle (same reason as DBLP above).
+                    cached_acl_db = None;
+                    cached_acl_path = None;
                     let tx = event_tx_for_backend.clone();
                     tokio::spawn(async move {
                         let result = hallucinator_acl::build_database(&db_path, |evt| {
@@ -549,13 +568,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Main event loop
     let tick_rate = Duration::from_millis(1000 / app.config_state.fps.max(1) as u64);
+    let mut tick_timer = tokio::time::interval(tick_rate);
+    tick_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick_timer.tick().await; // consume first immediate tick
+    let mut tip_timer = tokio::time::interval(Duration::from_secs(8));
+    // Consume the first immediate tick so the initial tip stays for a full 8s.
+    tip_timer.tick().await;
+    let tip_count = view::banner::shuffled_tips().len().max(1);
+
+    // Initial draw so the screen isn't blank before the first tick fires.
+    terminal.draw(|f| app.view(f))?;
 
     loop {
-        // Draw
-        terminal.draw(|f| app.view(f))?;
-
-        // Always process terminal input first (non-blocking) so user actions
+        // 1. Process terminal input first (non-blocking) so user actions
         // like cancel are never starved by backend event floods.
+        let mut input_happened = false;
         while event::poll(Duration::ZERO).unwrap_or(false) {
             if let Ok(evt) = event::read() {
                 let action = if app.screen == Screen::Config {
@@ -573,10 +600,12 @@ async fn main() -> anyhow::Result<()> {
                     input::map_event(&evt, &app.input_mode)
                 };
                 app.update(action);
+                input_happened = true;
             }
         }
 
-        // Then wait for backend events or tick timeout
+        // 2. Wait for backend events, tick, or tip rotation — whichever first.
+        let mut tick_fired = false;
         tokio::select! {
             maybe_event = event_rx.recv() => {
                 match maybe_event {
@@ -601,16 +630,42 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            _ = tokio::time::sleep(tick_rate) => {}
+            _ = tick_timer.tick() => {
+                tick_fired = true;
+            }
+            _ = tip_timer.tick() => {
+                app.tip_index = (app.tip_index + 1) % tip_count;
+            }
         }
 
-        // Process tick
-        app.update(action::Action::Tick);
+        // 3. Process tick and draw.
+        // Tick fires via tokio::time::interval which handles drift correction,
+        // avoiding Windows timer resolution issues with manual sleep_dur.
+        if tick_fired {
+            app.update(action::Action::Tick);
+        }
+
+        // Draw on tick (animations/state) or immediately after user input.
+        // Backend events update state but render on the next tick (~33ms max).
+        if tick_fired || input_happened {
+            terminal.draw(|f| app.view(f))?;
+            app.record_frame();
+        }
 
         if app.should_quit {
             cancel.cancel();
             break;
         }
+    }
+
+    // Restore Windows timer resolution
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "winmm")]
+        unsafe extern "system" {
+            fn timeEndPeriod(uPeriod: u32) -> u32;
+        }
+        timeEndPeriod(1);
     }
 
     // Restore terminal

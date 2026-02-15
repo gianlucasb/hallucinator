@@ -12,7 +12,8 @@ use crate::theme::Theme;
 use crate::view::truncate;
 
 /// Render the Reference Detail screen into the given area.
-pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize, area: Rect) {
+/// `footer_area` is a full-width row below the main content + activity panel.
+pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize, area: Rect, footer_area: Rect) {
     let theme = &app.theme;
     let paper = &app.papers[paper_index];
     let refs = &app.ref_states[paper_index];
@@ -21,7 +22,6 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
     let chunks = Layout::vertical([
         Constraint::Length(1), // breadcrumb
         Constraint::Min(5),    // scrollable content
-        Constraint::Length(1), // footer
     ])
     .split(area);
 
@@ -346,7 +346,7 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
     f.render_widget(content, chunks[1]);
 
     // --- Footer ---
-    render_footer(f, chunks[2], theme);
+    render_footer(f, footer_area, theme);
 }
 
 fn section_header<'a>(lines: &mut Vec<Line<'a>>, title: &'a str, theme: &Theme) {

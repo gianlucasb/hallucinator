@@ -10,7 +10,8 @@ use crate::theme::Theme;
 use crate::view::{spinner_char, truncate};
 
 /// Render the Paper detail screen into the given area.
-pub fn render_in(f: &mut Frame, app: &mut App, paper_index: usize, area: Rect) {
+/// `footer_area` is a full-width row below the main content + activity panel.
+pub fn render_in(f: &mut Frame, app: &mut App, paper_index: usize, area: Rect, footer_area: Rect) {
     let theme = &app.theme;
     let paper = &app.papers[paper_index];
     let show_preview = area.height >= 40;
@@ -27,7 +28,6 @@ pub fn render_in(f: &mut Frame, app: &mut App, paper_index: usize, area: Rect) {
     if show_preview {
         constraints.push(Constraint::Length(6)); // raw citation preview
     }
-    constraints.push(Constraint::Length(1)); // footer
 
     let chunks = Layout::vertical(constraints).split(area);
     let mut ci = 0;
@@ -49,11 +49,10 @@ pub fn render_in(f: &mut Frame, app: &mut App, paper_index: usize, area: Rect) {
 
     if show_preview {
         render_preview(f, chunks[ci], app, paper_index);
-        ci += 1;
     }
 
     let paper = &app.papers[paper_index];
-    render_footer(f, chunks[ci], app, paper, theme);
+    render_footer(f, footer_area, app, paper, theme);
 }
 
 fn render_breadcrumb(f: &mut Frame, area: Rect, filename: &str, theme: &Theme) {
@@ -281,7 +280,7 @@ fn render_footer(
     }
 
     spans.push(Span::styled(
-        " | j/k:nav  Space:FP reason  Enter:detail  Ctrl+r:retry  R:retry all  s:sort  f:filter  /:search  Esc:back",
+        " | Space:FP reason  Enter:detail  Ctrl+r:retry  R:retry all  s:sort  f:filter  c:config  Esc:back",
         theme.footer_style(),
     ));
 
