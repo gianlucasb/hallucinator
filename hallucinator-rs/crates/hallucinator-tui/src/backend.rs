@@ -306,8 +306,7 @@ pub fn open_dblp_db(
 ) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
     if !path.exists() {
         anyhow::bail!(
-            "Offline DBLP database not found at {}. Use hallucinator-cli --update-dblp={} to build it.",
-            path.display(),
+            "Offline DBLP database not found at {}. Run 'hallucinator-tui update-dblp' to build it.",
             path.display()
         );
     }
