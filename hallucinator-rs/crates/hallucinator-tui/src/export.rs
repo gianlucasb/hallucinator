@@ -701,8 +701,8 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
         let sorted = build_sorted_refs(paper, paper_refs);
         for sref in &sorted {
             let r = sref.result;
-            let status = if sref.fp.is_some() {
-                format!("Verified (FP: {})", sref.fp.unwrap().short_label())
+            let status = if let Some(fp) = sref.fp {
+                format!("Verified (FP: {})", fp.short_label())
             } else if is_retracted(r) {
                 "RETRACTED".to_string()
             } else {

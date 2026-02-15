@@ -166,7 +166,9 @@ static STOP_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 /// Skips stop words and very short words, but keeps short alphanumeric
 /// terms like "L2", "3D", "AI", "5G".
 pub fn get_query_words(title: &str, n: usize) -> Vec<String> {
-    static WORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[a-zA-Z0-9]+").unwrap());
+    static WORD_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"[a-zA-Z0-9]+(?:['\u{2019}\u{2018}\-][a-zA-Z0-9]+)*[?!]?").unwrap()
+    });
 
     let all_words: Vec<&str> = WORD_RE.find_iter(title).map(|m| m.as_str()).collect();
 
@@ -184,6 +186,8 @@ pub fn get_query_words(title: &str, n: usize) -> Vec<String> {
 }
 
 fn is_significant(w: &str) -> bool {
+    // Strip trailing ?! before checking (e.g., "important?" → "important")
+    let w = w.trim_end_matches(['?', '!']);
     if STOP_WORDS.contains(w.to_lowercase().as_str()) {
         return false;
     }
