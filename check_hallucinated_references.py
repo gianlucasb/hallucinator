@@ -1876,6 +1876,7 @@ def extract_title_from_reference(ref_text):
             r'\.\s*[A-Z][a-zA-Z\s]+\d+\s*\(\d+\)',  # ". Journal Name 34(5)" - journal with volume
             r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014]+\d+:\d+',  # ". Journal Name 34:123" - journal with pages
             r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]+,\s*\d+',  # ". Journal Name, 11" or ". PACM-HCI, 4"
+            r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{5,}\s*\((?:19|20)\d{2}\)',  # ". Journal Name (Year)" - Issue #106
             r'[?!]\s+[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]+,\s*\d+\s*[(:]',  # "? Journal Name, vol(" - cut after ?/!
             r'[?!]\s+[A-Z][a-z]+\s+(?:[A-Z][a-z]+\s+)?\d+\(',  # "? Journal 26(" - journal with volume
             r'[?!]\s+[A-Z][a-z]+\s+[a-z]+\s',  # "? Word word " - likely journal after question
@@ -1911,10 +1912,12 @@ def extract_title_from_reference(ref_text):
             r'\.\s*[Ii]n\s+[A-Z]',  # ". In Proceedings"
             r'\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)',
             r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{10,},\s*\d+',  # ". Long Journal Name, vol" - long journal names
+            r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{5,}\s*\((?:19|20)\d{2}\)',  # ". Journal Name (Year)" - Issue #106
             r'[?!]\s+[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]+,\s*\d+\s*[(:]',  # "? Journal Name, vol(" - cut after ?/!
             r'[?!]\s+[A-Z][a-z]+\s+(?:[A-Z][a-z]+\s+)?\d+\(',  # "? Journal Name 26(" - journal with volume
             r'[?!]\s+[A-Z][a-z]+\s+[a-z]+\s',  # "? Word word " - likely journal after question
             r'\s+doi:',
+            r'\.\s*https?://',  # ". https://..." - URL after title (Issue #106)
             r'\s*\(\d+(?:st|nd|rd|th)?\s*ed\.?\)\.\s*[A-Z]',  # "(2nd ed.). Publisher" - book edition + publisher
         ]
         title_end = len(after_year)
@@ -2360,18 +2363,26 @@ def extract_references_with_titles_and_authors(pdf_path, return_stats=False):
 STOP_WORDS = {'a', 'an', 'the', 'of', 'and', 'or', 'for', 'to', 'in', 'on', 'with', 'by'}
 
 def get_query_words(title, n=6):
-    """Extract n significant words from title for query, skipping stop words and short words."""
-    all_words = re.findall(r'[a-zA-Z0-9]+', title)
+    """Extract n significant words from title for query, skipping stop words and short words.
+
+    Preserves trailing punctuation (?, !) and hyphenated/apostrophe words to improve
+    search accuracy for titles like "Is AI Safe?" or "What's Next?".
+    """
+    # Keep punctuation attached to words: handles contractions (What's), hyphens (Machine-Learning),
+    # and trailing ?/! which can be significant for searches
+    all_words = re.findall(r"[a-zA-Z0-9]+(?:['''\-][a-zA-Z0-9]+)*[?!]?", title)
     # Skip stop words and words shorter than 3 characters (e.g., "s" from "Twitter's")
     def is_significant(w):
-        if w.lower() in STOP_WORDS:
+        # Strip trailing punctuation for length/stop-word checks
+        w_base = w.rstrip('?!')
+        if w_base.lower() in STOP_WORDS:
             return False
         # Keep words with 3+ chars, OR short alphanumeric terms like "L2", "3D", "AI", "5G"
-        if len(w) >= 3:
+        if len(w_base) >= 3:
             return True
         # Keep short words that mix letters and digits (technical terms)
-        has_letter = any(c.isalpha() for c in w)
-        has_digit = any(c.isdigit() for c in w)
+        has_letter = any(c.isalpha() for c in w_base)
+        has_digit = any(c.isdigit() for c in w_base)
         return has_letter and has_digit
 
     significant = [w for w in all_words if is_significant(w)]

@@ -13,6 +13,14 @@ Improvements covered:
 6. Reference number prefix stripping in title extraction
 7. Format 5 skip for Chinese ALL CAPS
 8. Author names with particles and special characters (von, van der, etc.)
+9. Springer/LNCS format (colon after authors)
+10. Bracket citation format [CODE]
+11. Editor name removal from venue
+12. Direct title before "In Venue" pattern
+13. Journal metadata detection (reject vol/page/year as title)
+14. Enhanced Springer/LNCS title extraction
+15. Query word extraction with special characters (Issue #107: ?, !, -, ')
+16. Journal Name (Year) title termination (Issue #106: DOIs with / and -)
 
 Run with:
     pip install .          # from hallucinator-rs/
@@ -1627,6 +1635,251 @@ SPRINGER_TITLE_END_PATTERNS = [
 
 
 # =============================================================================
+# IMPROVEMENT 15: Query Word Extraction with Special Characters (Issue #107)
+# =============================================================================
+# Title lookups fail when titles contain !, ?, -, ', etc. because the
+# get_query_words() function strips these characters before querying APIs.
+#
+# Examples that fail:
+#   "Hey Kimya, Is My Smart Speaker Spying on Me?"
+#   "Replication: How Well Do My Results Generalize Now?"
+#   "Alexa, Stop Spying on Me!"
+#
+# Fix: Update the word extraction regex to preserve:
+#   - Trailing punctuation (?, !)
+#   - Contractions (What's, don't)
+#   - Hyphenated words (Machine-Learning)
+#
+# Location: Python check_hallucinated_references.py get_query_words()
+#           Rust: hallucinator-core/src/query.rs (if exists) or matching.rs
+
+
+# Old pattern (strips all special chars):
+QUERY_WORDS_OLD_PATTERN = r'[a-zA-Z0-9]+'
+
+# New pattern (preserves ?, !, contractions, hyphens):
+QUERY_WORDS_NEW_PATTERN = r"[a-zA-Z0-9]+(?:['''\-][a-zA-Z0-9]+)*[?!]?"
+
+# Explanation of new pattern:
+#   [a-zA-Z0-9]+           - Base word (letters and digits)
+#   (?:['''\-][a-zA-Z0-9]+)*  - Optional contractions/hyphens: What's, Machine-Learning
+#   [?!]?                  - Optional trailing ? or !
+
+
+def get_query_words_improved(title: str, n: int = 6) -> list:
+    """Extract n significant words from title for database queries.
+
+    Preserves trailing punctuation (?, !) and hyphenated/apostrophe words
+    to improve search accuracy for titles like "Is AI Safe?" or "What's Next?".
+    """
+    import re
+
+    STOP_WORDS = {'a', 'an', 'the', 'of', 'and', 'or', 'for', 'to', 'in', 'on', 'with', 'by'}
+
+    # Keep punctuation attached to words
+    all_words = re.findall(r"[a-zA-Z0-9]+(?:['''\-][a-zA-Z0-9]+)*[?!]?", title)
+
+    def is_significant(w):
+        # Strip trailing punctuation for length/stop-word checks
+        w_base = w.rstrip('?!')
+        if w_base.lower() in STOP_WORDS:
+            return False
+        if len(w_base) >= 3:
+            return True
+        # Keep short words that mix letters and digits (technical terms like "L2", "3D")
+        has_letter = any(c.isalpha() for c in w_base)
+        has_digit = any(c.isdigit() for c in w_base)
+        return has_letter and has_digit
+
+    significant = [w for w in all_words if is_significant(w)]
+    return significant[:n] if len(significant) >= 3 else all_words[:n]
+
+
+def test_query_words_improved():
+    """Test improved query word extraction (Issue #107)."""
+    print("=" * 60)
+    print("IMPROVEMENT 15: Query Words with Special Characters (Issue #107)")
+    print("=" * 60)
+
+    test_cases = [
+        # (title, expected_words_subset)
+        ("Is AI Safe?", ["Safe?"]),  # Should preserve ?
+        ("Hey Kimya, Is My Smart Speaker Spying on Me?", ["Me?"]),  # Should preserve ?
+        ("Alexa, Stop Spying on Me!", ["Me!"]),  # Should preserve !
+        ("What's Next for NLP?", ["What's", "Next", "NLP?"]),  # Should preserve 's and ?
+        ("Machine-Learning in Practice", ["Machine-Learning"]),  # Should preserve hyphen
+        ("Replication: How Well Do My Results Generalize Now?", ["Now?"]),  # Should preserve ?
+    ]
+
+    print("  Query word extraction with special characters:")
+    for title, expected_subset in test_cases:
+        words = get_query_words_improved(title)
+        # Check if expected words are in the result
+        found = all(any(exp in w for w in words) for exp in expected_subset)
+        status = "OK" if found else "FAIL"
+        print(f"    {status}: '{title[:50]}...'")
+        print(f"         Words: {words}")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_QUERY_WORDS = r"""
+// In query.rs or matching.rs:
+
+use once_cell::sync::Lazy;
+use regex::Regex;
+use std::collections::HashSet;
+
+static QUERY_WORD_RE: Lazy<Regex> = Lazy::new(|| {
+    // Matches words with optional contractions/hyphens and trailing ?/!
+    // Apostrophe variants: ' (U+0027), ' (U+2019), ' (U+2018)
+    Regex::new(r"[a-zA-Z0-9]+(?:[\u{0027}\u{2019}\u{2018}\-][a-zA-Z0-9]+)*[?!]?").unwrap()
+});
+
+static STOP_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    ["a", "an", "the", "of", "and", "or", "for", "to", "in", "on", "with", "by"]
+        .iter().copied().collect()
+});
+
+fn get_query_words(title: &str, n: usize) -> Vec<String> {
+    let all_words: Vec<&str> = QUERY_WORD_RE
+        .find_iter(title)
+        .map(|m| m.as_str())
+        .collect();
+
+    let significant: Vec<&str> = all_words
+        .iter()
+        .copied()
+        .filter(|w| {
+            let base = w.trim_end_matches(|c| c == '?' || c == '!');
+            if STOP_WORDS.contains(&base.to_lowercase().as_str()) {
+                return false;
+            }
+            if base.len() >= 3 {
+                return true;
+            }
+            // Keep short alphanumeric terms like "L2", "3D"
+            let has_letter = base.chars().any(|c| c.is_alphabetic());
+            let has_digit = base.chars().any(|c| c.is_numeric());
+            has_letter && has_digit
+        })
+        .collect();
+
+    let result: Vec<String> = if significant.len() >= 3 {
+        significant.iter().take(n).map(|s| s.to_string()).collect()
+    } else {
+        all_words.iter().take(n).map(|s| s.to_string()).collect()
+    };
+
+    result
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 16: Journal Name (Year) Title Termination (Issue #106)
+# =============================================================================
+# References with DOIs containing multiple "/" or "-" were parsed incorrectly
+# because the title extraction didn't recognize "Journal Name (Year)" as a
+# title terminator.
+#
+# Examples that fail:
+#   "Shining a Light on Dark Patterns. Journal of Legal Analysis (2021). https://doi.org/10.1093/jla/laaa006"
+#   "Making it Easier for Older People to Talk to Smart Homes. Universal Access in the Information Society (2010). https://doi.org/10.1007/s10209-009-0184-x"
+#
+# The title extraction would grab everything up to the URL, including the
+# journal name and year in parentheses.
+#
+# Fix: Add patterns to detect:
+# 1. ". JournalName (Year)" - journal name followed by year in parentheses
+# 2. ". https://" - URL directly after title
+#
+# Location: hallucinator-pdf/src/title.rs (ACM format and Springer format extractors)
+
+# New patterns to add to title_end_patterns in ACM/Springer format extractors:
+JOURNAL_YEAR_PATTERN = r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{5,}\s*\((?:19|20)\d{2}\)'
+URL_AFTER_TITLE_PATTERN = r'\.\s*https?://'
+
+
+def extract_title_with_journal_year_fix(after_year: str) -> str:
+    """Extract title, stopping at Journal Name (Year) or URL.
+
+    This fixes Issue #106 where DOIs with multiple "/" or "-" caused
+    title extraction to fail.
+    """
+    title_end_patterns = [
+        r'\.\s*[Ii]n\s+[A-Z]',  # ". In Proceedings"
+        r'\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)',
+        r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{10,},\s*\d+',  # ". Long Journal Name, vol"
+        r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{5,}\s*\((?:19|20)\d{2}\)',  # ". Journal Name (Year)" - Issue #106
+        r'\.\s*https?://',  # ". https://..." - URL after title (Issue #106)
+        r'\s+doi:',
+    ]
+
+    title_end = len(after_year)
+    for pattern in title_end_patterns:
+        m = re.search(pattern, after_year)
+        if m:
+            title_end = min(title_end, m.start())
+
+    title = after_year[:title_end].strip()
+    title = re.sub(r'\.\s*$', '', title)
+    return title
+
+
+def test_journal_year_fix():
+    """Test Issue #106 fix for Journal Name (Year) patterns."""
+    print("=" * 60)
+    print("IMPROVEMENT 16: Journal Name (Year) Termination (Issue #106)")
+    print("=" * 60)
+
+    test_cases = [
+        # (after_year text, expected_title)
+        (
+            "Shining a Light on Dark Patterns. Journal of Legal Analysis (2021). https://doi.org/10.1093/jla/laaa006",
+            "Shining a Light on Dark Patterns"
+        ),
+        (
+            "Making it Easier for Older People to Talk to Smart Homes: the Effect of Early Help Prompts. Universal Access in the Information Society (2010). https://doi.org/10.1007/s10209-009-0184-x",
+            "Making it Easier for Older People to Talk to Smart Homes: the Effect of Early Help Prompts"
+        ),
+        # Should also work with URL directly after title
+        (
+            "Some Paper Title. https://doi.org/10.1234/example",
+            "Some Paper Title"
+        ),
+    ]
+
+    print("  Testing Journal Name (Year) title termination:")
+    for after_year, expected in test_cases:
+        result = extract_title_with_journal_year_fix(after_year)
+        status = "OK" if result == expected else "FAIL"
+        print(f"    {status}: '{after_year[:50]}...'")
+        if result != expected:
+            print(f"         Expected: '{expected}'")
+            print(f"         Got:      '{result}'")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_JOURNAL_YEAR_FIX = r"""
+// In title.rs, add these patterns to END_PATTERNS in try_acm_year() and try_springer_year():
+
+// Issue #106: Journal Name (Year) pattern - e.g., "Journal of Legal Analysis (2021)"
+Regex::new(r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)").unwrap(),
+
+// Issue #106: URL directly after title - e.g., ". https://doi.org/..."
+Regex::new(r"\.\s*https?://").unwrap(),
+
+// Also add to get_query_words in identifiers.rs (same fix as Issue #107):
+// Change from: Regex::new(r"[a-zA-Z0-9]+").unwrap()
+// Change to:   Regex::new(r"[a-zA-Z0-9]+(?:[\u{0027}\u{2019}\u{2018}\-][a-zA-Z0-9]+)*[?!]?").unwrap()
+"""
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -1645,6 +1898,8 @@ if __name__ == "__main__":
     test_direct_in_venue()
     test_journal_metadata_detection()
     test_springer_enhanced()
+    test_query_words_improved()
+    test_journal_year_fix()
     test_combined_extraction()
     print_patterns_to_port()
 
