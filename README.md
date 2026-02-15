@@ -46,13 +46,14 @@ If you're willing to install Rust, the **[hallucinator-rs](hallucinator-rs/)** v
 
 ```bash
 cd hallucinator-rs
-cargo build --release
-
-# CLI
-./target/release/hallucinator-cli check paper.pdf
 
 # Interactive TUI
+cargo build -p hallucinator-tui --release
 ./target/release/hallucinator-tui
+
+# CLI
+cargo build -p hallucinator-cli --release
+./target/release/hallucinator-cli check paper.pdf
 ```
 
 See **[hallucinator-rs/README.md](hallucinator-rs/README.md)** for full documentation.
