@@ -189,11 +189,12 @@ fn parse_single_reference(
     if cleaned_title.is_empty() || cleaned_title.split_whitespace().count() < config.min_title_words
     {
         // Short titles can still be real citations if we have strong signals:
-        // DOI, arXiv ID, quoted title, or venue/year markers in the raw text.
+        // DOI, arXiv ID, or venue/year markers in the raw text.
+        // Note: from_quotes alone is not a strong signal — most IEEE/ACM refs
+        // use quoted titles, which would bypass min_title_words for nearly everything.
         let has_strong_signal = !cleaned_title.is_empty()
             && (doi.is_some()
                 || arxiv_id.is_some()
-                || from_quotes
                 || looks_like_citation(&ref_text));
 
         if !has_strong_signal {
