@@ -212,6 +212,15 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     }
     lines.push(Line::from(spans));
 
+    // Show default build path hint when path is not set and cursor is on item
+    if config.item_cursor == 0 && !config.editing && config.dblp_offline_path.is_empty() {
+        let default_path = crate::app::default_db_path("dblp.db");
+        lines.push(Line::from(Span::styled(
+            format!("      b will build to: {}", default_path.display()),
+            Style::default().fg(theme.dim),
+        )));
+    }
+
     // Show DBLP build status inline
     if let Some(ref status) = config.dblp_build_status {
         let style = if config.dblp_building {
@@ -249,6 +258,15 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         spans.push(Span::styled("  (o:browse  b:build)", Style::default().fg(theme.dim)));
     }
     lines.push(Line::from(spans));
+
+    // Show default build path hint when path is not set and cursor is on item
+    if config.item_cursor == 1 && !config.editing && config.acl_offline_path.is_empty() {
+        let default_path = crate::app::default_db_path("acl.db");
+        lines.push(Line::from(Span::styled(
+            format!("      b will build to: {}", default_path.display()),
+            Style::default().fg(theme.dim),
+        )));
+    }
 
     // Show ACL build status inline
     if let Some(ref status) = config.acl_build_status {

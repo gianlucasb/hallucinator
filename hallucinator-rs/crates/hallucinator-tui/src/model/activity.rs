@@ -124,6 +124,12 @@ impl ActivityState {
         self.throughput_buckets.push_back(count);
     }
 
+    /// Remove warning messages containing the given needle.
+    pub fn dismiss_warnings_containing(&mut self, needle: &str) {
+        self.messages
+            .retain(|(text, is_warning)| !(*is_warning && text.contains(needle)));
+    }
+
     /// Build sparkline string from throughput buckets.
     pub fn sparkline(&self) -> String {
         const CHARS: &[char] = &[

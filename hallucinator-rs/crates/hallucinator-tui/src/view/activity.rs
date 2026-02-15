@@ -199,7 +199,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme.border_style())
-                .title(" Activity (Tab to hide) "),
+                .title(" Status (Tab to hide) "),
         )
         .wrap(Wrap { trim: true });
 

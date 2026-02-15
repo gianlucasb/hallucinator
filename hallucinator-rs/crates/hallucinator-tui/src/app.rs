@@ -1913,6 +1913,7 @@ impl App {
                     self.config_state.dblp_offline_path = db_path.display().to_string();
                     self.activity
                         .log(format!("DBLP database built: {}", db_path.display()));
+                    self.activity.dismiss_warnings_containing("DBLP");
                 } else {
                     let msg = error.unwrap_or_else(|| "unknown error".to_string());
                     self.config_state.dblp_build_status = Some(format!("Failed: {}", msg));
@@ -1950,6 +1951,7 @@ impl App {
                     self.config_state.acl_offline_path = db_path.display().to_string();
                     self.activity
                         .log(format!("ACL database built: {}", db_path.display()));
+                    self.activity.dismiss_warnings_containing("ACL");
                 } else {
                     let msg = error.unwrap_or_else(|| "unknown error".to_string());
                     self.config_state.acl_build_status = Some(format!("Failed: {}", msg));
@@ -2312,7 +2314,7 @@ fn osc52_copy(text: &str) {
 }
 
 /// Default path for offline databases: `~/.local/share/hallucinator/<filename>`.
-fn default_db_path(filename: &str) -> PathBuf {
+pub(crate) fn default_db_path(filename: &str) -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("hallucinator")
