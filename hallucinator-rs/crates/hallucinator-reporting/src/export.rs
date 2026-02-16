@@ -94,10 +94,7 @@ struct SortedRef<'a> {
 /// Build a sorted list of refs for export: retracted → not found → mismatch →
 /// DOI/arXiv issues → FP-overridden → clean verified, with original ref number
 /// as tiebreaker within each bucket.
-fn build_sorted_refs<'a>(
-    paper: &ReportPaper<'a>,
-    paper_refs: &[ReportRef],
-) -> Vec<SortedRef<'a>> {
+fn build_sorted_refs<'a>(paper: &ReportPaper<'a>, paper_refs: &[ReportRef]) -> Vec<SortedRef<'a>> {
     let mut entries: Vec<SortedRef<'a>> = Vec::new();
     for (ri, result) in paper.results.iter().enumerate() {
         if let Some(r) = result {
@@ -1266,8 +1263,10 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hallucinator_core::{CheckStats, DoiInfo, RetractionInfo, Status, ValidationResult};
+    use std::str::FromStr;
+
     use crate::types::{ExportFormat, FpReason, PaperVerdict, ReportPaper, ReportRef, SkipInfo};
+    use hallucinator_core::{CheckStats, DoiInfo, RetractionInfo, Status, ValidationResult};
 
     // ── helpers ──────────────────────────────────────────────────────
 
@@ -1293,22 +1292,39 @@ mod tests {
         stats: &'a CheckStats,
         results: &'a [Option<ValidationResult>],
     ) -> ReportPaper<'a> {
-        ReportPaper { filename, stats, results, verdict: None }
+        ReportPaper {
+            filename,
+            stats,
+            results,
+            verdict: None,
+        }
     }
 
     fn make_ref(index: usize, title: &str) -> ReportRef {
-        ReportRef { index, title: title.to_string(), skip_info: None, fp_reason: None }
+        ReportRef {
+            index,
+            title: title.to_string(),
+            skip_info: None,
+            fp_reason: None,
+        }
     }
 
     fn make_ref_fp(index: usize, title: &str, fp: FpReason) -> ReportRef {
-        ReportRef { index, title: title.to_string(), skip_info: None, fp_reason: Some(fp) }
+        ReportRef {
+            index,
+            title: title.to_string(),
+            skip_info: None,
+            fp_reason: Some(fp),
+        }
     }
 
     fn make_ref_skipped(index: usize, title: &str, reason: &str) -> ReportRef {
         ReportRef {
             index,
             title: title.to_string(),
-            skip_info: Some(SkipInfo { reason: reason.to_string() }),
+            skip_info: Some(SkipInfo {
+                reason: reason.to_string(),
+            }),
             fp_reason: None,
         }
     }
@@ -1407,19 +1423,40 @@ mod tests {
 
     #[test]
     fn test_problematic_pct_zero_checked() {
-        let stats = CheckStats { total: 5, verified: 0, not_found: 0, author_mismatch: 0, retracted: 0, skipped: 5 };
+        let stats = CheckStats {
+            total: 5,
+            verified: 0,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 5,
+        };
         assert_eq!(problematic_pct(&stats), 0.0);
     }
 
     #[test]
     fn test_problematic_pct_normal() {
-        let stats = CheckStats { total: 10, verified: 8, not_found: 2, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 10,
+            verified: 8,
+            not_found: 2,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         assert!((problematic_pct(&stats) - 20.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_adjusted_stats_fp_not_found() {
-        let stats = CheckStats { total: 3, verified: 1, not_found: 2, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 3,
+            verified: 1,
+            not_found: 2,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         let results: Vec<Option<ValidationResult>> = vec![
             Some(make_result("A", Status::Verified)),
             Some(make_result("B", Status::NotFound)),
@@ -1438,7 +1475,14 @@ mod tests {
 
     #[test]
     fn test_adjusted_stats_fp_mismatch() {
-        let stats = CheckStats { total: 2, verified: 1, not_found: 0, author_mismatch: 1, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 2,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 1,
+            retracted: 0,
+            skipped: 0,
+        };
         let results: Vec<Option<ValidationResult>> = vec![
             Some(make_result("A", Status::Verified)),
             Some(make_result("B", Status::AuthorMismatch)),
@@ -1455,10 +1499,15 @@ mod tests {
 
     #[test]
     fn test_adjusted_stats_fp_verified_noop() {
-        let stats = CheckStats { total: 1, verified: 1, not_found: 0, author_mismatch: 0, retracted: 0, skipped: 0 };
-        let results: Vec<Option<ValidationResult>> = vec![
-            Some(make_result("A", Status::Verified)),
-        ];
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results: Vec<Option<ValidationResult>> = vec![Some(make_result("A", Status::Verified))];
         let paper = make_paper("test.pdf", &stats, &results);
         let refs = vec![make_ref_fp(0, "A", FpReason::KnownGood)];
         let adj = adjusted_stats(&paper, &refs);
@@ -1469,10 +1518,15 @@ mod tests {
 
     #[test]
     fn test_adjusted_stats_fp_retracted() {
-        let stats = CheckStats { total: 1, verified: 1, not_found: 0, author_mismatch: 0, retracted: 1, skipped: 0 };
-        let results: Vec<Option<ValidationResult>> = vec![
-            Some(make_retracted("A")),
-        ];
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 1,
+            skipped: 0,
+        };
+        let results: Vec<Option<ValidationResult>> = vec![Some(make_retracted("A"))];
         let paper = make_paper("test.pdf", &stats, &results);
         let refs = vec![make_ref_fp(0, "A", FpReason::KnownGood)];
         let adj = adjusted_stats(&paper, &refs);
@@ -1485,15 +1539,19 @@ mod tests {
         let mut retracted = make_retracted("Retracted Paper");
         retracted.status = Status::NotFound; // retracted + not_found
         let mut doi_issue = make_result("DOI Issue", Status::Verified);
-        doi_issue.doi_info = Some(DoiInfo { doi: "10.bad".into(), valid: false, title: None });
+        doi_issue.doi_info = Some(DoiInfo {
+            doi: "10.bad".into(),
+            valid: false,
+            title: None,
+        });
 
         let results: Vec<Option<ValidationResult>> = vec![
-            Some(make_result("Verified", Status::Verified)),       // bucket 5
-            Some(make_result("Not Found", Status::NotFound)),      // bucket 1
-            Some(retracted),                                        // bucket 0
+            Some(make_result("Verified", Status::Verified)), // bucket 5
+            Some(make_result("Not Found", Status::NotFound)), // bucket 1
+            Some(retracted),                                 // bucket 0
             Some(make_result("Mismatch", Status::AuthorMismatch)), // bucket 2
-            Some(make_result("FP Paper", Status::NotFound)),       // bucket 4 (FP)
-            Some(doi_issue),                                        // bucket 3
+            Some(make_result("FP Paper", Status::NotFound)), // bucket 4 (FP)
+            Some(doi_issue),                                 // bucket 3
         ];
         let stats = CheckStats::default();
         let paper = make_paper("test.pdf", &stats, &results);
@@ -1507,14 +1565,17 @@ mod tests {
         ];
         let sorted = build_sorted_refs(&paper, &refs);
         let titles: Vec<&str> = sorted.iter().map(|s| s.result.title.as_str()).collect();
-        assert_eq!(titles, vec![
-            "Retracted Paper",  // 0: retracted
-            "Not Found",        // 1: not_found
-            "Mismatch",         // 2: author_mismatch
-            "DOI Issue",        // 3: doi/arxiv issue
-            "FP Paper",         // 4: FP override
-            "Verified",         // 5: clean verified
-        ]);
+        assert_eq!(
+            titles,
+            vec![
+                "Retracted Paper", // 0: retracted
+                "Not Found",       // 1: not_found
+                "Mismatch",        // 2: author_mismatch
+                "DOI Issue",       // 3: doi/arxiv issue
+                "FP Paper",        // 4: FP override
+                "Verified",        // 5: clean verified
+            ]
+        );
     }
 
     #[test]
@@ -1575,20 +1636,23 @@ mod tests {
             FpReason::NonAcademic,
         ];
         for fp in &all {
-            assert_eq!(FpReason::from_str(fp.as_str()), Some(*fp));
+            assert_eq!(FpReason::from_str(fp.as_str()), Ok(*fp));
         }
     }
 
     #[test]
     fn test_fp_reason_from_str_unknown() {
-        assert_eq!(FpReason::from_str("garbage"), None);
-        assert_eq!(FpReason::from_str(""), None);
+        assert!(FpReason::from_str("garbage").is_err());
+        assert!(FpReason::from_str("").is_err());
     }
 
     #[test]
     fn test_paper_verdict_cycle() {
         assert_eq!(PaperVerdict::cycle(None), Some(PaperVerdict::Safe));
-        assert_eq!(PaperVerdict::cycle(Some(PaperVerdict::Safe)), Some(PaperVerdict::Questionable));
+        assert_eq!(
+            PaperVerdict::cycle(Some(PaperVerdict::Safe)),
+            Some(PaperVerdict::Questionable)
+        );
         assert_eq!(PaperVerdict::cycle(Some(PaperVerdict::Questionable)), None);
     }
 
@@ -1612,7 +1676,14 @@ mod tests {
 
     #[test]
     fn test_json_single_paper() {
-        let stats = CheckStats { total: 1, verified: 1, not_found: 0, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         let results = vec![Some(make_result("Good Paper", Status::Verified))];
         let paper = make_paper("test.pdf", &stats, &results);
         let refs = vec![make_ref(0, "Good Paper")];
@@ -1629,7 +1700,14 @@ mod tests {
 
     #[test]
     fn test_json_skipped_ref() {
-        let stats = CheckStats { total: 1, verified: 0, not_found: 0, author_mismatch: 0, retracted: 0, skipped: 1 };
+        let stats = CheckStats {
+            total: 1,
+            verified: 0,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 1,
+        };
         let results: Vec<Option<ValidationResult>> = vec![];
         let paper = make_paper("test.pdf", &stats, &results);
         let refs = vec![make_ref_skipped(0, "Short", "short_title")];
@@ -1641,7 +1719,14 @@ mod tests {
 
     #[test]
     fn test_json_fp_override() {
-        let stats = CheckStats { total: 1, verified: 0, not_found: 1, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 1,
+            verified: 0,
+            not_found: 1,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         let results = vec![Some(make_result("FP Ref", Status::NotFound))];
         let paper = make_paper("test.pdf", &stats, &results);
         let refs = vec![make_ref_fp(0, "FP Ref", FpReason::ExistsElsewhere)];
@@ -1664,7 +1749,14 @@ mod tests {
 
     #[test]
     fn test_csv_single_ref() {
-        let stats = CheckStats { total: 1, verified: 1, not_found: 0, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         let results = vec![Some(make_result("My Paper", Status::Verified))];
         let paper = make_paper("test.pdf", &stats, &results);
         let refs = vec![make_ref(0, "My Paper")];
@@ -1678,7 +1770,14 @@ mod tests {
 
     #[test]
     fn test_markdown_structure() {
-        let stats = CheckStats { total: 2, verified: 1, not_found: 1, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 2,
+            verified: 1,
+            not_found: 1,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         let results = vec![
             Some(make_result("Good", Status::Verified)),
             Some(make_result("Bad", Status::NotFound)),
@@ -1696,7 +1795,14 @@ mod tests {
 
     #[test]
     fn test_text_structure() {
-        let stats = CheckStats { total: 1, verified: 1, not_found: 0, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         let results = vec![Some(make_result("Paper", Status::Verified))];
         let paper = make_paper("f.pdf", &stats, &results);
         let refs = vec![make_ref(0, "Paper")];
@@ -1710,7 +1816,14 @@ mod tests {
 
     #[test]
     fn test_html_structure() {
-        let stats = CheckStats { total: 1, verified: 1, not_found: 0, author_mismatch: 0, retracted: 0, skipped: 0 };
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
         let results = vec![Some(make_result("Paper", Status::Verified))];
         let paper = make_paper("f.pdf", &stats, &results);
         let refs = vec![make_ref(0, "Paper")];
@@ -1732,7 +1845,7 @@ mod tests {
         quest_paper.verdict = Some(PaperVerdict::Questionable);
 
         let empty_refs: &[ReportRef] = &[];
-        let ref_slices: &[&[ReportRef]] = &[&empty_refs, &empty_refs];
+        let ref_slices: &[&[ReportRef]] = &[empty_refs, empty_refs];
         let out = export_html(&[safe_paper, quest_paper], ref_slices);
         assert!(out.contains("badge verified\">SAFE</span>"));
         assert!(out.contains("badge not-found\">?!</span>"));

@@ -61,15 +61,19 @@ impl FpReason {
         }
     }
 
-    /// Parse from a JSON string key.
-    pub fn from_str(s: &str) -> Option<FpReason> {
+}
+
+impl std::str::FromStr for FpReason {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "broken_parse" => Some(FpReason::BrokenParse),
-            "exists_elsewhere" => Some(FpReason::ExistsElsewhere),
-            "all_timed_out" => Some(FpReason::AllTimedOut),
-            "known_good" => Some(FpReason::KnownGood),
-            "non_academic" => Some(FpReason::NonAcademic),
-            _ => None,
+            "broken_parse" => Ok(FpReason::BrokenParse),
+            "exists_elsewhere" => Ok(FpReason::ExistsElsewhere),
+            "all_timed_out" => Ok(FpReason::AllTimedOut),
+            "known_good" => Ok(FpReason::KnownGood),
+            "non_academic" => Ok(FpReason::NonAcademic),
+            _ => Err(()),
         }
     }
 }

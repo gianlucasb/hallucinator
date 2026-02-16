@@ -124,7 +124,7 @@ fn convert_db_status(s: &str) -> DbStatus {
 /// Parse fp_reason from loaded JSON fields, with backward compat for marked_safe bool.
 fn parse_fp_reason(loaded_ref: &LoadedRef) -> Option<FpReason> {
     if let Some(reason_str) = &loaded_ref.fp_reason {
-        FpReason::from_str(reason_str)
+        reason_str.parse().ok()
     } else if loaded_ref.marked_safe == Some(true) {
         // Legacy backward compat: marked_safe: true → KnownGood
         Some(FpReason::KnownGood)
