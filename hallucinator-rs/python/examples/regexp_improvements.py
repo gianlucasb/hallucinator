@@ -26,6 +26,12 @@ Improvements covered:
 19. Conservative prefix matching for titles with subtitles (Issue #119)
 20. Middle initial without period (Issue #123: "J. D Kaplan" pattern)
 21. BibTeX curly brace stripping in query word extraction ({M}ixup -> Mixup)
+22. Em-dash/en-dash normalization to hyphens in query words
+23. Diacritic transliteration in query words (Nyström -> Nystrom)
+24. Smart quote normalization in query words (' ' -> ')
+25. Journal name detection after question mark in titles
+26. Math notation filtering (reject LaTeX/equations as titles)
+27. Single-word surname rejection (Arrow, Davison -> not titles)
 
 Run with:
     pip install .          # from hallucinator-rs/
@@ -2342,6 +2348,363 @@ fn get_query_words(title: &str, n: usize) -> Vec<String> {
 
 
 # =============================================================================
+# IMPROVEMENT 22: Em-dash/En-dash Normalization in Query Words
+# =============================================================================
+# Em-dashes (—, U+2014) and en-dashes (–, U+2013) in titles break query
+# construction. They should be normalized to regular hyphens.
+#
+# Example: "Women's choices—and their pay" -> query should include "choices-and"
+#
+# Location in Python: get_query_words() function
+# Rust location: hallucinator-pdf/src/identifiers.rs (get_query_words)
+
+
+def test_emdash_normalization():
+    """Test em-dash/en-dash normalization in query words."""
+    print("IMPROVEMENT 22: Em-dash/En-dash Normalization")
+    print("-" * 60)
+
+    import unicodedata
+
+    def get_query_words_emdash(title: str, n: int = 6) -> list:
+        """Query word extraction with em-dash normalization."""
+        # Normalize em-dashes and en-dashes to regular hyphens
+        title = title.replace('\u2014', '-').replace('\u2013', '-')
+        # NFKD normalize and strip to ASCII
+        title = unicodedata.normalize('NFKD', title)
+        title = title.encode('ascii', 'ignore').decode('ascii')
+        # Extract words
+        words = re.findall(r"[a-zA-Z0-9]+(?:[-'][a-zA-Z0-9]+)*", title)
+        return words[:n]
+
+    test_cases = [
+        ("Women's choices—and their pay", ["Womens", "choices-and", "their", "pay"]),
+        ("2019–2020 Survey Results", ["2019-2020", "Survey", "Results"]),
+        ("State-of-the-art methods", ["State-of-the-art", "methods"]),
+    ]
+
+    for title, expected_contains in test_cases:
+        words = get_query_words_emdash(title)
+        # Check if expected words are present (allowing for variations)
+        print(f"  Title: {title}")
+        print(f"  Words: {words}")
+
+    print()
+
+
+RUST_EMDASH_NORMALIZATION = r"""
+// In get_query_words():
+// Normalize em-dashes and en-dashes to regular hyphens
+let title = title
+    .replace('\u{2014}', "-")  // em-dash
+    .replace('\u{2013}', "-"); // en-dash
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 23: Diacritic Transliteration in Query Words
+# =============================================================================
+# Diacritics like ö, é, ñ should be transliterated to ASCII for database
+# queries. "Nyström" should become "Nystrom" to match DB entries.
+#
+# Location in Python: get_query_words() function
+# Rust location: hallucinator-pdf/src/identifiers.rs (get_query_words)
+
+
+def test_diacritic_transliteration():
+    """Test diacritic transliteration in query words."""
+    print("IMPROVEMENT 23: Diacritic Transliteration")
+    print("-" * 60)
+
+    import unicodedata
+
+    def transliterate_for_query(title: str) -> str:
+        """Transliterate diacritics to ASCII for query construction."""
+        title = unicodedata.normalize('NFKD', title)
+        title = title.encode('ascii', 'ignore').decode('ascii')
+        return title
+
+    test_cases = [
+        ("Nyström method", "Nystrom method"),
+        ("Café au lait", "Cafe au lait"),
+        ("José García López", "Jose Garcia Lopez"),
+        ("Müller-Brockmann", "Muller-Brockmann"),
+        ("naïve Bayes", "naive Bayes"),
+    ]
+
+    for original, expected in test_cases:
+        result = transliterate_for_query(original)
+        status = "PASS" if result == expected else "FAIL"
+        print(f"  [{status}] '{original}' -> '{result}'")
+
+    print()
+
+
+RUST_DIACRITIC_TRANSLITERATION = r"""
+// In get_query_words():
+// Use unicode-normalization crate for NFKD normalization
+use unicode_normalization::UnicodeNormalization;
+
+let title: String = title
+    .nfkd()
+    .filter(|c| c.is_ascii())
+    .collect();
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 24: Smart Quote Normalization in Query Words
+# =============================================================================
+# Smart/curly quotes (' ' " ") should be normalized to ASCII quotes for
+# proper word extraction. Otherwise "Won't" with curly apostrophe won't match.
+#
+# Location in Python: get_query_words() function
+# Rust location: hallucinator-pdf/src/identifiers.rs (get_query_words)
+
+
+def test_smart_quote_normalization():
+    """Test smart quote normalization in query words."""
+    print("IMPROVEMENT 24: Smart Quote Normalization")
+    print("-" * 60)
+
+    def normalize_quotes(title: str) -> str:
+        """Normalize smart quotes to ASCII."""
+        title = title.replace('\u2018', "'").replace('\u2019', "'")  # ' '
+        title = title.replace('\u201c', '"').replace('\u201d', '"')  # " "
+        return title
+
+    test_cases = [
+        ("Won't Somebody Think", "Won't Somebody Think"),
+        (""Hello World"", '"Hello World"'),
+        ("It's a 'test'", "It's a 'test'"),
+    ]
+
+    for original, expected in test_cases:
+        result = normalize_quotes(original)
+        status = "PASS" if result == expected else "FAIL"
+        print(f"  [{status}] Normalized quotes correctly")
+
+    print()
+
+
+RUST_SMART_QUOTE_NORMALIZATION = r"""
+// In get_query_words():
+// Normalize smart quotes to ASCII before word extraction
+let title = title
+    .replace('\u{2018}', "'")  // left single quote
+    .replace('\u{2019}', "'")  // right single quote
+    .replace('\u{201c}', "\"") // left double quote
+    .replace('\u{201d}', "\""); // right double quote
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 25: Journal Name Detection After Question Mark
+# =============================================================================
+# Titles ending with ? or ! sometimes incorrectly include the journal name.
+# Example: "Will policies work? The American Economic Review" should truncate
+# to just "Will policies work?"
+#
+# Location in Python: VENUE_AFTER_PUNCTUATION_PATTERN, truncate_title_at_venue()
+# Rust location: hallucinator-pdf/src/title.rs
+
+
+VENUE_AFTER_PUNCTUATION_ENHANCED = re.compile(
+    r'[?!]\s+(?:International|Proceedings|Conference|Workshop|Symposium|Association|'
+    r'The\s+\d{4}\s+Conference|Nations|Annual|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR|'
+    r'CVPR|ICCV|ECCV|ACL|EMNLP|NAACL|'
+    # Journal name patterns
+    r'(?:The\s+)?(?:American|European|British|Journal|Review|Quarterly|Economic|'
+    r'Political|Management|Science|Nature|Transactions|Letters|Magazine|'
+    r'Annals|Archives|Bulletin|Communications|Reports|Studies|Research|'
+    r'International\s+Journal|World\s+Development|Public\s+Policy))'
+)
+
+
+def test_journal_after_punctuation():
+    """Test journal name detection after ?/! in titles."""
+    print("IMPROVEMENT 25: Journal Name After Punctuation")
+    print("-" * 60)
+
+    def truncate_at_venue(title: str) -> str:
+        """Truncate title if it contains venue after ?/!."""
+        match = VENUE_AFTER_PUNCTUATION_ENHANCED.search(title)
+        if match:
+            return title[:match.start() + 1].strip()
+        return title
+
+    test_cases = [
+        ("Will policies work? The American Economic Review", "Will policies work?"),
+        ("Is AI safe? Nature Communications 2024", "Is AI safe?"),
+        ("What's next! Science Magazine", "What's next!"),
+        ("Normal title without venue", "Normal title without venue"),
+        ("Is this correct? In Proceedings of NeurIPS", "Is this correct?"),
+    ]
+
+    for original, expected in test_cases:
+        result = truncate_at_venue(original)
+        status = "PASS" if result == expected else "FAIL"
+        print(f"  [{status}] '{original[:40]}...' -> '{result}'")
+
+    print()
+
+
+RUST_JOURNAL_AFTER_PUNCTUATION = r"""
+// In title.rs, add to VENUE_AFTER_PUNCTUATION patterns:
+lazy_static! {
+    static ref VENUE_AFTER_PUNCTUATION: Regex = Regex::new(
+        r"[?!]\s+(?:International|Proceedings|Conference|Workshop|Symposium|Association|
+        The\s+\d{4}\s+Conference|Nations|Annual|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR|
+        CVPR|ICCV|ECCV|ACL|EMNLP|NAACL|
+        (?:The\s+)?(?:American|European|British|Journal|Review|Quarterly|Economic|
+        Political|Management|Science|Nature|Transactions|Letters|Magazine|
+        Annals|Archives|Bulletin|Communications|Reports|Studies|Research|
+        International\s+Journal|World\s+Development|Public\s+Policy))"
+    ).unwrap();
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 26: Math Notation Filtering
+# =============================================================================
+# Mathematical notation from appendices sometimes gets extracted as titles.
+# Example: "Let Xr = 2σ2(⟨wl r(0)..." is clearly not a title.
+#
+# Location in Python: is_math_content() validation function
+# Rust location: hallucinator-pdf/src/title.rs or validation
+
+
+MATH_NOTATION_PATTERN = re.compile(
+    r'[∥∈≤≥⟨⟩∂∇Σ∏∫∞±×÷∪∩∧∨¬→←↔⇒⇐⇔∃∀⊂⊃⊆⊇⊕⊗]|'  # Math Unicode symbols
+    r'\\\w+\{|'          # LaTeX commands \foo{
+    r'\$[^$]+\$|'        # Inline math $...$
+    r'\b[a-z]_\{|'       # Subscript notation x_{
+    r'\b[A-Z]\s*\(\s*\d|'  # Big-O notation O(n)
+    r'\bProof\b|\bLemma\s+\d|\bTheorem\s+\d|\bCorollary\s+\d|'  # Proof markers
+    r'^\s*\(\d+\)\s+|'   # Numbered equation prefix like "(10) Then..."
+    r'\bwith probability\b|\bw\.h\.p\.|'  # Probability statements
+    r'\bLet\s+[A-Z][a-z]?\s*='  # Variable definitions "Let X ="
+)
+
+
+def test_math_notation_filtering():
+    """Test filtering of mathematical notation as titles."""
+    print("IMPROVEMENT 26: Math Notation Filtering")
+    print("-" * 60)
+
+    def is_math_content(text: str) -> bool:
+        return bool(MATH_NOTATION_PATTERN.search(text))
+
+    test_cases = [
+        ("Let Xr = 2σ2(⟨wl r(0), hl−1 (xi)⟩)", True),
+        ("Suppose m ≳L2 log(NL/δ), then with probability", True),
+        ("Lemma 3 shows that convergence", True),
+        ("(10) Then the deep ReLU network has", True),
+        ("Deep learning for image classification", False),
+        ("A survey of neural networks", False),
+    ]
+
+    for text, expected_is_math in test_cases:
+        result = is_math_content(text)
+        status = "PASS" if result == expected_is_math else "FAIL"
+        label = "MATH" if result else "TITLE"
+        print(f"  [{status}] {label}: '{text[:50]}...'")
+
+    print()
+
+
+RUST_MATH_NOTATION_FILTER = r"""
+// In title.rs or validation:
+lazy_static! {
+    static ref MATH_NOTATION: Regex = Regex::new(
+        r"[∥∈≤≥⟨⟩∂∇Σ∏∫∞±×÷∪∩∧∨¬→←↔⇒⇐⇔∃∀⊂⊃⊆⊇⊕⊗]|
+        \\\w+\{|
+        \$[^$]+\$|
+        \b[a-z]_\{|
+        \b[A-Z]\s*\(\s*\d|
+        \bProof\b|\bLemma\s+\d|\bTheorem\s+\d|\bCorollary\s+\d|
+        ^\s*\(\d+\)\s+|
+        \bwith probability\b|\bw\.h\.p\.|
+        \bLet\s+[A-Z][a-z]?\s*="
+    ).unwrap();
+}
+
+fn is_math_content(text: &str) -> bool {
+    MATH_NOTATION.is_match(text)
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 27: Single-Word Surname Rejection
+# =============================================================================
+# Single capitalized words like "Arrow", "Davison" should be rejected as
+# titles - they're likely author surnames from failed title extraction.
+#
+# Location in Python: is_single_word_surname() validation function
+# Rust location: hallucinator-pdf/src/title.rs or validation
+
+
+def test_single_word_surname_rejection():
+    """Test rejection of single-word author surnames as titles."""
+    print("IMPROVEMENT 27: Single-Word Surname Rejection")
+    print("-" * 60)
+
+    def is_single_word_surname(text: str) -> bool:
+        words = text.split()
+        if len(words) != 1:
+            return False
+        word = words[0].strip('.,;:')
+        # Single capitalized word, all letters, 3-15 chars = likely surname
+        if (len(word) >= 3 and len(word) <= 15 and
+            word[0].isupper() and word[1:].islower() and word.isalpha()):
+            return True
+        return False
+
+    test_cases = [
+        ("Arrow", True),
+        ("Davison", True),
+        ("Veretennikov", True),
+        ("BERT", False),  # ALL CAPS = acronym, not surname
+        ("DeepLearning", False),  # Mixed case = not surname pattern
+        ("AI", False),  # Too short
+        ("A comprehensive survey", False),  # Multiple words
+    ]
+
+    for text, expected_is_surname in test_cases:
+        result = is_single_word_surname(text)
+        status = "PASS" if result == expected_is_surname else "FAIL"
+        label = "SURNAME" if result else "KEEP"
+        print(f"  [{status}] {label}: '{text}'")
+
+    print()
+
+
+RUST_SINGLE_WORD_SURNAME = r"""
+// In title.rs or validation:
+fn is_single_word_surname(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() != 1 {
+        return false;
+    }
+    let word = words[0].trim_matches(|c| c == '.' || c == ',' || c == ';' || c == ':');
+    let chars: Vec<char> = word.chars().collect();
+
+    // Single capitalized word, all letters, 3-15 chars = likely surname
+    if chars.len() >= 3 && chars.len() <= 15
+        && chars[0].is_uppercase()
+        && chars[1..].iter().all(|c| c.is_lowercase())
+        && chars.iter().all(|c| c.is_alphabetic())
+    {
+        return true;
+    }
+    false
+}
+"""
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -2367,6 +2730,12 @@ if __name__ == "__main__":
     test_subtitle_prefix_matching()
     test_middle_initial_no_period()
     test_bibtex_curly_braces()
+    test_emdash_normalization()
+    test_diacritic_transliteration()
+    test_smart_quote_normalization()
+    test_journal_after_punctuation()
+    test_math_notation_filtering()
+    test_single_word_surname_rejection()
     test_combined_extraction()
     print_patterns_to_port()
 

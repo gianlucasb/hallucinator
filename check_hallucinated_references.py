@@ -317,7 +317,12 @@ NON_REFERENCE_PATTERNS = [
 VENUE_AFTER_PUNCTUATION_PATTERN = re.compile(
     r'[?!]\s+(?:International|Proceedings|Conference|Workshop|Symposium|Association|'
     r'The\s+\d{4}\s+Conference|Nations|Annual|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR|'
-    r'CVPR|ICCV|ECCV|ACL|EMNLP|NAACL)'
+    r'CVPR|ICCV|ECCV|ACL|EMNLP|NAACL|'
+    # Journal name patterns (e.g., "? The American Economic Review")
+    r'(?:The\s+)?(?:American|European|British|Journal|Review|Quarterly|Economic|'
+    r'Political|Management|Science|Nature|Transactions|Letters|Magazine|'
+    r'Annals|Archives|Bulletin|Communications|Reports|Studies|Research|'
+    r'International\s+Journal|World\s+Development|Public\s+Policy))'
 )
 
 
@@ -352,6 +357,46 @@ def is_non_reference_content(text):
     for pattern in NON_REFERENCE_PATTERNS:
         if pattern.match(text):
             return True
+    return False
+
+
+# Pattern to detect mathematical notation that shouldn't be extracted as titles
+MATH_NOTATION_PATTERN = re.compile(
+    r'[∥∈≤≥⟨⟩∂∇Σ∏∫∞±×÷∪∩∧∨¬→←↔⇒⇐⇔∃∀⊂⊃⊆⊇⊕⊗]|'  # Math Unicode symbols
+    r'\\\w+\{|'          # LaTeX commands \foo{
+    r'\$[^$]+\$|'        # Inline math $...$
+    r'\b[a-z]_\{|'       # Subscript notation x_{
+    r'\b[A-Z]\s*\(\s*\d|'  # Big-O notation O(n)
+    r'\bProof\b|\bLemma\s+\d|\bTheorem\s+\d|\bCorollary\s+\d|'  # Proof markers
+    r'^\s*\(\d+\)\s+|'   # Numbered equation prefix like "(10) Then..."
+    r'\bwith probability\b|\bw\.h\.p\.|'  # Probability statements
+    r'\bLet\s+[A-Z][a-z]?\s*='  # Variable definitions "Let X ="
+)
+
+
+def is_math_content(text):
+    """Check if text appears to be mathematical content rather than a title.
+
+    Returns True if the text contains LaTeX/math notation patterns.
+    """
+    return bool(MATH_NOTATION_PATTERN.search(text))
+
+
+def is_single_word_surname(text):
+    """Check if text is a single word that looks like an author surname.
+
+    Returns True if the text is a single capitalized word that likely
+    represents an author name rather than a title.
+    """
+    words = text.split()
+    if len(words) != 1:
+        return False
+    word = words[0].strip('.,;:')
+    # Single capitalized word, all letters, 3-15 chars = likely surname
+    # Excludes ALL CAPS (acronyms) and mixed case (product names)
+    if (len(word) >= 3 and len(word) <= 15 and
+        word[0].isupper() and word[1:].islower() and word.isalpha()):
+        return True
     return False
 
 
@@ -1098,7 +1143,11 @@ def find_references_section(text):
             # End markers with appropriate flags
             # Case-insensitive for keywords, case-sensitive for appendix letter pattern
             end_markers_icase = [
-                r'\n\s*(?:Appendix|Acknowledge?ments?|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|Paper\s+Checklist|Checklist|Contents)\b',
+                r'\n\s*(?:Appendix|Appendices|Acknowledge?ments?|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|Paper\s+Checklist|Checklist|Contents)\b',
+                r'\n\s*(?:Technical\s+)?(?:Appendix|Appendices)\b',
+                r'\n\s*Supplementary\s+Material\b',
+                r'\n\s*(?:Proof|Proofs)\s+of\s+',  # "Proof of Theorem 1"
+                r'\n\s*(?:A|B|C|D|E)\.\d+\s+',  # Numbered appendix sections like "A.1 Proof"
                 r'(?:\.\s*){5,}',  # TOC dot leaders (5+ dots with optional spaces)
             ]
             # Case-sensitive: single letter + capitalized word (A Proofs, B Methods)
@@ -2350,6 +2399,16 @@ def extract_references_with_titles_and_authors(pdf_path, return_stats=False):
             stats['skipped_short_title'] += 1  # Count as extraction failure
             continue
 
+        # Skip if extracted "title" contains mathematical notation (from appendices)
+        if is_math_content(title):
+            stats['skipped_short_title'] += 1  # Count as extraction failure
+            continue
+
+        # Skip if extracted "title" is a single word that looks like an author surname
+        if is_single_word_surname(title):
+            stats['skipped_short_title'] += 1  # Count as extraction failure
+            continue
+
         authors = extract_authors_from_reference(ref_text)
 
         # Handle em-dash meaning "same authors as previous"
@@ -2387,6 +2446,20 @@ def get_query_words(title, n=6):
     # Strip BibTeX-style curly braces used for capitalization preservation
     # e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
     title = re.sub(r'[{}]', '', title)
+
+    # Normalize em-dashes and en-dashes to regular hyphens
+    # e.g., "choices—and" -> "choices-and", "2019–2020" -> "2019-2020"
+    title = title.replace('\u2014', '-').replace('\u2013', '-')
+
+    # Normalize smart/curly quotes to ASCII
+    # e.g., "Won't" -> "Won't", "「title」" -> keep as-is (CJK)
+    title = title.replace('\u2018', "'").replace('\u2019', "'")  # ' '
+    title = title.replace('\u201c', '"').replace('\u201d', '"')  # " "
+
+    # Transliterate diacritics to ASCII for better DB matching
+    # e.g., "Nyström" -> "Nystrom", "café" -> "cafe"
+    title = unicodedata.normalize('NFKD', title)
+    title = title.encode('ascii', 'ignore').decode('ascii')
 
     # Keep punctuation attached to words: handles contractions (What's), hyphens (Machine-Learning),
     # and trailing ?/! which can be significant for searches
