@@ -992,6 +992,7 @@ impl App {
                 Action::Resize(_w, h) => {
                     self.visible_rows = (h as usize).saturating_sub(11);
                 }
+                Action::None => {}
                 _ => {
                     self.dismiss_banner();
                 }
