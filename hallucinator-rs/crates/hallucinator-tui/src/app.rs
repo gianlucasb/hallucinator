@@ -225,6 +225,7 @@ pub struct App {
     pub tick: usize,
     pub theme: Theme,
     pub should_quit: bool,
+    pub confirm_quit: bool,
     pub batch_complete: bool,
     pub show_help: bool,
     pub detail_scroll: u16,
@@ -313,6 +314,7 @@ impl App {
             tick: 0,
             theme,
             should_quit: false,
+            confirm_quit: false,
             batch_complete: false,
             show_help: false,
             detail_scroll: 0,
@@ -779,6 +781,27 @@ impl App {
 
     /// Process a user action and update state. Returns true if the app should quit.
     pub fn update(&mut self, action: Action) -> bool {
+        // Quit confirmation modal — q confirms, Esc cancels
+        if self.confirm_quit {
+            match action {
+                Action::Quit => {
+                    self.should_quit = true;
+                    return true;
+                }
+                Action::NavigateBack => {
+                    self.confirm_quit = false;
+                }
+                Action::Tick => {
+                    self.tick = self.tick.wrapping_add(1);
+                }
+                Action::Resize(_w, h) => {
+                    self.visible_rows = (h as usize).saturating_sub(11);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         // Export modal intercepts
         if self.export_state.active {
             // If editing path, handle text input
@@ -818,8 +841,7 @@ impl App {
             }
             match action {
                 Action::Quit => {
-                    self.should_quit = true;
-                    return true;
+                    self.confirm_quit = true;
                 }
                 Action::NavigateBack => {
                     self.export_state.active = false;
@@ -949,8 +971,7 @@ impl App {
         if self.show_help {
             match action {
                 Action::Quit => {
-                    self.should_quit = true;
-                    return true;
+                    self.confirm_quit = true;
                 }
                 Action::ToggleHelp | Action::NavigateBack => {
                     self.show_help = false;
@@ -1038,8 +1059,7 @@ impl App {
         if self.screen == Screen::FilePicker {
             match action {
                 Action::Quit => {
-                    self.should_quit = true;
-                    return true;
+                    self.confirm_quit = true;
                 }
                 Action::NavigateBack => {
                     match &self.file_picker_context {
@@ -1167,8 +1187,7 @@ impl App {
 
         match action {
             Action::Quit => {
-                self.should_quit = true;
-                return true;
+                self.confirm_quit = true;
             }
             Action::ToggleHelp => {
                 self.show_help = true;
@@ -2285,6 +2304,9 @@ impl App {
         // File picker renders without activity panel
         if self.screen == Screen::FilePicker {
             crate::view::file_picker::render_in(f, self, area);
+            if self.confirm_quit {
+                crate::view::quit_confirm::render(f, &self.theme);
+            }
             return;
         }
 
@@ -2341,6 +2363,10 @@ impl App {
 
         if self.show_help {
             crate::view::help::render(f, &self.theme);
+        }
+
+        if self.confirm_quit {
+            crate::view::quit_confirm::render(f, &self.theme);
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod file_picker;
 pub mod help;
 pub mod paper;
 pub mod queue;
+pub mod quit_confirm;
 
 /// Spinner frames for animated progress indication.
 const SPINNER_FRAMES: &[char] = &[

@@ -48,7 +48,7 @@ pub fn render_in(f: &mut Frame, app: &mut App, area: Rect, footer_area: Rect) {
 
 fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let mut spans = vec![
-        Span::styled(" HALLUCINATOR ", theme.header_style()),
+        Span::styled(" Queue ", theme.header_style()),
         Span::styled(
             " Queue",
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),

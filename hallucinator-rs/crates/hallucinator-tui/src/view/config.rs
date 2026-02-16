@@ -23,7 +23,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect, footer_area: Rect) {
 
     // Header with section tabs
     let mut header_spans = vec![
-        Span::styled(" HALLUCINATOR ", theme.header_style()),
+        Span::styled(" Config ", theme.header_style()),
         Span::styled(
             " > Config  ",
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),

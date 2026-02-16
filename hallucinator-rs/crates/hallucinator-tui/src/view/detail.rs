@@ -35,7 +35,7 @@ pub fn render_in(
     // --- Breadcrumb ---
     let title_short = truncate(&rs.title, 40);
     let breadcrumb = Line::from(vec![
-        Span::styled(" HALLUCINATOR ", theme.header_style()),
+        Span::styled(" Reference ", theme.header_style()),
         Span::styled(" > ", Style::default().fg(theme.dim)),
         Span::styled(
             &paper.filename,

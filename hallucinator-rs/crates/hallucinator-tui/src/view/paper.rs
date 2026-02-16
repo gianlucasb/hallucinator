@@ -57,7 +57,7 @@ pub fn render_in(f: &mut Frame, app: &mut App, paper_index: usize, area: Rect, f
 
 fn render_breadcrumb(f: &mut Frame, area: Rect, filename: &str, theme: &Theme) {
     let breadcrumb = Line::from(vec![
-        Span::styled(" HALLUCINATOR ", theme.header_style()),
+        Span::styled(" Paper ", theme.header_style()),
         Span::styled(" > ", Style::default().fg(theme.dim)),
         Span::styled(
             filename,
@@ -82,7 +82,11 @@ fn render_progress(
         0.0
     };
 
-    let label = format!("{} {} / {} refs", spinner_char(tick), done, total);
+    let label = if done >= total && total > 0 {
+        format!("\u{2713} {} / {} refs", done, total)
+    } else {
+        format!("{} {} / {} refs", spinner_char(tick), done, total)
+    };
 
     let gauge = Gauge::default()
         .block(

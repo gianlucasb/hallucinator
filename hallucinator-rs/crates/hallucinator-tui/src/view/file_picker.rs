@@ -40,7 +40,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
             " > Select PDFs / .bbl / .bib / Archives / Results (.json)".to_string()
         };
     let header = Line::from(vec![
-        Span::styled(" HALLUCINATOR ", theme.header_style()),
+        Span::styled(" Files ", theme.header_style()),
         Span::styled(
             header_text,
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
