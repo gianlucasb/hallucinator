@@ -1896,6 +1896,9 @@ impl App {
             } => {
                 if let Some(paper) = self.papers.get_mut(paper_index) {
                     paper.total_refs = ref_count;
+                    let skipped = references.iter().filter(|r| r.skip_reason.is_some()).count();
+                    paper.stats.total = references.len();
+                    paper.stats.skipped = skipped;
                     // Allocate result slots for ALL refs (including skipped) so
                     // that remapped indices from the backend fit.
                     paper.init_results(references.len());
