@@ -18,6 +18,10 @@ impl DatabaseBackend for DblpOffline {
         "DBLP"
     }
 
+    fn is_offline(&self) -> bool {
+        true
+    }
+
     fn query<'a>(
         &'a self,
         title: &'a str,

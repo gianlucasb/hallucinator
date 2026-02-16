@@ -23,6 +23,11 @@ pub trait DatabaseBackend: Send + Sync {
     /// The canonical name of this database (e.g., "CrossRef", "arXiv").
     fn name(&self) -> &str;
 
+    /// Whether this backend uses a local/offline data source (no network requests).
+    fn is_offline(&self) -> bool {
+        false
+    }
+
     /// Query the database for a paper matching the given title.
     fn query<'a>(
         &'a self,

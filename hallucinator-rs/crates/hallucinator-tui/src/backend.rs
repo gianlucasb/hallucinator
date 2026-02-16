@@ -238,6 +238,9 @@ pub async fn retry_references(
     tx: mpsc::UnboundedSender<BackendEvent>,
 ) {
     let client = reqwest::Client::new();
+    let rate_limiter = Arc::new(hallucinator_core::rate_limit::RateLimiter::new(
+        config.rate_limits.clone(),
+    ));
     let config = Arc::new(config);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_refs));
     let total = refs_to_retry.len();
@@ -249,6 +252,7 @@ pub async fn retry_references(
         let client = client.clone();
         let config = Arc::clone(&config);
         let tx = tx.clone();
+        let rate_limiter = Arc::clone(&rate_limiter);
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
@@ -266,8 +270,12 @@ pub async fn retry_references(
             let result = if failed_dbs.is_empty() {
                 // Full re-check against all databases
                 hallucinator_core::checker::check_single_reference(
-                    &reference, &config, &client, true, // longer timeout
+                    &reference,
+                    &config,
+                    &client,
+                    true, // longer timeout
                     None,
+                    &rate_limiter,
                 )
                 .await
             } else {
@@ -278,6 +286,7 @@ pub async fn retry_references(
                     &client,
                     &failed_dbs,
                     None,
+                    &rate_limiter,
                 )
                 .await
             };

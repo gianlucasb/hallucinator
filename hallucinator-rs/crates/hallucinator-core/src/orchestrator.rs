@@ -1,5 +1,6 @@
 use crate::authors::validate_authors;
 use crate::db::DatabaseBackend;
+use crate::rate_limit::{query_with_backoff, RateLimiter};
 use crate::{Config, DbResult, DbStatus, Status};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -16,7 +17,11 @@ pub struct DbSearchResult {
     pub db_results: Vec<DbResult>,
 }
 
-/// Query all databases concurrently for a single reference, with early exit on match.
+/// Query all databases for a single reference, with early exit on match.
+///
+/// Offline databases are queried first. If any returns a verified match,
+/// online databases are skipped entirely. Otherwise, online databases are
+/// queried concurrently with rate limiting and exponential backoff on 429s.
 ///
 /// If `on_db_complete` is provided, it is called for each database as it finishes.
 pub async fn query_all_databases(
@@ -27,6 +32,7 @@ pub async fn query_all_databases(
     longer_timeout: bool,
     only_dbs: Option<&[String]>,
     on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
+    rate_limiter: &Arc<RateLimiter>,
 ) -> DbSearchResult {
     let check_openalex_authors = config.check_openalex_authors;
     let timeout = if longer_timeout {
@@ -52,31 +58,126 @@ pub async fn query_all_databases(
         };
     }
 
+    // Partition into offline and online databases
+    let (offline_dbs, online_dbs): (Vec<_>, Vec<_>) =
+        databases.into_iter().partition(|db| db.is_offline());
+
     // Collect all DB names upfront for tracking skipped on early exit
-    let all_db_names: HashSet<String> = databases.iter().map(|db| db.name().to_string()).collect();
-
-    // Use tokio::select! pattern with JoinSet for early exit
-    let mut join_set = tokio::task::JoinSet::new();
-
-    for db in &databases {
-        let db = Arc::clone(db);
-        let title = title.to_string();
-        let client = client.clone();
-        let ref_authors = ref_authors.to_vec();
-
-        join_set.spawn(async move {
-            let name = db.name().to_string();
-            let start = Instant::now();
-            let result = db.query(&title, &client, timeout).await;
-            let elapsed = start.elapsed();
-            (name, result, ref_authors, elapsed)
-        });
-    }
+    let all_db_names: HashSet<String> = offline_dbs
+        .iter()
+        .chain(online_dbs.iter())
+        .map(|db| db.name().to_string())
+        .collect();
 
     let mut first_mismatch: Option<DbSearchResult> = None;
     let mut failed_dbs = Vec::new();
     let mut db_results: Vec<DbResult> = Vec::new();
     let mut completed_db_names: HashSet<String> = HashSet::new();
+
+    // Phase 1: Query offline databases (no rate limiting needed)
+    if !offline_dbs.is_empty() {
+        let phase_result = run_db_phase(
+            &offline_dbs,
+            title,
+            ref_authors,
+            client,
+            timeout,
+            check_openalex_authors,
+            on_db_complete,
+            &all_db_names,
+            &mut completed_db_names,
+            &mut first_mismatch,
+            &mut failed_dbs,
+            &mut db_results,
+            None, // no rate limiter for offline
+        )
+        .await;
+
+        if let Some(result) = phase_result {
+            return result;
+        }
+    }
+
+    // Phase 2: Query online databases with rate limiting
+    if !online_dbs.is_empty() {
+        let phase_result = run_db_phase(
+            &online_dbs,
+            title,
+            ref_authors,
+            client,
+            timeout,
+            check_openalex_authors,
+            on_db_complete,
+            &all_db_names,
+            &mut completed_db_names,
+            &mut first_mismatch,
+            &mut failed_dbs,
+            &mut db_results,
+            Some(rate_limiter),
+        )
+        .await;
+
+        if let Some(result) = phase_result {
+            return result;
+        }
+    }
+
+    if let Some(mut mismatch) = first_mismatch {
+        mismatch.db_results = db_results;
+        return mismatch;
+    }
+
+    DbSearchResult {
+        status: Status::NotFound,
+        source: None,
+        found_authors: vec![],
+        paper_url: None,
+        failed_dbs,
+        db_results,
+    }
+}
+
+/// Run a phase of database queries (offline or online), returning early if a match is found.
+///
+/// Returns `Some(DbSearchResult)` if a verified match was found (early exit),
+/// or `None` to continue to the next phase.
+#[allow(clippy::too_many_arguments)]
+async fn run_db_phase(
+    databases: &[Arc<dyn DatabaseBackend>],
+    title: &str,
+    ref_authors: &[String],
+    client: &reqwest::Client,
+    timeout: Duration,
+    check_openalex_authors: bool,
+    on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
+    all_db_names: &HashSet<String>,
+    completed_db_names: &mut HashSet<String>,
+    first_mismatch: &mut Option<DbSearchResult>,
+    failed_dbs: &mut Vec<String>,
+    db_results: &mut Vec<DbResult>,
+    rate_limiter: Option<&Arc<RateLimiter>>,
+) -> Option<DbSearchResult> {
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for db in databases {
+        let db = Arc::clone(db);
+        let title = title.to_string();
+        let client = client.clone();
+        let ref_authors = ref_authors.to_vec();
+        let rate_limiter = rate_limiter.cloned();
+
+        join_set.spawn(async move {
+            let name = db.name().to_string();
+            let start = Instant::now();
+            let result = if let Some(rl) = &rate_limiter {
+                query_with_backoff(&db, &title, &client, timeout, rl).await
+            } else {
+                db.query(&title, &client, timeout).await
+            };
+            let elapsed = start.elapsed();
+            (name, result, ref_authors, elapsed)
+        });
+    }
 
     while let Some(result) = join_set.join_next().await {
         let (name, query_result, ref_authors, elapsed) = match result {
@@ -106,7 +207,7 @@ pub async fn query_all_databases(
                     join_set.abort_all();
 
                     // Mark unfinished DBs as Skipped
-                    for db_name in &all_db_names {
+                    for db_name in all_db_names {
                         if !completed_db_names.contains(db_name) {
                             let skipped = DbResult {
                                 db_name: db_name.clone(),
@@ -122,14 +223,14 @@ pub async fn query_all_databases(
                         }
                     }
 
-                    return DbSearchResult {
+                    return Some(DbSearchResult {
                         status: Status::Verified,
                         source: Some(name),
                         found_authors,
                         paper_url,
                         failed_dbs: vec![],
-                        db_results,
-                    };
+                        db_results: db_results.clone(),
+                    });
                 } else {
                     let db_result = DbResult {
                         db_name: name.clone(),
@@ -144,7 +245,7 @@ pub async fn query_all_databases(
                     db_results.push(db_result);
 
                     if first_mismatch.is_none() && (name != "OpenAlex" || check_openalex_authors) {
-                        first_mismatch = Some(DbSearchResult {
+                        *first_mismatch = Some(DbSearchResult {
                             status: Status::AuthorMismatch,
                             source: Some(name),
                             found_authors,
@@ -186,19 +287,7 @@ pub async fn query_all_databases(
         }
     }
 
-    if let Some(mut mismatch) = first_mismatch {
-        mismatch.db_results = db_results;
-        return mismatch;
-    }
-
-    DbSearchResult {
-        status: Status::NotFound,
-        source: None,
-        found_authors: vec![],
-        paper_url: None,
-        failed_dbs,
-        db_results,
-    }
+    None
 }
 
 /// Build the list of database backends based on config.

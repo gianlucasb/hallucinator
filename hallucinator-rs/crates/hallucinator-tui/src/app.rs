@@ -579,6 +579,7 @@ impl App {
             } else {
                 Some(self.config_state.crossref_mailto.clone())
             },
+            rate_limits: hallucinator_core::rate_limit::default_rate_limits(),
         }
     }
 

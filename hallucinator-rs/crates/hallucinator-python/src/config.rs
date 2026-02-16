@@ -69,6 +69,7 @@ impl PyValidatorConfig {
             disabled_dbs: self.disabled_dbs.clone(),
             check_openalex_authors: self.check_openalex_authors,
             crossref_mailto: self.crossref_mailto.clone(),
+            rate_limits: hallucinator_core::rate_limit::default_rate_limits(),
         })
     }
 }

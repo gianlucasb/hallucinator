@@ -17,6 +17,10 @@ impl DatabaseBackend for AclOffline {
         "ACL Anthology"
     }
 
+    fn is_offline(&self) -> bool {
+        true
+    }
+
     fn query<'a>(
         &'a self,
         title: &'a str,

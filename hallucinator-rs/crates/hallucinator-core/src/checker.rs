@@ -1,5 +1,6 @@
 use crate::doi::{DoiMatchResult, check_doi_match, validate_doi};
 use crate::orchestrator::query_all_databases;
+use crate::rate_limit::RateLimiter;
 use crate::retraction::{check_retraction, check_retraction_by_title};
 use crate::{
     ArxivInfo, Config, DbResult, DbStatus, DoiInfo, ProgressEvent, Reference, RetractionInfo,
@@ -24,6 +25,7 @@ pub async fn check_references(
     let total = refs.len();
     let client = reqwest::Client::new();
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_refs));
+    let rate_limiter = Arc::new(RateLimiter::new(config.rate_limits.clone()));
     let config = Arc::new(config);
     let progress = Arc::new(progress);
 
@@ -44,6 +46,7 @@ pub async fn check_references(
         let config = Arc::clone(&config);
         let progress = Arc::clone(&progress);
         let cancel = cancel.clone();
+        let rate_limiter = Arc::clone(&rate_limiter);
 
         let handle = tokio::spawn(async move {
             let _permit = permit; // Hold until done
@@ -72,9 +75,15 @@ pub async fn check_references(
                 });
             };
 
-            let result =
-                check_single_reference(&reference, &config, &client, false, Some(&on_db_complete))
-                    .await;
+            let result = check_single_reference(
+                &reference,
+                &config,
+                &client,
+                false,
+                Some(&on_db_complete),
+                &rate_limiter,
+            )
+            .await;
 
             // Emit warning if some databases failed/timed out
             if !result.failed_dbs.is_empty() {
@@ -142,6 +151,7 @@ pub async fn check_references(
             let client = client.clone();
             let progress = Arc::clone(&progress);
             let cancel = cancel.clone();
+            let rate_limiter = Arc::clone(&rate_limiter);
 
             let handle = tokio::spawn(async move {
                 let _permit = permit;
@@ -168,6 +178,7 @@ pub async fn check_references(
                     &client,
                     &failed_dbs,
                     Some(&on_db_complete),
+                    &rate_limiter,
                 )
                 .await;
 
@@ -205,6 +216,7 @@ pub async fn check_single_reference(
     client: &reqwest::Client,
     longer_timeout: bool,
     on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
+    rate_limiter: &Arc<RateLimiter>,
 ) -> ValidationResult {
     let title = reference.title.as_deref().unwrap_or("");
     let timeout = Duration::from_secs(config.db_timeout_secs);
@@ -300,6 +312,7 @@ pub async fn check_single_reference(
         longer_timeout,
         None,
         on_db_complete,
+        rate_limiter,
     )
     .await;
 
@@ -348,6 +361,7 @@ pub async fn check_single_reference_retry(
     client: &reqwest::Client,
     failed_dbs: &[String],
     on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
+    rate_limiter: &Arc<RateLimiter>,
 ) -> ValidationResult {
     let title = reference.title.as_deref().unwrap_or("");
 
@@ -359,6 +373,7 @@ pub async fn check_single_reference_retry(
         true, // longer timeout for retries
         Some(failed_dbs),
         on_db_complete,
+        rate_limiter,
     )
     .await;
 

@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use std::sync::Arc;
 
+use hallucinator_core::rate_limit::RateLimiter;
 use hallucinator_core::{Config, Status};
 
 use crate::models::{RetryRequest, RetryResponse};
@@ -38,6 +39,7 @@ pub async fn retry(
         ..Config::default()
     };
 
+    let rate_limiter = Arc::new(RateLimiter::new(config.rate_limits.clone()));
     let client = reqwest::Client::new();
 
     let result = hallucinator_core::query_all_databases(
@@ -48,6 +50,7 @@ pub async fn retry(
         true, // longer timeout for retries
         Some(&req.failed_dbs),
         None,
+        &rate_limiter,
     )
     .await;
 

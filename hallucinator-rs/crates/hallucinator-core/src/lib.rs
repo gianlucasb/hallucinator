@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,6 +11,7 @@ pub mod db;
 pub mod doi;
 pub mod matching;
 pub mod orchestrator;
+pub mod rate_limit;
 pub mod retraction;
 
 // Re-export for convenience
@@ -158,6 +160,8 @@ pub struct Config {
     pub disabled_dbs: Vec<String>,
     pub check_openalex_authors: bool,
     pub crossref_mailto: Option<String>,
+    /// Per-database minimum intervals between requests (rate limiting).
+    pub rate_limits: HashMap<String, Duration>,
 }
 
 impl std::fmt::Debug for Config {
@@ -184,6 +188,7 @@ impl std::fmt::Debug for Config {
                 "crossref_mailto",
                 &self.crossref_mailto.as_ref().map(|_| "***"),
             )
+            .field("rate_limits", &self.rate_limits)
             .finish()
     }
 }
@@ -203,6 +208,7 @@ impl Default for Config {
             disabled_dbs: vec![],
             check_openalex_authors: false,
             crossref_mailto: None,
+            rate_limits: rate_limit::default_rate_limits(),
         }
     }
 }

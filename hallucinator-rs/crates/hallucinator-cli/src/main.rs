@@ -289,6 +289,7 @@ async fn check(
         disabled_dbs: disable_dbs,
         check_openalex_authors,
         crossref_mailto: None,
+        rate_limits: hallucinator_core::rate_limit::default_rate_limits(),
     };
 
     // Set up progress callback
