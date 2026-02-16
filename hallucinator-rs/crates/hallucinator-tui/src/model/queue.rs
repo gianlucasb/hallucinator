@@ -120,13 +120,12 @@ impl PaperState {
         self.stats.not_found + self.stats.author_mismatch + self.stats.retracted
     }
 
-    /// Percentage of checked references that are problematic (0.0 - 100.0).
+    /// Percentage of total references that are problematic (0.0 - 100.0).
     pub fn problematic_pct(&self) -> f64 {
-        let checked = self.total_refs.saturating_sub(self.stats.skipped);
-        if checked == 0 {
+        if self.total_refs == 0 {
             0.0
         } else {
-            (self.problems() as f64 / checked as f64) * 100.0
+            (self.problems() as f64 / self.total_refs as f64) * 100.0
         }
     }
 }

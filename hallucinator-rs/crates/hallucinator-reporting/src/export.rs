@@ -113,12 +113,11 @@ fn build_sorted_refs<'a>(paper: &ReportPaper<'a>, paper_refs: &[ReportRef]) -> V
 }
 
 fn problematic_pct(stats: &CheckStats) -> f64 {
-    let checked = stats.total.saturating_sub(stats.skipped);
-    if checked == 0 {
+    if stats.total == 0 {
         0.0
     } else {
         let problems = stats.not_found + stats.author_mismatch + stats.retracted;
-        (problems as f64 / checked as f64) * 100.0
+        (problems as f64 / stats.total as f64) * 100.0
     }
 }
 
