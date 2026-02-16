@@ -332,15 +332,34 @@ def get_db_metadata(db_path):
 
 
 def get_db_age_days(db_path):
-    """Get age of database in days, or None if can't determine."""
+    """Get age of database in days, or None if can't determine.
+
+    Supports both:
+    - Rust schema: 'last_updated' as Unix timestamp string
+    - Python schema: 'build_date' as ISO format string
+    """
     metadata = get_db_metadata(db_path)
-    if not metadata or 'build_date' not in metadata:
+    if not metadata:
         return None
 
     try:
-        build_date = datetime.fromisoformat(metadata['build_date'])
+        # Try Rust format first (Unix timestamp as string)
+        if 'last_updated' in metadata:
+            last_updated = datetime.fromtimestamp(int(metadata['last_updated']), tz=timezone.utc)
+        # Fall back to Python format (ISO string)
+        elif 'build_date' in metadata:
+            build_date_str = metadata['build_date']
+            # Handle both timezone-aware and naive ISO strings
+            if build_date_str.endswith('Z'):
+                build_date_str = build_date_str[:-1] + '+00:00'
+            last_updated = datetime.fromisoformat(build_date_str)
+            if last_updated.tzinfo is None:
+                last_updated = last_updated.replace(tzinfo=timezone.utc)
+        else:
+            return None
+
         now = datetime.now(timezone.utc)
-        age = now - build_date
+        age = now - last_updated
         return age.days
     except Exception:
         return None
@@ -361,6 +380,10 @@ def check_staleness(db_path):
 def query_offline(title, db_path):
     """Query the offline DBLP database for a title.
 
+    Supports both:
+    - Rust schema v3: normalized authors in separate tables, 'key' column
+    - Python schema: denormalized authors as semicolon-separated string, 'uri' column
+
     Args:
         title: Title to search for
         db_path: Path to SQLite database
@@ -378,31 +401,121 @@ def query_offline(title, db_path):
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
+    # Detect schema version
+    cur.execute("SELECT value FROM metadata WHERE key = 'schema_version'")
+    row = cur.fetchone()
+    schema_version = int(row[0]) if row else 0
+
     # Use FTS to find candidates
     words = get_query_words(title, 6)
-    query = ' '.join(words)
+    if not words:
+        conn.close()
+        return None, [], None
+    # Normalize words for FTS5:
+    # 1. Split hyphenated words (e.g., "control-flow" -> ["control", "flow"])
+    # 2. Skip words that look like merged compounds (won't be in FTS index)
+    # 3. Quote each word to prevent FTS5 interpreting them as operators
+    normalized_words = []
+    for w in words:
+        if '-' in w:
+            # Split on hyphens and add individual parts (skip very long parts)
+            parts = [p for p in w.split('-') if 3 <= len(p) <= 12]
+            normalized_words.extend(parts)
+        elif len(w) > 12:
+            # Very long words are likely merged compounds that won't match
+            # (e.g., "Crossprivilege" from "Cross-Privilege")
+            continue
+        elif len(w) > 10 and any(c.isupper() for c in w[1:]):
+            # Skip camelCase merged compounds
+            continue
+        else:
+            normalized_words.append(w)
+    # Deduplicate while preserving order (order = position in title)
+    seen = set()
+    unique_words = []
+    for w in normalized_words:
+        w_lower = w.lower()
+        if w_lower not in seen:
+            seen.add(w_lower)
+            unique_words.append(w)
 
-    # FTS5 query - search for publications containing these words
-    cur.execute('''
-        SELECT p.title, p.authors, p.url
-        FROM publications_fts fts
-        JOIN publications p ON fts.rowid = p.id
-        WHERE publications_fts MATCH ?
-        LIMIT 20
-    ''', (query,))
+    # Score words by distinctiveness:
+    # - Capitalized words (proper nouns, acronyms) get priority
+    # - Longer words get priority
+    # - Earlier position in title gets some priority
+    def word_score(w, idx):
+        score = len(w)  # Base score is length
+        if w[0].isupper():
+            score += 10  # Boost capitalized words
+        if w.isupper() and len(w) >= 3:
+            score += 5  # Extra boost for acronyms
+        score -= idx * 0.5  # Slight penalty for later position
+        return score
 
-    results = cur.fetchall()
+    scored = [(word_score(w, i), w) for i, w in enumerate(unique_words)]
+    scored.sort(key=lambda x: -x[0])
+
+    # Skip all-caps words > 4 chars that might be merged acronyms (CFLAT from C-FLAT)
+    top_words = []
+    for _, w in scored:
+        if len(top_words) >= 4:
+            break
+        if w.isupper() and len(w) > 4:
+            # Skip potential merged acronyms
+            continue
+        top_words.append(w)
+
+    # Quote and escape
+    quoted_words = ['"' + w.replace('"', '""') + '"' for w in top_words]
+    query = ' '.join(quoted_words)
+
+    if schema_version >= 3:
+        # Rust schema v3: normalized authors, 'key' column
+        cur.execute('''
+            SELECT p.id, p.key, p.title
+            FROM publications p
+            WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?)
+            LIMIT 20
+        ''', (query,))
+        results = cur.fetchall()
+
+        # Find best fuzzy match
+        normalized_input = normalize_title(title)
+
+        for pub_id, key, found_title in results:
+            if fuzz.ratio(normalized_input, normalize_title(found_title)) >= 95:
+                # Fetch authors via JOIN from normalized tables
+                cur.execute('''
+                    SELECT a.name FROM authors a
+                    JOIN publication_authors pa ON a.id = pa.author_id
+                    WHERE pa.pub_id = ?
+                ''', (pub_id,))
+                authors = [row[0] for row in cur.fetchall()]
+                url = f"https://dblp.org/rec/{key}"
+                conn.close()
+                return found_title, authors, url
+    else:
+        # Legacy Python schema: denormalized authors, 'uri' column
+        cur.execute('''
+            SELECT p.title, p.authors, p.url
+            FROM publications_fts fts
+            JOIN publications p ON fts.rowid = p.id
+            WHERE publications_fts MATCH ?
+            LIMIT 20
+        ''', (query,))
+        results = cur.fetchall()
+
+        # Find best fuzzy match
+        normalized_input = normalize_title(title)
+
+        for found_title, authors_str, url in results:
+            if fuzz.ratio(normalized_input, normalize_title(found_title)) >= 95:
+                # Parse authors string back to list
+                authors = [a.strip() for a in authors_str.split(';') if a.strip()]
+                conn.close()
+                return found_title, authors, url
+
     conn.close()
-
-    # Find best fuzzy match
-    normalized_input = normalize_title(title)
-
-    for found_title, authors_str, url in results:
-        if fuzz.ratio(normalized_input, normalize_title(found_title)) >= 95:
-            # Parse authors string back to list
-            authors = [a.strip() for a in authors_str.split(';') if a.strip()]
-            return found_title, authors, url
-
     return None, [], None
 
 

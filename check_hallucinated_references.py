@@ -317,7 +317,12 @@ NON_REFERENCE_PATTERNS = [
 VENUE_AFTER_PUNCTUATION_PATTERN = re.compile(
     r'[?!]\s+(?:International|Proceedings|Conference|Workshop|Symposium|Association|'
     r'The\s+\d{4}\s+Conference|Nations|Annual|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR|'
-    r'CVPR|ICCV|ECCV|ACL|EMNLP|NAACL)'
+    r'CVPR|ICCV|ECCV|ACL|EMNLP|NAACL|'
+    # Journal name patterns (e.g., "? The American Economic Review")
+    r'(?:The\s+)?(?:American|European|British|Journal|Review|Quarterly|Economic|'
+    r'Political|Management|Science|Nature|Transactions|Letters|Magazine|'
+    r'Annals|Archives|Bulletin|Communications|Reports|Studies|Research|'
+    r'International\s+Journal|World\s+Development|Public\s+Policy))'
 )
 
 
@@ -352,6 +357,46 @@ def is_non_reference_content(text):
     for pattern in NON_REFERENCE_PATTERNS:
         if pattern.match(text):
             return True
+    return False
+
+
+# Pattern to detect mathematical notation that shouldn't be extracted as titles
+MATH_NOTATION_PATTERN = re.compile(
+    r'[∥∈≤≥⟨⟩∂∇Σ∏∫∞±×÷∪∩∧∨¬→←↔⇒⇐⇔∃∀⊂⊃⊆⊇⊕⊗]|'  # Math Unicode symbols
+    r'\\\w+\{|'          # LaTeX commands \foo{
+    r'\$[^$]+\$|'        # Inline math $...$
+    r'\b[a-z]_\{|'       # Subscript notation x_{
+    r'\b[A-Z]\s*\(\s*\d|'  # Big-O notation O(n)
+    r'\bProof\b|\bLemma\s+\d|\bTheorem\s+\d|\bCorollary\s+\d|'  # Proof markers
+    r'^\s*\(\d+\)\s+|'   # Numbered equation prefix like "(10) Then..."
+    r'\bwith probability\b|\bw\.h\.p\.|'  # Probability statements
+    r'\bLet\s+[A-Z][a-z]?\s*='  # Variable definitions "Let X ="
+)
+
+
+def is_math_content(text):
+    """Check if text appears to be mathematical content rather than a title.
+
+    Returns True if the text contains LaTeX/math notation patterns.
+    """
+    return bool(MATH_NOTATION_PATTERN.search(text))
+
+
+def is_single_word_surname(text):
+    """Check if text is a single word that looks like an author surname.
+
+    Returns True if the text is a single capitalized word that likely
+    represents an author name rather than a title.
+    """
+    words = text.split()
+    if len(words) != 1:
+        return False
+    word = words[0].strip('.,;:')
+    # Single capitalized word, all letters, 3-15 chars = likely surname
+    # Excludes ALL CAPS (acronyms) and mixed case (product names)
+    if (len(word) >= 3 and len(word) <= 15 and
+        word[0].isupper() and word[1:].islower() and word.isalpha()):
+        return True
     return False
 
 
@@ -1098,7 +1143,11 @@ def find_references_section(text):
             # End markers with appropriate flags
             # Case-insensitive for keywords, case-sensitive for appendix letter pattern
             end_markers_icase = [
-                r'\n\s*(?:Appendix|Acknowledge?ments?|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|Paper\s+Checklist|Checklist|Contents)\b',
+                r'\n\s*(?:Appendix|Appendices|Acknowledge?ments?|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|Paper\s+Checklist|Checklist|Contents)\b',
+                r'\n\s*(?:Technical\s+)?(?:Appendix|Appendices)\b',
+                r'\n\s*Supplementary\s+Material\b',
+                r'\n\s*(?:Proof|Proofs)\s+of\s+',  # "Proof of Theorem 1"
+                r'\n\s*(?:A|B|C|D|E)\.\d+\s+',  # Numbered appendix sections like "A.1 Proof"
                 r'(?:\.\s*){5,}',  # TOC dot leaders (5+ dots with optional spaces)
             ]
             # Case-sensitive: single letter + capitalized word (A Proofs, B Methods)
@@ -2350,6 +2399,16 @@ def extract_references_with_titles_and_authors(pdf_path, return_stats=False):
             stats['skipped_short_title'] += 1  # Count as extraction failure
             continue
 
+        # Skip if extracted "title" contains mathematical notation (from appendices)
+        if is_math_content(title):
+            stats['skipped_short_title'] += 1  # Count as extraction failure
+            continue
+
+        # Skip if extracted "title" is a single word that looks like an author surname
+        if is_single_word_surname(title):
+            stats['skipped_short_title'] += 1  # Count as extraction failure
+            continue
+
         authors = extract_authors_from_reference(ref_text)
 
         # Handle em-dash meaning "same authors as previous"
@@ -2387,6 +2446,20 @@ def get_query_words(title, n=6):
     # Strip BibTeX-style curly braces used for capitalization preservation
     # e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
     title = re.sub(r'[{}]', '', title)
+
+    # Normalize em-dashes and en-dashes to regular hyphens
+    # e.g., "choices—and" -> "choices-and", "2019–2020" -> "2019-2020"
+    title = title.replace('\u2014', '-').replace('\u2013', '-')
+
+    # Normalize smart/curly quotes to ASCII
+    # e.g., "Won't" -> "Won't", "「title」" -> keep as-is (CJK)
+    title = title.replace('\u2018', "'").replace('\u2019', "'")  # ' '
+    title = title.replace('\u201c', '"').replace('\u201d', '"')  # " "
+
+    # Transliterate diacritics to ASCII for better DB matching
+    # e.g., "Nyström" -> "Nystrom", "café" -> "cafe"
+    title = unicodedata.normalize('NFKD', title)
+    title = title.encode('ascii', 'ignore').decode('ascii')
 
     # Keep punctuation attached to words: handles contractions (What's), hyphens (Machine-Learning),
     # and trailing ?/! which can be significant for searches
@@ -2561,6 +2634,116 @@ def query_acl(title):
     except Exception as e:
         print(f"[Error] ACL Anthology search failed: {e}")
         raise  # Re-raise so failed_dbs gets tracked
+    return None, [], None
+
+def query_acl_offline(title, db_path):
+    """Query offline ACL Anthology database for paper information.
+
+    Uses Rust-built database with normalized author schema.
+
+    Args:
+        title: Paper title to search for
+        db_path: Path to SQLite database
+
+    Returns:
+        (found_title, authors_list, url) or (None, [], None)
+    """
+    import sqlite3
+
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"ACL database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    # Use FTS to find candidates
+    words = get_query_words(title, 6)
+    if not words:
+        conn.close()
+        return None, [], None
+    # Normalize words for FTS5:
+    # 1. Split hyphenated words (e.g., "control-flow" -> ["control", "flow"])
+    # 2. Skip words that look like merged compounds (won't be in FTS index)
+    # 3. Quote each word to prevent FTS5 interpreting them as operators
+    normalized_words = []
+    for w in words:
+        if '-' in w:
+            # Split on hyphens and add individual parts (skip very long parts)
+            parts = [p for p in w.split('-') if 3 <= len(p) <= 12]
+            normalized_words.extend(parts)
+        elif len(w) > 12:
+            # Very long words are likely merged compounds that won't match
+            continue
+        elif len(w) > 10 and any(c.isupper() for c in w[1:]):
+            # Skip camelCase merged compounds
+            continue
+        else:
+            normalized_words.append(w)
+    # Deduplicate while preserving order (order = position in title)
+    seen = set()
+    unique_words = []
+    for w in normalized_words:
+        w_lower = w.lower()
+        if w_lower not in seen:
+            seen.add(w_lower)
+            unique_words.append(w)
+
+    # Score words by distinctiveness:
+    # - Capitalized words (proper nouns, acronyms) get priority
+    # - Longer words get priority
+    # - Earlier position in title gets some priority
+    def word_score(w, idx):
+        score = len(w)
+        if w[0].isupper():
+            score += 10
+        if w.isupper() and len(w) >= 3:
+            score += 5
+        score -= idx * 0.5
+        return score
+
+    scored = [(word_score(w, i), w) for i, w in enumerate(unique_words)]
+    scored.sort(key=lambda x: -x[0])
+
+    # Skip all-caps words > 4 chars that might be merged acronyms (CFLAT from C-FLAT)
+    top_words = []
+    for _, w in scored:
+        if len(top_words) >= 4:
+            break
+        if w.isupper() and len(w) > 4:
+            continue
+        top_words.append(w)
+
+    # Quote and escape
+    quoted_words = ['"' + w.replace('"', '""') + '"' for w in top_words]
+    query = ' '.join(quoted_words)
+
+    cur.execute('''
+        SELECT p.id, p.anthology_id, p.title, p.url
+        FROM publications p
+        WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?)
+        LIMIT 20
+    ''', (query,))
+    results = cur.fetchall()
+
+    # Find best fuzzy match
+    normalized_input = normalize_title(title)
+
+    for pub_id, anthology_id, found_title, url in results:
+        if fuzz.ratio(normalized_input, normalize_title(found_title)) >= 95:
+            # Fetch authors with position ordering
+            cur.execute('''
+                SELECT a.name FROM authors a
+                JOIN publication_authors pa ON a.id = pa.author_id
+                WHERE pa.pub_id = ?
+                ORDER BY pa.position
+            ''', (pub_id,))
+            authors = [row[0] for row in cur.fetchall()]
+            # Use stored URL or construct from anthology_id
+            paper_url = url or f"https://aclanthology.org/{anthology_id}"
+            conn.close()
+            return found_title, authors, paper_url
+
+    conn.close()
     return None, [], None
 
 def query_openreview(title):
@@ -2850,7 +3033,7 @@ def query_pubmed(title):
     return None, [], None
 
 
-def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
+def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, acl_offline_path=None):
     """Query all databases concurrently for a single reference.
 
     Args:
@@ -2863,6 +3046,7 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
         dblp_offline_path: Optional path to offline DBLP SQLite database
         enabled_dbs: If provided, only include these databases (set of canonical names).
                      None means all databases are enabled (backward compat).
+        acl_offline_path: Optional path to offline ACL Anthology SQLite database
 
     Returns a dict with:
         - status: 'verified' | 'not_found' | 'author_mismatch'
@@ -2895,7 +3079,10 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
     if enabled_dbs is None or 'SSRN' in enabled_dbs:
         all_databases.append(('SSRN', lambda: query_ssrn(title)))
     if enabled_dbs is None or 'ACL Anthology' in enabled_dbs:
-        all_databases.append(('ACL Anthology', lambda: query_acl(title)))
+        if acl_offline_path:
+            all_databases.append(('ACL Anthology (offline)', lambda: query_acl_offline(title, acl_offline_path)))
+        else:
+            all_databases.append(('ACL Anthology', lambda: query_acl(title)))
     if enabled_dbs is None or 'NeurIPS' in enabled_dbs:
         all_databases.append(('NeurIPS', lambda: query_neurips(title)))
     if enabled_dbs is None or 'Europe PMC' in enabled_dbs:
@@ -3113,7 +3300,7 @@ def validate_authors(ref_authors, found_authors):
         found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
-def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None):
+def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None, acl_offline_path=None):
     """Check references against databases with concurrent queries.
 
     Args:
@@ -3129,6 +3316,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
         dblp_offline_path: Optional path to offline DBLP SQLite database
         enabled_dbs: If provided, only query these databases (set of canonical names).
                      None means all databases are enabled.
+        acl_offline_path: Optional path to offline ACL Anthology SQLite database
 
     Returns:
         Tuple of (results, check_stats) where:
@@ -3271,7 +3459,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             s2_api_key=s2_api_key,
             dblp_offline_path=dblp_offline_path,
             check_openalex_authors=check_openalex_authors,
-            enabled_dbs=enabled_dbs
+            enabled_dbs=enabled_dbs,
+            acl_offline_path=acl_offline_path
         )
 
         # Build full result record
@@ -3414,7 +3603,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
                 only_dbs=failed_dbs_for_ref,
                 dblp_offline_path=dblp_offline_path,
                 check_openalex_authors=check_openalex_authors,
-                enabled_dbs=enabled_dbs
+                enabled_dbs=enabled_dbs,
+                acl_offline_path=acl_offline_path
             )
 
             # Only update if we found something better
@@ -3560,7 +3750,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     return results, check_stats
 
 
-def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
+def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, acl_offline_path=None):
     # Print DBLP offline status / staleness warning
     if dblp_offline_path:
         from dblp_offline import check_staleness, get_db_metadata
@@ -3577,6 +3767,28 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
         if staleness_warning:
             print(f"{Colors.YELLOW}Warning: {staleness_warning}{Colors.RESET}")
         print()
+
+    # Print ACL offline status if provided
+    if acl_offline_path:
+        import os
+        if not os.path.exists(acl_offline_path):
+            print(f"{Colors.RED}Error: ACL offline database not found: {acl_offline_path}{Colors.RESET}")
+            print("Build the database using: hallucinator-cli update-acl <path>")
+            sys.exit(1)
+        # Get metadata if available
+        import sqlite3
+        try:
+            conn = sqlite3.connect(acl_offline_path)
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM metadata WHERE key = 'publication_count'")
+            row = cur.fetchone()
+            pub_count = row[0] if row else 'unknown'
+            conn.close()
+            print(f"{Colors.CYAN}Using offline ACL Anthology database ({pub_count} publications){Colors.RESET}")
+            print()
+        except Exception:
+            print(f"{Colors.CYAN}Using offline ACL Anthology database{Colors.RESET}")
+            print()
 
     # Print OpenReview warning
     print(f"{Colors.YELLOW}OpenReview Disabled: On Nov 27, 2025, an OpenReview API vulnerability was exploited")
@@ -3625,7 +3837,7 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
             print(f"[{idx}/{total}] {Colors.YELLOW}WARNING:{Colors.RESET} {message}")
 
     # Check all references with progress
-    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=acl_offline_path)
 
     # Count results
     found = sum(1 for r in results if r['status'] == 'verified')
@@ -3860,6 +4072,19 @@ if __name__ == "__main__":
             sys.argv.remove(arg)
             break
 
+    # Check for --acl-offline flag (offline ACL Anthology database)
+    acl_offline_path = None
+    for i, arg in enumerate(sys.argv[:]):
+        if arg.startswith('--acl-offline='):
+            acl_offline_path = arg.split('=', 1)[1]
+            sys.argv.remove(arg)
+            break
+        elif arg == '--acl-offline' and i + 1 < len(sys.argv):
+            acl_offline_path = sys.argv[i + 1]
+            sys.argv.remove(sys.argv[i + 1])
+            sys.argv.remove(arg)
+            break
+
     # Check for --update-dblp flag (download and build offline DBLP database)
     update_dblp_path = None
     for i, arg in enumerate(sys.argv[:]):
@@ -3930,6 +4155,7 @@ if __name__ == "__main__":
         print("  --openalex-key=KEY      OpenAlex API key")
         print("  --s2-api-key=KEY        Semantic Scholar API key")
         print("  --dblp-offline=PATH     Use offline DBLP database (SQLite)")
+        print("  --acl-offline=PATH      Use offline ACL Anthology database (SQLite)")
         print("  --update-dblp=PATH      Download DBLP dump and build offline database")
         print("  --check-openalex-authors  Flag author mismatches from OpenAlex (off by default)")
         print("  --disable-dbs=DB1,DB2   Disable specific databases (comma-separated)")
@@ -3951,6 +4177,6 @@ if __name__ == "__main__":
         with open(output_path, "w", encoding="utf-8") as f, \
              contextlib.redirect_stdout(f), \
              contextlib.redirect_stderr(f):
-            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=acl_offline_path)
     else:
-        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=acl_offline_path)

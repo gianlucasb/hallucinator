@@ -57,6 +57,25 @@ if DBLP_OFFLINE_PATH:
         logger.warning(f"DBLP_OFFLINE_PATH set but file not found: {DBLP_OFFLINE_PATH}")
         DBLP_OFFLINE_PATH = None
 
+# Offline ACL Anthology database path (optional)
+ACL_OFFLINE_PATH = os.environ.get('ACL_OFFLINE_PATH')
+if ACL_OFFLINE_PATH:
+    if os.path.exists(ACL_OFFLINE_PATH):
+        import sqlite3
+        try:
+            conn = sqlite3.connect(ACL_OFFLINE_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM metadata WHERE key = 'publication_count'")
+            row = cur.fetchone()
+            pub_count = row[0] if row else '?'
+            conn.close()
+            logger.info(f"Using offline ACL Anthology database: {ACL_OFFLINE_PATH} ({pub_count} publications)")
+        except Exception as e:
+            logger.warning(f"Could not read ACL database metadata: {ACL_OFFLINE_PATH}: {e}")
+    else:
+        logger.warning(f"ACL_OFFLINE_PATH set but file not found: {ACL_OFFLINE_PATH}")
+        ACL_OFFLINE_PATH = None
+
 
 def get_file_type(filename):
     """Detect file type from extension."""
@@ -202,7 +221,7 @@ def extract_pdfs_from_archive(archive_path, file_type, extract_dir):
     return pdf_files
 
 
-def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None):
+def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None, acl_offline_path=None):
     """Analyze PDF and return structured results.
 
     Args:
@@ -214,6 +233,7 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, 
         dblp_offline_path: Optional path to offline DBLP SQLite database
         enabled_dbs: If provided, only query these databases (set of canonical names).
         cancel_event: Optional threading.Event to signal cancellation.
+        acl_offline_path: Optional path to offline ACL Anthology SQLite database
 
     Returns (results, skip_stats) where results is a list of dicts with keys:
         - title: reference title
@@ -259,7 +279,8 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, 
         dblp_offline_path=dblp_offline_path,
         check_openalex_authors=check_openalex_authors,
         enabled_dbs=enabled_dbs,
-        cancel_event=cancel_event
+        cancel_event=cancel_event,
+        acl_offline_path=acl_offline_path
     )
 
     verified = sum(1 for r in results if r['status'] == 'verified')
@@ -284,11 +305,11 @@ def index():
     )
 
 
-def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
+def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, acl_offline_path=None):
     """Analyze a single PDF and return a file result dict."""
     logger.info(f"--- Processing: {filename} ---")
     try:
-        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=acl_offline_path)
 
         verified = sum(1 for r in results if r['status'] == 'verified')
         not_found = sum(1 for r in results if r['status'] == 'not_found')
@@ -350,7 +371,8 @@ def retry_reference():
             longer_timeout=True,
             only_dbs=failed_dbs,
             dblp_offline_path=DBLP_OFFLINE_PATH,
-            check_openalex_authors=check_openalex_authors
+            check_openalex_authors=check_openalex_authors,
+            acl_offline_path=ACL_OFFLINE_PATH
         )
 
         logger.info(f"Retry result: {result['status']} ({result.get('source', 'none')})")
@@ -413,7 +435,7 @@ def analyze():
             uploaded_file.save(temp_path)
             logger.info(f"Processing single PDF: {uploaded_file.filename}")
 
-            results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+            results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=ACL_OFFLINE_PATH)
 
             verified = sum(1 for r in results if r['status'] == 'verified')
             not_found = sum(1 for r in results if r['status'] == 'not_found')
@@ -460,7 +482,7 @@ def analyze():
             file_results = []
             for idx, (filename, pdf_path) in enumerate(pdf_files, 1):
                 logger.info(f"=== File {idx}/{len(pdf_files)}: {filename} ===")
-                file_result = analyze_single_pdf(pdf_path, filename, openalex_key, s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH, enabled_dbs=enabled_dbs)
+                file_result = analyze_single_pdf(pdf_path, filename, openalex_key, s2_api_key, dblp_offline_path=DBLP_OFFLINE_PATH, enabled_dbs=enabled_dbs, acl_offline_path=ACL_OFFLINE_PATH)
                 file_results.append(file_result)
 
             # Aggregate summary across all files
@@ -606,7 +628,7 @@ def analyze_stream():
                     }))
 
                     try:
-                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, cancel_event=cancel_event)
+                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=on_progress, dblp_offline_path=DBLP_OFFLINE_PATH, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, cancel_event=cancel_event, acl_offline_path=ACL_OFFLINE_PATH)
                         current_skip_stats[0] = skip_stats
                         current_file_results.extend(results)
 
