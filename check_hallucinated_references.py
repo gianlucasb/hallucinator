@@ -2661,7 +2661,61 @@ def query_acl_offline(title, db_path):
     if not words:
         conn.close()
         return None, [], None
-    query = ' '.join(words)
+    # Normalize words for FTS5:
+    # 1. Split hyphenated words (e.g., "control-flow" -> ["control", "flow"])
+    # 2. Skip words that look like merged compounds (won't be in FTS index)
+    # 3. Quote each word to prevent FTS5 interpreting them as operators
+    normalized_words = []
+    for w in words:
+        if '-' in w:
+            # Split on hyphens and add individual parts (skip very long parts)
+            parts = [p for p in w.split('-') if 3 <= len(p) <= 12]
+            normalized_words.extend(parts)
+        elif len(w) > 12:
+            # Very long words are likely merged compounds that won't match
+            continue
+        elif len(w) > 10 and any(c.isupper() for c in w[1:]):
+            # Skip camelCase merged compounds
+            continue
+        else:
+            normalized_words.append(w)
+    # Deduplicate while preserving order (order = position in title)
+    seen = set()
+    unique_words = []
+    for w in normalized_words:
+        w_lower = w.lower()
+        if w_lower not in seen:
+            seen.add(w_lower)
+            unique_words.append(w)
+
+    # Score words by distinctiveness:
+    # - Capitalized words (proper nouns, acronyms) get priority
+    # - Longer words get priority
+    # - Earlier position in title gets some priority
+    def word_score(w, idx):
+        score = len(w)
+        if w[0].isupper():
+            score += 10
+        if w.isupper() and len(w) >= 3:
+            score += 5
+        score -= idx * 0.5
+        return score
+
+    scored = [(word_score(w, i), w) for i, w in enumerate(unique_words)]
+    scored.sort(key=lambda x: -x[0])
+
+    # Skip all-caps words > 4 chars that might be merged acronyms (CFLAT from C-FLAT)
+    top_words = []
+    for _, w in scored:
+        if len(top_words) >= 4:
+            break
+        if w.isupper() and len(w) > 4:
+            continue
+        top_words.append(w)
+
+    # Quote and escape
+    quoted_words = ['"' + w.replace('"', '""') + '"' for w in top_words]
+    query = ' '.join(quoted_words)
 
     cur.execute('''
         SELECT p.id, p.anthology_id, p.title, p.url
