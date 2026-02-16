@@ -2636,6 +2636,62 @@ def query_acl(title):
         raise  # Re-raise so failed_dbs gets tracked
     return None, [], None
 
+def query_acl_offline(title, db_path):
+    """Query offline ACL Anthology database for paper information.
+
+    Uses Rust-built database with normalized author schema.
+
+    Args:
+        title: Paper title to search for
+        db_path: Path to SQLite database
+
+    Returns:
+        (found_title, authors_list, url) or (None, [], None)
+    """
+    import sqlite3
+
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"ACL database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    # Use FTS to find candidates
+    words = get_query_words(title, 6)
+    if not words:
+        conn.close()
+        return None, [], None
+    query = ' '.join(words)
+
+    cur.execute('''
+        SELECT p.id, p.anthology_id, p.title, p.url
+        FROM publications p
+        WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?)
+        LIMIT 20
+    ''', (query,))
+    results = cur.fetchall()
+
+    # Find best fuzzy match
+    normalized_input = normalize_title(title)
+
+    for pub_id, anthology_id, found_title, url in results:
+        if fuzz.ratio(normalized_input, normalize_title(found_title)) >= 95:
+            # Fetch authors with position ordering
+            cur.execute('''
+                SELECT a.name FROM authors a
+                JOIN publication_authors pa ON a.id = pa.author_id
+                WHERE pa.pub_id = ?
+                ORDER BY pa.position
+            ''', (pub_id,))
+            authors = [row[0] for row in cur.fetchall()]
+            # Use stored URL or construct from anthology_id
+            paper_url = url or f"https://aclanthology.org/{anthology_id}"
+            conn.close()
+            return found_title, authors, paper_url
+
+    conn.close()
+    return None, [], None
+
 def query_openreview(title):
     """Query OpenReview API for paper information."""
     words = get_query_words(title, 6)
@@ -2923,7 +2979,7 @@ def query_pubmed(title):
     return None, [], None
 
 
-def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
+def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, acl_offline_path=None):
     """Query all databases concurrently for a single reference.
 
     Args:
@@ -2936,6 +2992,7 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
         dblp_offline_path: Optional path to offline DBLP SQLite database
         enabled_dbs: If provided, only include these databases (set of canonical names).
                      None means all databases are enabled (backward compat).
+        acl_offline_path: Optional path to offline ACL Anthology SQLite database
 
     Returns a dict with:
         - status: 'verified' | 'not_found' | 'author_mismatch'
@@ -2968,7 +3025,10 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
     if enabled_dbs is None or 'SSRN' in enabled_dbs:
         all_databases.append(('SSRN', lambda: query_ssrn(title)))
     if enabled_dbs is None or 'ACL Anthology' in enabled_dbs:
-        all_databases.append(('ACL Anthology', lambda: query_acl(title)))
+        if acl_offline_path:
+            all_databases.append(('ACL Anthology (offline)', lambda: query_acl_offline(title, acl_offline_path)))
+        else:
+            all_databases.append(('ACL Anthology', lambda: query_acl(title)))
     if enabled_dbs is None or 'NeurIPS' in enabled_dbs:
         all_databases.append(('NeurIPS', lambda: query_neurips(title)))
     if enabled_dbs is None or 'Europe PMC' in enabled_dbs:
@@ -3186,7 +3246,7 @@ def validate_authors(ref_authors, found_authors):
         found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
-def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None):
+def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, on_progress=None, max_concurrent_refs=4, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, cancel_event=None, acl_offline_path=None):
     """Check references against databases with concurrent queries.
 
     Args:
@@ -3202,6 +3262,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
         dblp_offline_path: Optional path to offline DBLP SQLite database
         enabled_dbs: If provided, only query these databases (set of canonical names).
                      None means all databases are enabled.
+        acl_offline_path: Optional path to offline ACL Anthology SQLite database
 
     Returns:
         Tuple of (results, check_stats) where:
@@ -3344,7 +3405,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             s2_api_key=s2_api_key,
             dblp_offline_path=dblp_offline_path,
             check_openalex_authors=check_openalex_authors,
-            enabled_dbs=enabled_dbs
+            enabled_dbs=enabled_dbs,
+            acl_offline_path=acl_offline_path
         )
 
         # Build full result record
@@ -3487,7 +3549,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
                 only_dbs=failed_dbs_for_ref,
                 dblp_offline_path=dblp_offline_path,
                 check_openalex_authors=check_openalex_authors,
-                enabled_dbs=enabled_dbs
+                enabled_dbs=enabled_dbs,
+                acl_offline_path=acl_offline_path
             )
 
             # Only update if we found something better
@@ -3633,7 +3696,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     return results, check_stats
 
 
-def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None):
+def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False, enabled_dbs=None, acl_offline_path=None):
     # Print DBLP offline status / staleness warning
     if dblp_offline_path:
         from dblp_offline import check_staleness, get_db_metadata
@@ -3650,6 +3713,28 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
         if staleness_warning:
             print(f"{Colors.YELLOW}Warning: {staleness_warning}{Colors.RESET}")
         print()
+
+    # Print ACL offline status if provided
+    if acl_offline_path:
+        import os
+        if not os.path.exists(acl_offline_path):
+            print(f"{Colors.RED}Error: ACL offline database not found: {acl_offline_path}{Colors.RESET}")
+            print("Build the database using: hallucinator-cli update-acl <path>")
+            sys.exit(1)
+        # Get metadata if available
+        import sqlite3
+        try:
+            conn = sqlite3.connect(acl_offline_path)
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM metadata WHERE key = 'publication_count'")
+            row = cur.fetchone()
+            pub_count = row[0] if row else 'unknown'
+            conn.close()
+            print(f"{Colors.CYAN}Using offline ACL Anthology database ({pub_count} publications){Colors.RESET}")
+            print()
+        except Exception:
+            print(f"{Colors.CYAN}Using offline ACL Anthology database{Colors.RESET}")
+            print()
 
     # Print OpenReview warning
     print(f"{Colors.YELLOW}OpenReview Disabled: On Nov 27, 2025, an OpenReview API vulnerability was exploited")
@@ -3698,7 +3783,7 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
             print(f"[{idx}/{total}] {Colors.YELLOW}WARNING:{Colors.RESET} {message}")
 
     # Check all references with progress
-    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+    results, check_stats = check_references(refs, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, on_progress=cli_progress, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=acl_offline_path)
 
     # Count results
     found = sum(1 for r in results if r['status'] == 'verified')
@@ -3933,6 +4018,19 @@ if __name__ == "__main__":
             sys.argv.remove(arg)
             break
 
+    # Check for --acl-offline flag (offline ACL Anthology database)
+    acl_offline_path = None
+    for i, arg in enumerate(sys.argv[:]):
+        if arg.startswith('--acl-offline='):
+            acl_offline_path = arg.split('=', 1)[1]
+            sys.argv.remove(arg)
+            break
+        elif arg == '--acl-offline' and i + 1 < len(sys.argv):
+            acl_offline_path = sys.argv[i + 1]
+            sys.argv.remove(sys.argv[i + 1])
+            sys.argv.remove(arg)
+            break
+
     # Check for --update-dblp flag (download and build offline DBLP database)
     update_dblp_path = None
     for i, arg in enumerate(sys.argv[:]):
@@ -4003,6 +4101,7 @@ if __name__ == "__main__":
         print("  --openalex-key=KEY      OpenAlex API key")
         print("  --s2-api-key=KEY        Semantic Scholar API key")
         print("  --dblp-offline=PATH     Use offline DBLP database (SQLite)")
+        print("  --acl-offline=PATH      Use offline ACL Anthology database (SQLite)")
         print("  --update-dblp=PATH      Download DBLP dump and build offline database")
         print("  --check-openalex-authors  Flag author mismatches from OpenAlex (off by default)")
         print("  --disable-dbs=DB1,DB2   Disable specific databases (comma-separated)")
@@ -4024,6 +4123,6 @@ if __name__ == "__main__":
         with open(output_path, "w", encoding="utf-8") as f, \
              contextlib.redirect_stdout(f), \
              contextlib.redirect_stderr(f):
-            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+            main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=acl_offline_path)
     else:
-        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs)
+        main(pdf_path, sleep_time=sleep_time, openalex_key=openalex_key, s2_api_key=s2_api_key, dblp_offline_path=dblp_offline_path, check_openalex_authors=check_openalex_authors, enabled_dbs=enabled_dbs, acl_offline_path=acl_offline_path)
