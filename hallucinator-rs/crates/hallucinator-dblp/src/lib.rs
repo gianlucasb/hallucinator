@@ -5,9 +5,9 @@
 //! title matching via rapidfuzz.
 
 mod builder;
-mod db;
+pub mod db;
 pub mod parser;
-mod query;
+pub mod query;
 pub mod xml_parser;
 
 use std::path::{Path, PathBuf};

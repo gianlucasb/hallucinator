@@ -1190,6 +1190,8 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

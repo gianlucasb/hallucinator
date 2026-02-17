@@ -13,7 +13,7 @@ pub const DEFAULT_THRESHOLD: f64 = 0.95;
 /// Normalize a title for comparison: lowercase alphanumeric only.
 ///
 /// This is a simplified inline version to avoid depending on hallucinator-core.
-fn normalize_title(title: &str) -> String {
+pub fn normalize_title(title: &str) -> String {
     static NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-zA-Z0-9]").unwrap());
     let lowered = title.to_lowercase();
     NON_ALNUM.replace_all(&lowered, "").to_string()
@@ -23,7 +23,7 @@ fn normalize_title(title: &str) -> String {
 ///
 /// Handles digits (`L2`, `3D`), hyphens (`Machine-Learning`), and apostrophes (`What's`).
 /// Also strips BibTeX braces (`{BERT}` → `BERT`).
-fn get_query_words(title: &str) -> Vec<String> {
+pub fn get_query_words(title: &str) -> Vec<String> {
     // Strip BibTeX capitalization braces
     let title = title.replace(['{', '}'], "");
 
