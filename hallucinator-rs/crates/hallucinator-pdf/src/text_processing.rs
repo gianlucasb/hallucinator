@@ -111,6 +111,17 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &PdfParsingConfig)
             return format!("{}-{}", before, after_word);
         }
 
+        // If the word after the hyphen starts with uppercase, it's likely a compound
+        // proper noun (e.g., "Over-The-Air", "Up-To-Date"), not a syllable break.
+        // Syllable breaks like "detec-\ntion" have lowercase continuation.
+        let after_is_titlecase = after_char
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase());
+        if after_is_titlecase {
+            return format!("{}-{}", before, after_word);
+        }
+
         // Otherwise, it's likely a syllable break — remove hyphen
         format!("{}{}", before, after_word)
     })
@@ -200,5 +211,16 @@ mod tests {
             fix_hyphenation_with_config("human- centered", &config),
             "humancentered"
         );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_titlecase_compound() {
+        // Titlecase words after hyphen indicate compound proper nouns, not syllable breaks
+        assert_eq!(fix_hyphenation("Over-\nThe-Air"), "Over-The-Air");
+        assert_eq!(fix_hyphenation("Up-\nTo-Date"), "Up-To-Date");
+        assert_eq!(fix_hyphenation("Out-\nOf-Band"), "Out-Of-Band");
+        // But lowercase is still treated as syllable break
+        assert_eq!(fix_hyphenation("detec-\ntion"), "detection");
+        assert_eq!(fix_hyphenation("classi-\nfication"), "classification");
     }
 }

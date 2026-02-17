@@ -13,6 +13,7 @@ pub const SAME_AS_PREVIOUS: &str = "__SAME_AS_PREVIOUS__";
 /// - IEEE: `J. Smith, A. Jones, and C. Williams, "Title..."`
 /// - ACM: `FirstName LastName, FirstName LastName, and FirstName LastName. Year.`
 /// - AAAI: `Surname, I.; Surname, I.; and Surname, I.`
+/// - ALL CAPS: `SURNAME, I., SURNAME, I., AND SURNAME, I. Title...`
 /// - USENIX: `FirstName LastName and FirstName LastName. Title...`
 /// - Springer/Nature: `Surname I, Surname I (Year) Title...`
 ///
@@ -82,8 +83,18 @@ pub(crate) fn extract_authors_from_reference_with_config(
         return vec![];
     }
 
-    // Check for AAAI format (semicolon-separated)
-    static AAAI_CHECK: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Z][a-z]+,\s+[A-Z]\.").unwrap());
+    // Check for ALL CAPS format: LASTNAME, I., LASTNAME, I., AND LASTNAME, I.
+    // Must match pattern like "BACKES, M." (all-caps surname, comma, space, single uppercase initial, period)
+    static ALL_CAPS_CHECK: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^[A-Z]{2,},\s+[A-Z]\.,").unwrap());
+    if ALL_CAPS_CHECK.is_match(author_section) {
+        return parse_all_caps_authors_with_max(author_section, config.max_authors);
+    }
+
+    // Check for AAAI format (semicolon-separated): Surname, I.; Surname, I.
+    // Also handles ALL CAPS variant: SURNAME, I.; SURNAME, I.
+    static AAAI_CHECK: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[A-Z][A-Za-z]+,\s+[A-Z]\.").unwrap());
     if author_section.contains("; ") && AAAI_CHECK.is_match(author_section) {
         return parse_aaai_authors_with_max(author_section, config.max_authors);
     }
@@ -127,6 +138,40 @@ fn parse_aaai_authors_with_max(section: &str, max_authors: usize) -> Vec<String>
     }
 
     authors.truncate(max_authors);
+    authors
+}
+
+/// Parse ALL CAPS author format: LASTNAME, I., LASTNAME, I., AND LASTNAME, I.
+///
+/// This format is common in some European conferences and journals.
+/// Example: "BACKES, M., RIECK, K., SKORUPPA, M., STOCK, B., AND YAMAGUCHI, F."
+fn parse_all_caps_authors_with_max(section: &str, max_authors: usize) -> Vec<String> {
+    // Replace ", AND " with ", " (case insensitive)
+    static AND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i),\s+AND\s+").unwrap());
+    let section = AND_RE.replace_all(section, ", ");
+
+    // Pattern to match "LASTNAME, I." where LASTNAME is all caps and I is a single uppercase letter
+    static AUTHOR_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"([A-Z][A-Z]+),\s+([A-Z]\.)").unwrap());
+
+    let mut authors = Vec::new();
+    for caps in AUTHOR_RE.captures_iter(&section) {
+        let surname = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let initial = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        if !surname.is_empty() && !initial.is_empty() {
+            // Format as "Surname, I." (title case surname)
+            let surname_title = surname
+                .chars()
+                .enumerate()
+                .map(|(i, c)| if i == 0 { c } else { c.to_ascii_lowercase() })
+                .collect::<String>();
+            authors.push(format!("{}, {}", surname_title, initial));
+        }
+        if authors.len() >= max_authors {
+            break;
+        }
+    }
+
     authors
 }
 
@@ -180,10 +225,16 @@ fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<Stri
             continue;
         }
 
-        // Check if it looks like a name (has both upper and lower case)
+        // Check if it looks like a name:
+        // - Has both upper and lower case (normal names), OR
+        // - Is all uppercase with 2+ letters (ALL CAPS format like "SMITH")
         let has_upper = part.chars().any(|c| c.is_uppercase());
         let has_lower = part.chars().any(|c| c.is_lowercase());
-        if has_upper && has_lower && part.len() > 2 {
+        let is_all_caps = has_upper
+            && !has_lower
+            && part.chars().filter(|c| c.is_ascii_uppercase()).count() >= 2;
+
+        if part.len() > 2 && (has_upper && has_lower || is_all_caps) {
             authors.push(part.to_string());
         }
     }
@@ -237,5 +288,35 @@ mod tests {
         let ref_text = "John Smith and Alice Jones. 2022. Title of paper. In Proceedings.";
         let authors = extract_authors_from_reference(ref_text);
         assert!(!authors.is_empty());
+    }
+
+    #[test]
+    fn test_all_caps_format() {
+        // Issue #161: ALL CAPS author names were not being parsed
+        let ref_text = "BACKES, M., RIECK, K., SKORUPPA, M., STOCK, B., AND YAMAGUCHI, F. Efficient and flexible discovery of php application vulnerabilities. In 2017 IEEE european symposium on security and privacy (EuroS&P) (2017), IEEE, pp. 334–349.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors.len(), 5, "Expected 5 authors, got: {:?}", authors);
+        assert_eq!(authors[0], "Backes, M.");
+        assert_eq!(authors[1], "Rieck, K.");
+        assert_eq!(authors[2], "Skoruppa, M.");
+        assert_eq!(authors[3], "Stock, B.");
+        assert_eq!(authors[4], "Yamaguchi, F.");
+    }
+
+    #[test]
+    fn test_all_caps_format_short() {
+        let ref_text = "SMITH, J., AND JONES, A. Title here.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors.len(), 2);
+        assert_eq!(authors[0], "Smith, J.");
+        assert_eq!(authors[1], "Jones, A.");
+    }
+
+    #[test]
+    fn test_all_caps_with_semicolons() {
+        // ALL CAPS with AAAI-style semicolons
+        let ref_text = "SMITH, J.; JONES, A.; AND WILLIAMS, C. 2023. Title.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(authors.len() >= 2, "Expected at least 2 authors, got: {:?}", authors);
     }
 }
