@@ -190,10 +190,7 @@ fn problematic_papers_baseline() {
                             expected_score: issue.dblp_score,
                             query_words: query_words.clone(),
                             fts_query_joined: fts_query_joined.clone(),
-                            got_match: Some((
-                                matched.record.title.clone(),
-                                matched.score,
-                            )),
+                            got_match: Some((matched.record.title.clone(), matched.score)),
                         });
                     }
                 }
@@ -277,10 +274,17 @@ fn problematic_papers_baseline() {
                 println!("    fts:    {}", failure.fts_query_joined);
                 match &failure.got_match {
                     Some((title, score)) => {
-                        println!("    result: WRONG MATCH (score={:.1}%): {}", score * 100.0, title);
+                        println!(
+                            "    result: WRONG MATCH (score={:.1}%): {}",
+                            score * 100.0,
+                            title
+                        );
                     }
                     None => {
-                        println!("    result: NO MATCH (expected score: {:.1}%)", failure.expected_score);
+                        println!(
+                            "    result: NO MATCH (expected score: {:.1}%)",
+                            failure.expected_score
+                        );
                     }
                 }
                 println!();

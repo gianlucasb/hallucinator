@@ -46,8 +46,9 @@ pub fn normalize_title(title: &str) -> String {
 /// `\mathbb{X}` → `X`, `\text{X}` → `X`, `\command` → stripped.
 fn strip_latex_for_query(title: &str) -> String {
     static MATH_MODE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$[^$]*\$").unwrap());
-    static CMD_WITH_ARG: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\\(?:mathbb|mathcal|mathrm|mathit|mathbf|text|textbf|textit|textsc|textrm|emph)\s*\{([^}]*)\}").unwrap());
+    static CMD_WITH_ARG: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\\(?:mathbb|mathcal|mathrm|mathit|mathbf|text|textbf|textit|textsc|textrm|emph)\s*\{([^}]*)\}").unwrap()
+    });
     static BARE_CMD: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\[a-zA-Z]+").unwrap());
 
     let mut s = title.to_string();
@@ -111,7 +112,10 @@ pub fn get_query_words(title: &str) -> Vec<String> {
         .collect();
 
     if words_with_info.len() <= 6 {
-        return words_with_info.into_iter().map(|(_, lower, _)| lower).collect();
+        return words_with_info
+            .into_iter()
+            .map(|(_, lower, _)| lower)
+            .collect();
     }
 
     // Score words by distinctiveness and take top 6
@@ -124,7 +128,10 @@ pub fn get_query_words(title: &str) -> Vec<String> {
                 score += 10.0;
             }
             // Acronyms (e.g., BERT, NLP)
-            if orig.len() >= 3 && orig.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            if orig.len() >= 3
+                && orig
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
             {
                 score += 5.0;
             }
