@@ -8,7 +8,7 @@ use crate::text_processing::fix_hyphenation;
 /// Abbreviations that should NEVER be sentence boundaries (mid-title abbreviations).
 static MID_SENTENCE_ABBREVIATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "vs", "eg", "ie", "cf", "fig", "figs", "eq", "eqs", "sec", "ch", "pt", "no",
+        "vs", "eg", "ie", "cf", "fig", "figs", "eq", "eqs", "sec", "ch", "pt", "no", "jr", "sr",
     ]
     .into_iter()
     .collect()
@@ -943,16 +943,20 @@ fn try_bracket_code(ref_text: &str) -> Option<(String, bool)> {
 fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     // Handles author names with particles: von, van der, Le, etc.
     // Pattern: "I. Name, I. Name, and I. Name. Title"
-    // The key is finding ", and Initial. Surname. TitleStart"
+    // The key is finding ", and Initial. Surname[suffix]. TitleStart"
     static AND_AUTHOR_TITLE_RE: Lazy<Regex> = Lazy::new(|| {
         let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}]\.(?:[\s\-]*[A-Z]\.)*";
         let particle =
             r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
         let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
         let surname = format!(r"{}{}+(?:\s+{}+)*", particle, surname_chars, surname_chars);
+        // Optional name suffix (Jr, Sr, II, III, IV, V) — the suffix consumes everything
+        // up to (but not including) the sentence-ending period, which is matched by the
+        // literal `\.` that follows.
+        let suffix = r"(?:\s+(?:Jr|Sr|II|III|IV|V))?";
         let pattern = format!(
-            r#",?\s+and\s+{}\s*{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
-            initial, surname,
+            r#",?\s+and\s+{}\s*{}{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
+            initial, surname, suffix,
         );
         Regex::new(&pattern).unwrap()
     });
@@ -1065,6 +1069,8 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
     // character classes for common diacritics
     static AUTHOR_AFTER: Lazy<Vec<Regex>> = Lazy::new(|| {
         let sc = r"[a-zA-Z\u{00A0}-\u{017F}'\-`\u{00B4}]"; // surname chars
+        // Surname particles that can start a multi-word last name
+        let particle = r"(?:van|von|de|del|della|di|da|le|la|den|der|ten|ter|dos|das|du|op|het|el|al|ben|ibn)";
         vec![
             // Surname followed by comma: "Smith,"
             Regex::new(&format!(r"^([A-Z]{}+)\s*,", sc)).unwrap(),
@@ -1084,6 +1090,14 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"(?i)^([A-Z]{}+)\s+and\s+[A-Z]", sc)).unwrap(),
             // Multi-part surname: "Van Goethem,"
             Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z]{}+)\s*,", sc, sc)).unwrap(),
+            // Surname particle followed by rest of surname + comma: "Le Dantec," or "Van Bavel,"
+            Regex::new(&format!(r"(?i)^{}\s+[A-Z]{}+\s*,", particle, sc)).unwrap(),
+            // Surname particle + surname + "and": "Le Dantec and"
+            Regex::new(&format!(r"(?i)^{}\s+[A-Z]{}+\s+and\s+", particle, sc)).unwrap(),
+            // Surname particle + surname + period: "Le Dantec." (end of author list)
+            Regex::new(&format!(r"(?i)^{}\s+[A-Z]{}+\.\s+[A-Z]", particle, sc)).unwrap(),
+            // Name suffix after surname: "Sullivan Jr.," or "Smith Sr."
+            Regex::new(&format!(r"^([A-Z]{}+)\s+(?:Jr|Sr|III|II|IV|V)\.\s*,?", sc)).unwrap(),
         ]
     });
 
@@ -1899,6 +1913,94 @@ mod tests {
         assert!(
             title.contains("round-trip time") && title.contains("virtualization"),
             "Should extract title despite multi-particle author names: {}",
+            title,
+        );
+    }
+
+    // ───────────────── Name suffix and particle tests ─────────────────
+
+    #[test]
+    fn test_split_sentences_skip_jr_suffix() {
+        // "Jr." after a surname should NOT be a sentence boundary
+        let text = "J. L. Sullivan Jr. and A. Jones. A Novel Detection Method. In Proceedings.";
+        let parts = split_sentences_skip_initials(text);
+        assert!(
+            parts.len() >= 2,
+            "Should split into at least 2 sentences: {:?}",
+            parts,
+        );
+        assert!(
+            parts[0].contains("Sullivan Jr"),
+            "First sentence should contain 'Sullivan Jr': {:?}",
+            parts,
+        );
+        assert!(
+            parts[1].contains("Novel Detection"),
+            "Second sentence should be the title: {:?}",
+            parts,
+        );
+    }
+
+    #[test]
+    fn test_split_sentences_skip_le_particle() {
+        // "Le Dantec" after initial "A." should NOT create a sentence boundary
+        let text =
+            "C. A. Le Dantec and R. W. Edwards. Community Informatics Design. In Proceedings.";
+        let parts = split_sentences_skip_initials(text);
+        assert!(
+            parts.len() >= 2,
+            "Should split into at least 2 sentences: {:?}",
+            parts,
+        );
+        assert!(
+            parts[0].contains("Le Dantec"),
+            "First sentence should contain 'Le Dantec' as author: {:?}",
+            parts,
+        );
+    }
+
+    #[test]
+    fn test_title_extraction_with_jr_author() {
+        // Title extraction should work correctly when author has Jr. suffix
+        let ref_text = "J. L. Sullivan Jr. and A. K. Jones. Community-based detection of misinformation. In Proceedings of ACM SIGIR, 2023.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Community-based detection"),
+            "Should extract title after Jr. author: {}",
+            title,
+        );
+        assert!(
+            !title.contains("Sullivan"),
+            "Title should not contain author name: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_title_extraction_with_le_dantec_author() {
+        // Title extraction should work correctly when author has Le particle
+        let ref_text = "C. A. Le Dantec and R. W. Edwards. Designs on dignity: Perceptions of technology among the homeless. In Proceedings of CHI, 2008.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Designs on dignity"),
+            "Should extract title after Le Dantec author: {}",
+            title,
+        );
+        assert!(
+            !title.contains("Le Dantec"),
+            "Title should not contain author name: {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_author_particles_with_suffix_jr() {
+        // try_author_particles should handle authors with Jr. suffix
+        let ref_text = "M. Smith, A. Jones, and J. L. Sullivan Jr. A novel approach to detection. In USENIX Security, 2023.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("novel approach"),
+            "Should extract title when last author has Jr. suffix: {}",
             title,
         );
     }
