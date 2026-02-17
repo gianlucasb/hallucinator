@@ -1066,11 +1066,49 @@ def expand_ligatures(text):
     return text
 
 
-def extract_text_from_pdf(pdf_path):
-    """Extract text from PDF using PyMuPDF."""
+def extract_text_from_pdf(pdf_path, footer_margin_ratio=0.05, header_margin_ratio=0.04):
+    """Extract text from PDF using PyMuPDF with footer/header exclusion.
+
+    Args:
+        pdf_path: Path to the PDF file.
+        footer_margin_ratio: Fraction of page height from the bottom to exclude (0.0-1.0).
+            Default 0.05 (bottom 5%) removes footers like "USENIX Association 34th USENIX
+            Security Symposium 5281" that otherwise get embedded in cross-page citations.
+        header_margin_ratio: Fraction of page height from the top to exclude (0.0-1.0).
+            Default 0.04 (top 4%) removes running headers at page tops.
+    """
     import fitz
     doc = fitz.open(pdf_path)
-    text = "\n".join(page.get_text() for page in doc)
+
+    if footer_margin_ratio > 0 or header_margin_ratio > 0:
+        pages_text = []
+        for page in doc:
+            page_rect = page.rect
+            page_height = page_rect.height
+
+            header_threshold = page_rect.y0 + (page_height * header_margin_ratio) if header_margin_ratio > 0 else page_rect.y0
+            footer_threshold = page_rect.y1 - (page_height * footer_margin_ratio) if footer_margin_ratio > 0 else page_rect.y1
+
+            blocks = page.get_text("blocks")
+            page_text_parts = []
+            for block in blocks:
+                # block = (x0, y0, x1, y1, text, block_no, block_type)
+                if block[6] != 0:  # skip non-text blocks (images)
+                    continue
+                block_top_y = block[1]
+                block_bottom_y = block[3]
+                # Skip blocks entirely within the header region
+                if header_margin_ratio > 0 and block_bottom_y <= header_threshold:
+                    continue
+                # Skip blocks whose top edge is in the footer region
+                if footer_margin_ratio > 0 and block_top_y >= footer_threshold:
+                    continue
+                page_text_parts.append(block[4])
+            pages_text.append("".join(page_text_parts))
+        text = "\n".join(pages_text)
+    else:
+        text = "\n".join(page.get_text() for page in doc)
+
     doc.close()
     # Expand typographic ligatures (ﬁ → fi, ﬂ → fl, etc.)
     text = expand_ligatures(text)
@@ -1154,6 +1192,18 @@ def strip_running_headers(text):
     # e.g., "HODGE THEORY OF SECANT VARIETIES"
     math_title_header_pattern = r'^[A-Z][A-Z\s\-]+$'
 
+    # Pattern for conference proceedings footer/header lines
+    # e.g., "USENIX Association 34th USENIX Security Symposium 5281"
+    # Matches: Organization + optional ordinal conference name + optional page number
+    proceedings_footer_pattern = r'^(?:USENIX Association|©?\s*\d{4}\s+(?:ACM|IEEE))\s+.*$'
+
+    # Pattern for "USENIX Association" alone on a line (partial footer)
+    usenix_alone_pattern = r'^USENIX\s+Association\s*$'
+
+    # Pattern for ordinal conference names with trailing page number (footer artifact)
+    # e.g., "34th USENIX Security Symposium 5281"
+    ordinal_conf_pattern = r'^\d+(?:st|nd|rd|th)\s+[\w\s]+(?:Symposium|Conference|Workshop|Congress)\s+\d{1,5}\s*$'
+
     # Pattern for standalone page numbers (math papers often have these)
     # e.g., "99" or "123"
     page_number_pattern = r'^\d{1,4}$'
@@ -1189,6 +1239,23 @@ def strip_running_headers(text):
         # Check for math paper ALL CAPS title headers (at least 3 words, all caps)
         if re.match(math_title_header_pattern, line) and len(line.split()) >= 3 and len(line) > 15:
             # This is likely a math paper title running header, skip it
+            i += 1
+            continue
+
+        # Check for conference proceedings footer/header lines
+        # e.g., "USENIX Association 34th USENIX Security Symposium 5281"
+        if re.match(proceedings_footer_pattern, line):
+            i += 1
+            continue
+
+        # Check for "USENIX Association" alone on a line
+        if re.match(usenix_alone_pattern, line):
+            i += 1
+            continue
+
+        # Check for ordinal conference name with trailing page number
+        # e.g., "34th USENIX Security Symposium 5281"
+        if re.match(ordinal_conf_pattern, line):
             i += 1
             continue
 
