@@ -163,6 +163,7 @@ pub async fn query_local_databases(
 ///
 /// The `local_result` carries any db_results, failed_dbs, and first_mismatch from
 /// the local phase. Remote results are merged in.
+#[allow(clippy::too_many_arguments)]
 pub async fn query_remote_databases(
     title: &str,
     ref_authors: &[String],

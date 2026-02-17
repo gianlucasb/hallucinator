@@ -322,7 +322,7 @@ fn problematic_papers_baseline() {
                 errors += 1;
             } else if f.query_words.is_empty() {
                 no_words += 1;
-            } else if let Some(_) = &f.got_match {
+            } else if f.got_match.is_some() {
                 wrong_match += 1;
             } else {
                 // No match — could be FTS miss or below threshold.

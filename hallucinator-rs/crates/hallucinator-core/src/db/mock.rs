@@ -11,6 +11,7 @@ use crate::rate_limit::DbQueryError;
 
 /// A configurable mock response for [`MockDb`].
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum MockResponse {
     /// Simulate a successful match.
     Found {
@@ -56,6 +57,7 @@ impl MockDb {
     }
 
     /// Create a mock that returns responses in order, repeating the last one.
+    #[allow(dead_code)]
     pub fn with_sequence(name: &'static str, mut responses: Vec<MockResponse>) -> Self {
         assert!(
             !responses.is_empty(),
@@ -74,6 +76,7 @@ impl MockDb {
     }
 
     /// Set simulated network latency per call.
+    #[allow(dead_code)]
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = Some(delay);
         self
