@@ -197,6 +197,16 @@ pub(crate) fn clean_title_with_config(
         title = title[..=punct_pos].to_string();
     }
 
+    // Handle "? ACRONYM, year" — ALL-CAPS venue acronym + comma + 4-digit year after ?/!
+    // Catches venues like PACMPL, JMLR, VLDB, etc. that aren't in the explicit list above
+    static QMARK_ACRONYM_VENUE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"[?!]\s+[A-Z]{3,}[a-z]?\s*,\s*(?:19|20)\d{2}").unwrap()
+    });
+    if let Some(m) = QMARK_ACRONYM_VENUE_RE.find(&title) {
+        let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
+        title = title[..=punct_pos].to_string();
+    }
+
     // Remove editor lists: ". In Name, Name, and Name, editors, Venue"
     static EDITOR_LIST_RE: Lazy<Regex> = Lazy::new(|| {
         let name = r"[A-Za-z\u{00C0}-\u{024F}]+(?:\s+[A-Z]\.)*(?:\s+[A-Za-z\u{00C0}-\u{024F}]+)?";
@@ -1155,7 +1165,11 @@ fn truncate_at_sentence_end(title: &str) -> String {
         // OR 2-char ALL-CAPS segment (acronyms like "AI.", "ML.")
         if segment.len() > 2 || (segment.len() == 2 && segment.chars().all(|c| c.is_uppercase())) {
             // Skip if period is immediately followed by a letter (product names)
-            if pos + 1 < title.len() && title.as_bytes()[pos + 1].is_ascii_alphabetic() {
+            // or a digit (version numbers like ASN.1, Web 2.0, 802.11)
+            if pos + 1 < title.len()
+                && (title.as_bytes()[pos + 1].is_ascii_alphabetic()
+                    || title.as_bytes()[pos + 1].is_ascii_digit())
+            {
                 continue;
             }
             // Skip if followed by space + digit (version number like "Flux. 1")
@@ -1183,7 +1197,7 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"\[D\].*$").unwrap(),
         Regex::new(r"(?i)\.\s*[Ii]n:\s+[A-Z].*$").unwrap(),
         Regex::new(r"(?i)\.\s*[Ii]n\s+[A-Z].*$").unwrap(),
-        Regex::new(r"(?i)[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR|PACM[- ]\w+).*$").unwrap(),
+        Regex::new(r"(?i)[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR|PACM[- ]?\w+|JMLR|VLDB|SIGMOD|SIGKDD|PLDI|POPL|OOPSLA|SOSP|OSDI).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s+International\s+Journal\b.*$").unwrap(),
         Regex::new(r"(?i)\.\s*[A-Z][a-z]+\s+(?:Journal|Review|Transactions|Letters|advances|Processing|medica|Intelligenz)\b.*$").unwrap(),
@@ -1900,6 +1914,82 @@ mod tests {
             title.contains("round-trip time") && title.contains("virtualization"),
             "Should extract title despite multi-particle author names: {}",
             title,
+        );
+    }
+
+    // ───────────────── Edge case fixes ─────────────────
+
+    #[test]
+    fn test_asn1_period_not_sentence_boundary() {
+        // "ASN.1" should not be treated as a sentence boundary
+        let title = "ASN.1-based Fuzzing of Radio Resource Control Protocol for 4G and 5G";
+        let cleaned = clean_title(title, false);
+        assert!(
+            cleaned.contains("ASN.1-based Fuzzing"),
+            "ASN.1 period should not truncate title: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_berserker_asn1_full_reference() {
+        // Full reference with ASN.1 in the title
+        let ref_text = r#"H. Kim, J. Park, and S. Lee, "Berserker: ASN.1-based Fuzzing of Radio Resource Control Protocol for 4G and 5G," in Proc. IEEE Security, 2023."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "Should detect quoted title");
+        let cleaned = clean_title(&title, from_quotes);
+        assert!(
+            cleaned.contains("ASN.1-based"),
+            "Title should preserve ASN.1: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("4G and 5G"),
+            "Title should contain full text: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_over_the_air_hyphenation_in_title() {
+        // "Over-The-Air" with line break should preserve hyphens
+        let ref_text = "B. Stone, A. Reed, and C. Hall. BaseBridge: Bridging the Gap between Emulation and Over-\nThe-Air Testing for Cellular Baseband Firmware. In USENIX Security, 2024.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            cleaned.contains("Over-The-Air"),
+            "Should preserve Over-The-Air compound: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_pacmpl_after_question_mark() {
+        // "PACMPL, 2019" after question mark should not leak into title
+        let ref_text = "Micha\u{00EB}l Marcozzi, Qiyi Tang, Alastair F Donaldson, and Cristian Cadar. Compiler fuzzing: How much does it matter? PACMPL, 2019";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            !cleaned.contains("PACMPL"),
+            "PACMPL venue should not leak into title: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("How much does it matter?"),
+            "Title should end with question mark: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_version_number_period_not_sentence_boundary() {
+        // Version numbers like "2.0" should not be treated as sentence boundaries
+        let title = "Web 2.0 Technologies for Social Computing";
+        let cleaned = clean_title(title, false);
+        assert!(
+            cleaned.contains("Web 2.0 Technologies"),
+            "Period in 2.0 should not truncate title: {}",
+            cleaned,
         );
     }
 }
