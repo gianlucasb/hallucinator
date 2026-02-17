@@ -92,7 +92,12 @@ pub(crate) fn extract_authors_from_reference_with_config(
     parse_general_authors_with_max(author_section, config.max_authors)
 }
 
+/// Name suffixes whose trailing period is NOT a sentence boundary.
+static SUFFIX_WORDS: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| ["Jr", "Sr"].into_iter().collect());
+
 /// Find the first "real" period — one that's not after an author initial like "M." or "J."
+/// and not after a name suffix like "Jr." or "Sr."
 fn find_first_real_period(text: &str) -> Option<usize> {
     static PERIOD_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s").unwrap());
 
@@ -108,6 +113,17 @@ fn find_first_real_period(text: &str) -> Option<usize> {
             // This is likely an initial — skip
             continue;
         }
+
+        // Check for name suffixes like "Jr." or "Sr."
+        let mut word_start = pos;
+        while word_start > 0 && text.as_bytes()[word_start - 1].is_ascii_alphabetic() {
+            word_start -= 1;
+        }
+        let word_before = &text[word_start..pos];
+        if SUFFIX_WORDS.contains(word_before) {
+            continue;
+        }
+
         return Some(pos);
     }
     None
@@ -163,7 +179,7 @@ fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<Stri
 
         // Skip if it looks like a sentence/title (lowercase words that aren't prepositions)
         static NAME_PREPOSITIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-            ["and", "de", "van", "von", "la", "del", "di"]
+            ["and", "de", "van", "von", "la", "del", "di", "le", "jr", "sr"]
                 .into_iter()
                 .collect()
         });
@@ -237,5 +253,42 @@ mod tests {
         let ref_text = "John Smith and Alice Jones. 2022. Title of paper. In Proceedings.";
         let authors = extract_authors_from_reference(ref_text);
         assert!(!authors.is_empty());
+    }
+
+    #[test]
+    fn test_name_with_jr_suffix() {
+        // "Jr." should not be treated as a sentence boundary
+        let ref_text =
+            "Jamar L. Sullivan Jr. and Alice Jones. A Novel Method for Detection. In Proceedings.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Sullivan")),
+            "Should extract Sullivan as author: {:?}",
+            authors,
+        );
+    }
+
+    #[test]
+    fn test_name_with_sr_suffix() {
+        let ref_text =
+            "Robert K. Williams Sr. and Jane Doe. Some Paper Title. In Proceedings.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Williams")),
+            "Should extract Williams as author: {:?}",
+            authors,
+        );
+    }
+
+    #[test]
+    fn test_name_with_le_particle() {
+        // "Le" is a surname particle, not a title word
+        let ref_text = "Christopher A. Le Dantec and Alice Jones. Community Informatics Design. In Proceedings.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Le Dantec") || a.contains("Dantec")),
+            "Should extract Le Dantec as author: {:?}",
+            authors,
+        );
     }
 }
