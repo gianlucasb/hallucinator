@@ -23,6 +23,34 @@ impl PyReference {
 
 #[pymethods]
 impl PyReference {
+    /// Construct a Reference by hand (no PDF required).
+    ///
+    /// Only `raw_citation` is mandatory; everything else is optional and
+    /// keyword-only so callers can specify exactly what they have.
+    #[new]
+    #[pyo3(signature = (raw_citation, *, title=None, authors=None, doi=None, arxiv_id=None, original_number=0, skip_reason=None))]
+    fn new(
+        raw_citation: String,
+        title: Option<String>,
+        authors: Option<Vec<String>>,
+        doi: Option<String>,
+        arxiv_id: Option<String>,
+        original_number: usize,
+        skip_reason: Option<String>,
+    ) -> Self {
+        Self {
+            inner: Reference {
+                raw_citation,
+                title,
+                authors: authors.unwrap_or_default(),
+                doi,
+                arxiv_id,
+                original_number,
+                skip_reason,
+            },
+        }
+    }
+
     /// The raw citation text (cleaned up for display).
     #[getter]
     fn raw_citation(&self) -> &str {

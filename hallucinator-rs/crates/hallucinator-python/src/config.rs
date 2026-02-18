@@ -30,6 +30,7 @@ pub struct PyValidatorConfig {
     pub(crate) disabled_dbs: Vec<String>,
     pub(crate) check_openalex_authors: bool,
     pub(crate) crossref_mailto: Option<String>,
+    pub(crate) searxng_url: Option<String>,
 }
 
 impl PyValidatorConfig {
@@ -79,6 +80,7 @@ impl PyValidatorConfig {
             max_rate_limit_retries: self.max_rate_limit_retries,
             rate_limiters,
             cache_path: self.cache_path.as_ref().map(PathBuf::from),
+            searxng_url: self.searxng_url.clone(),
             query_cache: Some(hallucinator_core::build_query_cache(
                 self.cache_path.as_ref().map(std::path::Path::new),
             )),
@@ -103,6 +105,7 @@ impl PyValidatorConfig {
             disabled_dbs: vec![],
             check_openalex_authors: false,
             crossref_mailto: None,
+            searxng_url: None,
         }
     }
 
@@ -236,6 +239,17 @@ impl PyValidatorConfig {
     #[setter]
     fn set_crossref_mailto(&mut self, value: Option<String>) {
         self.crossref_mailto = value;
+    }
+
+    /// SearxNG base URL for web search fallback (optional).
+    #[getter]
+    fn get_searxng_url(&self) -> Option<&str> {
+        self.searxng_url.as_deref()
+    }
+
+    #[setter]
+    fn set_searxng_url(&mut self, value: Option<String>) {
+        self.searxng_url = value;
     }
 
     fn __repr__(&self) -> String {
