@@ -127,6 +127,11 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
+    // === Format 7a: "Author et al. Title. Venue" ===
+    if let Some(result) = try_et_al_period(ref_text) {
+        return result;
+    }
+
     // === Fallback: second sentence ===
     if let Some(result) = try_fallback_sentence(ref_text) {
         return result;
@@ -461,10 +466,14 @@ fn find_subtitle_end(text: &str) -> usize {
 fn try_lncs(ref_text: &str) -> Option<(String, bool)> {
     // Enhanced Springer/LNCS format: "Author, I., Author, I.: Title. In: Venue"
     // Also handles multi-initial patterns like "B.S.:", "C.P.:", "L.:"
+    // And "et al.:" pattern
     static RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?:,\s*)?[A-Z](?:\.[A-Z])*\.\s*:\s*(.+)").unwrap());
+    static ET_AL_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)et\.?\s+al\.?\s*:\s*(.+)").unwrap());
 
-    let caps = RE.captures(ref_text)?;
+    // Try standard LNCS pattern first, then et al. pattern
+    let caps = RE.captures(ref_text).or_else(|| ET_AL_RE.captures(ref_text))?;
     let after_colon = caps.get(1).unwrap().as_str().trim();
 
     let title_end = find_title_end_lncs(after_colon);
@@ -719,6 +728,27 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*((?:19|20)\d{2}[a-z]?)\.\s+").unwrap());
 
     let caps = RE.captures(ref_text)?;
+
+    // FIX: Reject matches within DOI patterns
+    // DOIs look like "doi: 10.XXXX/suffix.2023. fragment" where the year can appear as a DOI component
+    let match_start = caps.get(0).unwrap().start();
+    let before_match = &ref_text[..match_start];
+    static DOI_CONTEXT_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)doi:\s*10\.\d+/").unwrap());
+    if DOI_CONTEXT_RE.is_match(before_match) {
+        // Check if we're still within the DOI (no sentence break between DOI and match)
+        // Look for the last "doi:" and check if there's a proper sentence ending between it and the match
+        if let Some(doi_match) = DOI_CONTEXT_RE.find(before_match) {
+            let between = &before_match[doi_match.end()..];
+            // If there's no proper sentence break (". " followed by uppercase), we're still in the DOI
+            static SENTENCE_BREAK: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"\.\s+[A-Z]").unwrap());
+            if !SENTENCE_BREAK.is_match(between) {
+                return None; // Skip — this is a year within a DOI
+            }
+        }
+    }
+
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
     // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
@@ -896,8 +926,9 @@ fn try_chinese_allcaps(ref_text: &str) -> Option<(String, bool)> {
     }
 
     // Find end of author list at "et al." or transition to non-author text
+    // Also handles "et. al." variant (period after "et")
     static ET_AL: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i),?\s+et\s+al\.?\s*[,.]?\s*").unwrap());
+        Lazy::new(|| Regex::new(r"(?i),?\s+et\.?\s+al\.?\s*[,.]?\s*").unwrap());
 
     let after_authors_str: String = if let Some(m) = ET_AL.find(ref_text) {
         ref_text[m.end()..].trim().to_string()
@@ -1213,6 +1244,29 @@ fn try_direct_in_venue(ref_text: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Handle "Author et al. Title. Venue" format (period after et al., not colon)
+fn try_et_al_period(ref_text: &str) -> Option<(String, bool)> {
+    // Match "et al. Title" where title has 10+ chars before next period
+    // Also handles "et. al." variant (period after "et")
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bet\.?\s+al\.\s+([A-Z][^.]{10,}?)\.").unwrap());
+
+    let caps = RE.captures(ref_text)?;
+    let title = caps.get(1).unwrap().as_str().trim();
+
+    // Make sure this looks like a title, not an author list or venue
+    if title.split_whitespace().count() < 4 {
+        return None;
+    }
+
+    // Check for journal metadata patterns at the end
+    if is_journal_metadata(title) {
+        return None;
+    }
+
+    Some((title.to_string(), false))
+}
+
 fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     let sentences = split_sentences_skip_initials(ref_text);
     if sentences.len() < 2 {
@@ -1244,6 +1298,13 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
         Regex::new(r"^[Ii]n\s+(?:Proc|Proceedings|Conference|Workshop|Symposium|Annual|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR|The\s+\d|[A-Z]{2,}\s+\d)").unwrap()
     });
     if IN_VENUE_RE.is_match(&potential_title) {
+        return None;
+    }
+
+    // FIX: Skip DOI fragments (starts with digits + contains URL or doi:)
+    static DOI_FRAGMENT_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\d+[.\s].*(?:URL|doi:|https?://)").unwrap());
+    if DOI_FRAGMENT_RE.is_match(&potential_title) {
         return None;
     }
 
@@ -1289,8 +1350,8 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z]{}+)\s*,", sc, sc)).unwrap(),
             // Middle initial without period: "D Kaplan,"
             Regex::new(&format!(r"^[A-Z]\s+({}+)\s*,", sc)).unwrap(),
-            // Surname + "et al": "Abadjiev et al."
-            Regex::new(&format!(r"(?i)^([A-Z]{}+)\s+et\s+al", sc)).unwrap(),
+            // Surname + "et al": "Abadjiev et al." (also handles "et. al." variant)
+            Regex::new(&format!(r"(?i)^([A-Z]{}+)\s+et\.?\s+al", sc)).unwrap(),
         ]
     });
 
@@ -1352,6 +1413,34 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             && MID_SENTENCE_ABBREVIATIONS.contains(word_before.to_lowercase().as_str())
         {
             continue;
+        }
+
+        // FIX: Don't split within DOI patterns (handles line breaks in DOIs)
+        // DOIs have format "10.XXXX/suffix.part" where parts can wrap across lines
+        // If we see "YYYY. NNNN" pattern (year followed by DOI suffix), don't split
+        {
+            static DOI_CONTEXT_RE: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"doi:\s*10\.\d+/").unwrap());
+            let before_text = &text[..pos];
+            let after_period = &text[m.end()..];
+
+            // Check if we're within a DOI context AND the pattern looks like DOI fragment
+            if DOI_CONTEXT_RE.is_match(&before_text.to_lowercase()) {
+                // Word before is digits (year or DOI component) and after starts with digits
+                static DIGIT_WORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d+").unwrap());
+                let word_before_digits = {
+                    let mut ws = pos - 1;
+                    while ws > 0 && text.as_bytes()[ws - 1].is_ascii_alphanumeric() {
+                        ws -= 1;
+                    }
+                    &text[ws..pos]
+                };
+                if word_before_digits.chars().all(|c| c.is_ascii_digit())
+                    && DIGIT_WORD_RE.is_match(after_period)
+                {
+                    continue; // Skip — this is within a DOI
+                }
+            }
         }
 
         // This is a real sentence boundary
@@ -1544,6 +1633,28 @@ mod tests {
             parts[0].contains("Jones"),
             "Jones should be in author segment: {:?}",
             parts
+        );
+    }
+
+    #[test]
+    fn test_doi_fragment_not_extracted() {
+        // DOI with line break: "10.1109/TVCG.2023.\n3214567" becomes "10.1109/TVCG.2023. 3214567"
+        // after whitespace normalization. The "3214567" should NOT become a separate sentence.
+        let ref_text = "Hao Wang and Li Zhang. Synthesizing realistic avatars for enhanced virtual communication. IEEE Transactions on Visualization and Computer Graphics, 29(5):1802–1815, 2023. doi: 10.1109/TVCG.2023. 3214567. URL https://ieeexplore.ieee.org/document/3214567.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        eprintln!("Raw title: {:?}, from_quotes: {}", title, from_quotes);
+        let cleaned = clean_title(&title, from_quotes);
+        eprintln!("Cleaned title: {:?}", cleaned);
+        assert!(
+            cleaned.contains("Synthesizing realistic avatars"),
+            "Should extract title, not DOI fragment. Raw: {:?}, Cleaned: {:?}",
+            title,
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("3214567"),
+            "DOI fragment should not be in title: {:?}",
+            cleaned
         );
     }
 
