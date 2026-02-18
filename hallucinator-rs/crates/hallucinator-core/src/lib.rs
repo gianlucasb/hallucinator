@@ -16,7 +16,7 @@ pub mod rate_limit;
 pub mod retraction;
 
 // Re-export for convenience
-pub use cache::QueryCache;
+pub use cache::{DEFAULT_NEGATIVE_TTL, DEFAULT_POSITIVE_TTL, QueryCache};
 pub use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
 pub use orchestrator::{DbSearchResult, query_all_databases};
 pub use rate_limit::{DbQueryError, RateLimitedResult, RateLimiters};
@@ -191,6 +191,10 @@ pub struct Config {
     /// Path to the persistent SQLite cache database (optional).
     /// When set, the query cache is backed by SQLite for persistence across restarts.
     pub cache_path: Option<PathBuf>,
+    /// TTL in seconds for positive (found) cache entries. Default: 7 days.
+    pub cache_positive_ttl_secs: u64,
+    /// TTL in seconds for negative (not-found) cache entries. Default: 24 hours.
+    pub cache_negative_ttl_secs: u64,
 }
 
 impl std::fmt::Debug for Config {
@@ -224,6 +228,8 @@ impl std::fmt::Debug for Config {
                 &self.query_cache.as_ref().map(|c| format!("{:?}", c)),
             )
             .field("cache_path", &self.cache_path)
+            .field("cache_positive_ttl_secs", &self.cache_positive_ttl_secs)
+            .field("cache_negative_ttl_secs", &self.cache_negative_ttl_secs)
             .finish()
     }
 }
@@ -248,6 +254,8 @@ impl Default for Config {
             searxng_url: None,
             query_cache: Some(Arc::new(QueryCache::default())),
             cache_path: None,
+            cache_positive_ttl_secs: DEFAULT_POSITIVE_TTL.as_secs(),
+            cache_negative_ttl_secs: DEFAULT_NEGATIVE_TTL.as_secs(),
         }
     }
 }
@@ -256,17 +264,19 @@ impl Default for Config {
 ///
 /// If `cache_path` is set, opens a persistent SQLite-backed cache.
 /// Otherwise, returns an in-memory-only cache.
-pub fn build_query_cache(cache_path: Option<&std::path::Path>) -> Arc<QueryCache> {
+pub fn build_query_cache(
+    cache_path: Option<&std::path::Path>,
+    positive_ttl_secs: u64,
+    negative_ttl_secs: u64,
+) -> Arc<QueryCache> {
+    let positive_ttl = Duration::from_secs(positive_ttl_secs);
+    let negative_ttl = Duration::from_secs(negative_ttl_secs);
     if let Some(path) = cache_path {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match QueryCache::open(
-            path,
-            std::time::Duration::from_secs(7 * 24 * 60 * 60),
-            std::time::Duration::from_secs(24 * 60 * 60),
-        ) {
+        match QueryCache::open(path, positive_ttl, negative_ttl) {
             Ok(cache) => {
                 log::info!("Opened persistent cache at {}", path.display());
                 return Arc::new(cache);
@@ -280,7 +290,7 @@ pub fn build_query_cache(cache_path: Option<&std::path::Path>) -> Arc<QueryCache
             }
         }
     }
-    Arc::new(QueryCache::default())
+    Arc::new(QueryCache::new(positive_ttl, negative_ttl))
 }
 
 #[cfg(test)]
@@ -303,7 +313,11 @@ mod build_cache_tests {
 
     #[test]
     fn none_path_returns_in_memory() {
-        let cache = build_query_cache(None);
+        let cache = build_query_cache(
+            None,
+            DEFAULT_POSITIVE_TTL.as_secs(),
+            DEFAULT_NEGATIVE_TTL.as_secs(),
+        );
         assert!(!cache.has_persistence());
     }
 
@@ -312,7 +326,11 @@ mod build_cache_tests {
         let path = temp_path();
         let _ = std::fs::remove_file(&path);
 
-        let cache = build_query_cache(Some(&path));
+        let cache = build_query_cache(
+            Some(&path),
+            DEFAULT_POSITIVE_TTL.as_secs(),
+            DEFAULT_NEGATIVE_TTL.as_secs(),
+        );
         assert!(cache.has_persistence());
 
         // Verify default TTLs (7 days positive, 24 hours negative)
@@ -336,7 +354,11 @@ mod build_cache_tests {
             let _ = std::fs::remove_dir_all(parent);
         }
 
-        let cache = build_query_cache(Some(&path));
+        let cache = build_query_cache(
+            Some(&path),
+            DEFAULT_POSITIVE_TTL.as_secs(),
+            DEFAULT_NEGATIVE_TTL.as_secs(),
+        );
         assert!(cache.has_persistence());
         assert!(path.parent().unwrap().exists());
 

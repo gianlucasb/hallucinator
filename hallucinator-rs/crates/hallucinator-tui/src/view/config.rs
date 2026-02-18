@@ -313,9 +313,23 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         btn_style,
     )));
 
-    // Item 4: SearxNG URL (editable)
+    // Item 4: Clear Not-Found button
     let cursor = if config.item_cursor == 4 { "> " } else { "  " };
-    let display_val = if config.editing && config.item_cursor == 4 {
+    let btn_style = if config.item_cursor == 4 {
+        Style::default()
+            .fg(theme.author_mismatch)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  {}[Clear Not-Found]", cursor),
+        btn_style,
+    )));
+
+    // Item 5: SearxNG URL (editable)
+    let cursor = if config.item_cursor == 5 { "> " } else { "  " };
+    let display_val = if config.editing && config.item_cursor == 5 {
         format!("{}\u{2588}", config.edit_buffer)
     } else {
         match &config.searxng_url {
@@ -323,7 +337,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
             None => "(disabled)".to_string(),
         }
     };
-    let val_style = if config.editing && config.item_cursor == 4 {
+    let val_style = if config.editing && config.item_cursor == 5 {
         Style::default().fg(theme.active)
     } else if config.searxng_url.is_some() {
         Style::default().fg(theme.verified)
@@ -342,7 +356,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
 
     // Items 5..N: DB toggles
     for (i, (name, enabled)) in config.disabled_dbs.iter().enumerate() {
-        let item_idx = i + 5; // offset by 5 for DBLP + ACL + cache_path + clear_cache + searxng_url
+        let item_idx = i + 6; // offset by 6 for DBLP + ACL + cache_path + clear_cache + clear_not_found + searxng_url
         let cursor = if config.item_cursor == item_idx {
             "> "
         } else {

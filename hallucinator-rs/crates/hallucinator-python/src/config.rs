@@ -79,8 +79,13 @@ impl PyValidatorConfig {
             max_rate_limit_retries: self.max_rate_limit_retries,
             rate_limiters,
             cache_path: self.cache_path.as_ref().map(PathBuf::from),
+            cache_positive_ttl_secs: hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
+            cache_negative_ttl_secs: hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs(),
+            searxng_url: None,
             query_cache: Some(hallucinator_core::build_query_cache(
                 self.cache_path.as_ref().map(std::path::Path::new),
+                hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
+                hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs(),
             )),
         })
     }

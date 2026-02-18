@@ -105,7 +105,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         } else {
             String::new()
         };
-        let bar_color = if health.in_flight > max_in_flight / 2 {
+        let bar_color = if health.in_flight > max_in_flight.max(8) / 2 {
             Color::Yellow
         } else {
             theme.active
@@ -293,6 +293,38 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ),
         Style::default().fg(theme.text),
     )));
+    // Cache detail
+    if let Some(cache) = &app.current_query_cache {
+        let (l1_found, l1_nf) = cache.l1_counts();
+        let (l2_found, l2_nf) = cache.l2_counts();
+        let total = cache.disk_len();
+        lines.push(Line::from(Span::styled(
+            format!(" Cache  {} entries", total),
+            Style::default().fg(theme.dim),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled("   mem:  ", Style::default().fg(theme.dim)),
+            Span::styled(format!("{}", l1_found), Style::default().fg(theme.verified)),
+            Span::styled(" found  ", Style::default().fg(theme.dim)),
+            Span::styled(format!("{}", l1_nf), Style::default().fg(theme.not_found)),
+            Span::styled(" not-found", Style::default().fg(theme.dim)),
+        ]));
+        if cache.has_persistence() {
+            lines.push(Line::from(vec![
+                Span::styled("   disk: ", Style::default().fg(theme.dim)),
+                Span::styled(
+                    format!("{}", l2_found),
+                    Style::default().fg(theme.verified),
+                ),
+                Span::styled(" found  ", Style::default().fg(theme.dim)),
+                Span::styled(
+                    format!("{}", l2_nf),
+                    Style::default().fg(theme.not_found),
+                ),
+                Span::styled(" not-found", Style::default().fg(theme.dim)),
+            ]));
+        }
+    }
     let rss_mb = app.measured_rss_bytes as f64 / (1024.0 * 1024.0);
     lines.push(Line::from(Span::styled(
         format!(" FPS: {:.0}  RSS: {:.1} MB", app.measured_fps, rss_mb),

@@ -80,6 +80,10 @@ enum Command {
         /// Clear the query cache and exit
         #[arg(long)]
         clear_cache: bool,
+
+        /// Clear only not-found entries from the cache and exit
+        #[arg(long)]
+        clear_not_found: bool,
     },
 
     /// Download and build the offline DBLP database
@@ -119,8 +123,9 @@ async fn main() -> anyhow::Result<()> {
             searxng,
             cache_path,
             clear_cache,
+            clear_not_found,
         } => {
-            if clear_cache {
+            if clear_cache || clear_not_found {
                 let path = cache_path.or_else(|| {
                     std::env::var("HALLUCINATOR_CACHE_PATH")
                         .ok()
@@ -134,8 +139,17 @@ async fn main() -> anyhow::Result<()> {
                             std::time::Duration::from_secs(1),
                         )
                         .map_err(|e| anyhow::anyhow!("{}", e))?;
-                        cache.clear();
-                        println!("Cache cleared: {}", p.display());
+                        if clear_not_found {
+                            let removed = cache.clear_not_found();
+                            println!(
+                                "Cleared {} not-found entries from cache: {}",
+                                removed,
+                                p.display()
+                            );
+                        } else {
+                            cache.clear();
+                            println!("Cache cleared: {}", p.display());
+                        }
                         Ok(())
                     }
                     Some(p) => {
@@ -373,7 +387,10 @@ async fn check(
             .ok()
             .map(PathBuf::from)
     });
-    let query_cache = hallucinator_core::build_query_cache(cache_path.as_deref());
+    let positive_ttl = hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs();
+    let negative_ttl = hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs();
+    let query_cache =
+        hallucinator_core::build_query_cache(cache_path.as_deref(), positive_ttl, negative_ttl);
 
     let config = hallucinator_core::Config {
         openalex_key: openalex_key.clone(),
@@ -393,6 +410,8 @@ async fn check(
         searxng_url,
         query_cache: Some(query_cache),
         cache_path,
+        cache_positive_ttl_secs: positive_ttl,
+        cache_negative_ttl_secs: negative_ttl,
     };
 
     // Set up progress callback

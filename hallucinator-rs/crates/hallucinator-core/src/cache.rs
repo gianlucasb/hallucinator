@@ -24,10 +24,10 @@ use crate::db::DbQueryResult;
 use crate::matching::normalize_title;
 
 /// Default time-to-live for positive (found) cache entries: 7 days.
-const DEFAULT_POSITIVE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub const DEFAULT_POSITIVE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Default time-to-live for negative (not found) cache entries: 24 hours.
-const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Cache key: normalized title + database name.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -101,7 +101,28 @@ impl SqliteWriter {
         Ok(Self { conn })
     }
 
-    fn insert(&self, norm_title: &str, db_name: &str, result: &CachedResult, epoch: u64) {
+    /// Insert or replace a cache entry. Returns what was previously stored:
+    /// `None` = new entry, `Some(true)` = replaced a Found, `Some(false)` = replaced a NotFound.
+    fn insert(
+        &self,
+        norm_title: &str,
+        db_name: &str,
+        result: &CachedResult,
+        epoch: u64,
+    ) -> Option<bool> {
+        // Check what (if anything) is being replaced
+        let previous: Option<bool> = self
+            .conn
+            .query_row(
+                "SELECT found FROM query_cache WHERE normalized_title = ?1 AND db_name = ?2",
+                params![norm_title, db_name],
+                |row| {
+                    let f: i32 = row.get(0)?;
+                    Ok(f != 0)
+                },
+            )
+            .ok();
+
         let (found, found_title, authors_json, paper_url) = match result {
             CachedResult::Found {
                 title,
@@ -130,12 +151,25 @@ impl SqliteWriter {
                 epoch
             ],
         );
+
+        previous
     }
 
     fn clear(&self) {
         let _ = self.conn.execute("DELETE FROM query_cache", []);
         // Reclaim disk space — without VACUUM the deleted pages stay as free pages.
         let _ = self.conn.execute_batch("VACUUM");
+    }
+
+    fn clear_not_found(&self) -> usize {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM query_cache WHERE found = 0", [])
+            .unwrap_or(0);
+        if deleted > 0 {
+            let _ = self.conn.execute_batch("VACUUM");
+        }
+        deleted
     }
 
     fn evict_expired(&self, positive_ttl: Duration, negative_ttl: Duration) {
@@ -150,10 +184,25 @@ impl SqliteWriter {
         );
     }
 
-    fn count(&self) -> usize {
-        self.conn
-            .query_row("SELECT COUNT(*) FROM query_cache", [], |row| row.get(0))
-            .unwrap_or(0)
+    /// Count of (found, not_found) entries in the SQLite table.
+    fn counts_by_type(&self) -> (usize, usize) {
+        let found: usize = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM query_cache WHERE found = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let not_found: usize = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM query_cache WHERE found = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        (found, not_found)
     }
 }
 
@@ -286,6 +335,11 @@ pub struct QueryCache {
     total_lookup_us: AtomicU64,
     /// Total number of lookups (hits + misses) for average calculation.
     total_lookups: AtomicU64,
+    // ── Counters kept in sync on insert/remove/clear (no per-frame queries) ──
+    l1_found_count: AtomicU64,
+    l1_not_found_count: AtomicU64,
+    l2_found_count: AtomicU64,
+    l2_not_found_count: AtomicU64,
 }
 
 impl Default for QueryCache {
@@ -307,6 +361,10 @@ impl QueryCache {
             misses: AtomicU64::new(0),
             total_lookup_us: AtomicU64::new(0),
             total_lookups: AtomicU64::new(0),
+            l1_found_count: AtomicU64::new(0),
+            l1_not_found_count: AtomicU64::new(0),
+            l2_found_count: AtomicU64::new(0),
+            l2_not_found_count: AtomicU64::new(0),
         }
     }
 
@@ -322,6 +380,7 @@ impl QueryCache {
         let writer = SqliteWriter::open(path)
             .map_err(|e| format!("Failed to open cache database at {}: {}", path.display(), e))?;
         writer.evict_expired(positive_ttl, negative_ttl);
+        let (l2_found, l2_nf) = writer.counts_by_type();
         Ok(Self {
             entries: DashMap::new(),
             sqlite_writer: Some(Mutex::new(writer)),
@@ -332,6 +391,10 @@ impl QueryCache {
             misses: AtomicU64::new(0),
             total_lookup_us: AtomicU64::new(0),
             total_lookups: AtomicU64::new(0),
+            l1_found_count: AtomicU64::new(0),
+            l1_not_found_count: AtomicU64::new(0),
+            l2_found_count: AtomicU64::new(l2_found as u64),
+            l2_not_found_count: AtomicU64::new(l2_nf as u64),
         })
     }
 
@@ -354,8 +417,15 @@ impl QueryCache {
                 CachedResult::NotFound => self.negative_ttl,
             };
             if entry.inserted_at.elapsed() > ttl {
+                let is_found = matches!(entry.result, CachedResult::Found { .. });
                 drop(entry);
                 self.entries.remove(&key);
+                // Adjust L1 counters for the expired eviction
+                if is_found {
+                    self.l1_found_count.fetch_sub(1, Ordering::Relaxed);
+                } else {
+                    self.l1_not_found_count.fetch_sub(1, Ordering::Relaxed);
+                }
                 // Fall through to L2
             } else {
                 self.hits.fetch_add(1, Ordering::Relaxed);
@@ -371,6 +441,14 @@ impl QueryCache {
         {
             // Promote to L1
             let query_result = cached_to_query_result(&result);
+            match &result {
+                CachedResult::Found { .. } => {
+                    self.l1_found_count.fetch_add(1, Ordering::Relaxed);
+                }
+                CachedResult::NotFound => {
+                    self.l1_not_found_count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             self.entries.insert(
                 key,
                 CacheEntry {
@@ -399,7 +477,16 @@ impl QueryCache {
     ///
     /// Only caches successful results (found or not-found). Errors should NOT
     /// be passed to this method. Write-through: updates both L1 and L2.
+    ///
+    /// If `negative_ttl` is zero, not-found results are never cached.
     pub fn insert(&self, title: &str, db_name: &str, result: &DbQueryResult) {
+        let is_not_found = result.0.is_none();
+
+        // Skip not-found entries entirely when negative TTL is zero
+        if is_not_found && self.negative_ttl.is_zero() {
+            return;
+        }
+
         let norm = normalize_title(title);
         let key = CacheKey {
             normalized_title: norm.clone(),
@@ -415,10 +502,11 @@ impl QueryCache {
             (None, _, _) => CachedResult::NotFound,
         };
 
+        let now_is_found = matches!(cached, CachedResult::Found { .. });
         let epoch = now_epoch();
 
-        // L1
-        self.entries.insert(
+        // L1 — DashMap::insert returns the old value if the key existed
+        let old_l1 = self.entries.insert(
             key,
             CacheEntry {
                 result: cached.clone(),
@@ -427,22 +515,85 @@ impl QueryCache {
             },
         );
 
-        // L2
+        // Adjust L1 counters: decrement for old, increment for new
+        if let Some(old_entry) = old_l1 {
+            if matches!(old_entry.result, CachedResult::Found { .. }) {
+                self.l1_found_count.fetch_sub(1, Ordering::Relaxed);
+            } else {
+                self.l1_not_found_count.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        if now_is_found {
+            self.l1_found_count.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.l1_not_found_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // L2 — write-through to SQLite for persistence across restarts.
         if let Some(ref sqlite_mutex) = self.sqlite_writer
             && let Ok(store) = sqlite_mutex.lock()
         {
-            store.insert(&norm, db_name, &cached, epoch);
+            let previous = store.insert(&norm, db_name, &cached, epoch);
+
+            // Adjust L2 counters: decrement old type, increment new type
+            match previous {
+                Some(true) => {
+                    self.l2_found_count.fetch_sub(1, Ordering::Relaxed);
+                }
+                Some(false) => {
+                    self.l2_not_found_count.fetch_sub(1, Ordering::Relaxed);
+                }
+                None => {} // new entry
+            }
+            if now_is_found {
+                self.l2_found_count.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.l2_not_found_count.fetch_add(1, Ordering::Relaxed);
+            }
         }
+    }
+
+    /// Remove all not-found entries from L1 (in-memory) and L2 (SQLite).
+    ///
+    /// Returns the total number of entries removed across both tiers.
+    pub fn clear_not_found(&self) -> usize {
+        // L1: retain only Found entries
+        let mut l1_removed = 0usize;
+        self.entries.retain(|_, entry| {
+            if matches!(entry.result, CachedResult::NotFound) {
+                l1_removed += 1;
+                false
+            } else {
+                true
+            }
+        });
+        self.l1_not_found_count.store(0, Ordering::Relaxed);
+
+        // L2: delete not-found rows from SQLite
+        let l2_removed = if let Some(ref sqlite_mutex) = self.sqlite_writer
+            && let Ok(store) = sqlite_mutex.lock()
+        {
+            store.clear_not_found()
+        } else {
+            0
+        };
+        self.l2_not_found_count.store(0, Ordering::Relaxed);
+
+        l1_removed + l2_removed
     }
 
     /// Remove all entries from both L1 and L2.
     pub fn clear(&self) {
         self.entries.clear();
+        self.l1_found_count.store(0, Ordering::Relaxed);
+        self.l1_not_found_count.store(0, Ordering::Relaxed);
         if let Some(ref sqlite_mutex) = self.sqlite_writer
             && let Ok(store) = sqlite_mutex.lock()
         {
             store.clear();
         }
+        self.l2_found_count.store(0, Ordering::Relaxed);
+        self.l2_not_found_count.store(0, Ordering::Relaxed);
     }
 
     /// Number of cache hits since creation.
@@ -477,16 +628,32 @@ impl QueryCache {
 
     /// Total entries in the persistent L2 store (0 if no SQLite backing).
     pub fn disk_len(&self) -> usize {
-        self.sqlite_writer
-            .as_ref()
-            .and_then(|m| m.lock().ok())
-            .map(|s| s.count())
-            .unwrap_or(0)
+        let f = self.l2_found_count.load(Ordering::Relaxed) as usize;
+        let nf = self.l2_not_found_count.load(Ordering::Relaxed) as usize;
+        f + nf
     }
 
     /// Whether this cache has a persistent SQLite backing store.
     pub fn has_persistence(&self) -> bool {
         self.sqlite_writer.is_some()
+    }
+
+    /// Count of (found, not_found) entries in L2 (SQLite).
+    /// Returns (0, 0) if no persistence. Uses cached atomic counters (no SQL query).
+    pub fn l2_counts(&self) -> (usize, usize) {
+        (
+            self.l2_found_count.load(Ordering::Relaxed) as usize,
+            self.l2_not_found_count.load(Ordering::Relaxed) as usize,
+        )
+    }
+
+    /// Count of found vs not-found entries in L1 (in-memory).
+    /// Uses cached atomic counters (no DashMap iteration).
+    pub fn l1_counts(&self) -> (usize, usize) {
+        (
+            self.l1_found_count.load(Ordering::Relaxed) as usize,
+            self.l1_not_found_count.load(Ordering::Relaxed) as usize,
+        )
     }
 
     /// The positive (found) TTL.
@@ -693,6 +860,8 @@ mod tests {
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         let result: DbQueryResult = (None, vec![], None);
         cache.insert("Fake Paper", "arXiv", &result);
+        assert!(cache.get("Fake Paper", "arXiv").is_some());
+        assert_eq!(cache.disk_len(), 1);
 
         drop(cache);
         let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
@@ -700,6 +869,26 @@ mod tests {
         assert!(cached.is_some());
         let (title, _, _) = cached.unwrap();
         assert!(title.is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sqlite_not_found_skipped_when_negative_ttl_zero() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        // Zero negative TTL = don't cache not-found at all
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, Duration::ZERO).unwrap();
+        cache.insert("Fake Paper", "arXiv", &(None, vec![], None));
+        // Not in L1 or L2
+        assert!(cache.get("Fake Paper", "arXiv").is_none());
+        assert_eq!(cache.disk_len(), 0);
+
+        // Found results still work
+        cache.insert("Real Paper", "arXiv", &(Some("Real Paper".into()), vec![], None));
+        assert!(cache.get("Real Paper", "arXiv").is_some());
+        assert_eq!(cache.disk_len(), 1);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -903,14 +1092,12 @@ mod tests {
     fn zero_ttl_entries_expire_immediately() {
         let cache = QueryCache::new(Duration::ZERO, Duration::ZERO);
         cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
-        // With zero TTL, any elapsed time > 0 means expired
-        // The insert and get happen so fast they might share the same Instant,
-        // but the `>` check (not `>=`) means Duration::ZERO elapsed == Duration::ZERO TTL
-        // is NOT expired. That's fine — it's a degenerate edge case.
-        // Insert a not-found too:
+        // With zero positive TTL, the entry is inserted but expires immediately
+        // on get (elapsed > Duration::ZERO).
+        // Zero negative TTL means not-found entries are never cached at all:
         cache.insert("Missing", "DB", &(None, vec![], None));
-        // At minimum, verify no panic and consistent state
-        assert_eq!(cache.len(), 2);
+        // Only the found entry is in L1 (not-found was skipped)
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]
@@ -970,7 +1157,7 @@ mod tests {
             "DB",
             &(Some("Paper".into()), vec!["Author".into()], None),
         );
-        assert_eq!(cache.disk_len(), 1); // still one row
+        assert_eq!(cache.disk_len(), 1);
 
         // Restart and verify the overwritten value persisted
         drop(cache);
@@ -1003,5 +1190,44 @@ mod tests {
         let cache = QueryCache::new(Duration::from_secs(42), Duration::from_secs(7));
         assert_eq!(cache.positive_ttl(), Duration::from_secs(42));
         assert_eq!(cache.negative_ttl(), Duration::from_secs(7));
+    }
+
+    #[test]
+    fn clear_not_found_l1_only() {
+        let cache = QueryCache::default();
+        cache.insert("Found Paper", "DB", &(Some("Found Paper".into()), vec![], None));
+        cache.insert("Missing Paper", "DB", &(None, vec![], None));
+        cache.insert("Also Missing", "DB2", &(None, vec![], None));
+        assert_eq!(cache.len(), 3);
+
+        let removed = cache.clear_not_found();
+        assert_eq!(removed, 2);
+        assert_eq!(cache.len(), 1);
+        // Found paper should still be there
+        assert!(cache.get("Found Paper", "DB").is_some());
+        // Not-found papers should be gone
+        assert!(cache.get("Missing Paper", "DB").is_none());
+        assert!(cache.get("Also Missing", "DB2").is_none());
+    }
+
+    #[test]
+    fn clear_not_found_with_sqlite() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.insert("Found Paper", "DB", &(Some("Found Paper".into()), vec!["Author".into()], None));
+        cache.insert("Missing Paper", "DB", &(None, vec![], None));
+        assert_eq!(cache.len(), 2);
+
+        let removed = cache.clear_not_found();
+        assert!(removed >= 1); // at least the L1 not-found entry
+        assert_eq!(cache.len(), 1);
+
+        // Found paper should survive in both tiers
+        assert!(cache.get("Found Paper", "DB").is_some());
+        assert!(cache.disk_len() >= 1);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
