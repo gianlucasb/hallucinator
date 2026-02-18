@@ -99,21 +99,27 @@ impl DatabaseBackend for Searxng {
                 urlencoding::encode(&query)
             );
 
-            let resp = client
-                .get(&url)
-                .timeout(timeout)
-                .send()
-                .await
-                .map_err(|e| DbQueryError::Other(e.to_string()))?;
+            // If SearxNG is not running, silently return "not found" instead of erroring
+            let resp = match client.get(&url).timeout(timeout).send().await {
+                Ok(r) => r,
+                Err(_) => {
+                    // Connection refused, timeout, etc. - SearxNG not available
+                    return Ok((None, vec![], None));
+                }
+            };
 
             if !resp.status().is_success() {
-                return Err(DbQueryError::Other(format!("HTTP {}", resp.status())));
+                // SearxNG returned an error - skip silently
+                return Ok((None, vec![], None));
             }
 
-            let data: SearxngResponse = resp
-                .json()
-                .await
-                .map_err(|e| DbQueryError::Other(e.to_string()))?;
+            let data: SearxngResponse = match resp.json().await {
+                Ok(d) => d,
+                Err(_) => {
+                    // Failed to parse response - skip silently
+                    return Ok((None, vec![], None));
+                }
+            };
 
             // Check results for matching titles
             for result in data.results {
