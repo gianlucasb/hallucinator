@@ -570,6 +570,115 @@ async fn finalize_collector(collector: &RefCollector) {
     }
 }
 
+// ── Cache pre-check ─────────────────────────────────────────────────────
+
+/// Pre-check result from scanning the cache for all remote DBs.
+struct CachePreCheck {
+    /// DB results from cache hits.
+    db_results: Vec<DbResult>,
+    /// Verified match info, if any cache hit resolved to Verified.
+    verified_info: Option<VerifiedInfo>,
+    /// First author mismatch from cache, if any.
+    first_mismatch: Option<MismatchInfo>,
+    /// Indices into drainer_txs for DBs that had cache misses.
+    miss_indices: Vec<usize>,
+}
+
+/// Check cache for all remote DBs before dispatching to drainers.
+///
+/// This eliminates a race condition where a fast cache hit in one drainer
+/// sets `verified`, causing other drainers to skip before checking their
+/// own cache entries — preventing those entries from ever being populated.
+///
+/// Does NOT emit progress events — the caller is responsible for emitting
+/// Skipped events for cache-hit DBs to decrement in-flight counters.
+fn pre_check_remote_cache(
+    cache: Option<&crate::cache::QueryCache>,
+    title: &str,
+    ref_authors: &[String],
+    drainer_txs: &[(String, async_channel::Sender<DrainerJob>)],
+    check_openalex_authors: bool,
+) -> CachePreCheck {
+    let cache = match cache {
+        Some(c) => c,
+        None => {
+            return CachePreCheck {
+                db_results: vec![],
+                verified_info: None,
+                first_mismatch: None,
+                miss_indices: (0..drainer_txs.len()).collect(),
+            };
+        }
+    };
+
+    let mut db_results = Vec::new();
+    let mut verified_info: Option<VerifiedInfo> = None;
+    let mut first_mismatch: Option<MismatchInfo> = None;
+    let mut miss_indices = Vec::new();
+
+    for (i, (db_name, _)) in drainer_txs.iter().enumerate() {
+        match cache.get(title, db_name) {
+            Some((Some(_), found_authors, paper_url)) => {
+                if ref_authors.is_empty() || validate_authors(ref_authors, &found_authors) {
+                    db_results.push(DbResult {
+                        db_name: db_name.clone(),
+                        status: DbStatus::Match,
+                        elapsed: Some(Duration::ZERO),
+                        found_authors: found_authors.clone(),
+                        paper_url: paper_url.clone(),
+                        error_message: None,
+                    });
+                    if verified_info.is_none() {
+                        verified_info = Some(VerifiedInfo {
+                            source: db_name.clone(),
+                            found_authors,
+                            paper_url,
+                        });
+                    }
+                } else {
+                    db_results.push(DbResult {
+                        db_name: db_name.clone(),
+                        status: DbStatus::AuthorMismatch,
+                        elapsed: Some(Duration::ZERO),
+                        found_authors: found_authors.clone(),
+                        paper_url: paper_url.clone(),
+                        error_message: None,
+                    });
+                    if first_mismatch.is_none()
+                        && (db_name != "OpenAlex" || check_openalex_authors)
+                    {
+                        first_mismatch = Some(MismatchInfo {
+                            source: db_name.clone(),
+                            found_authors,
+                            paper_url,
+                        });
+                    }
+                }
+            }
+            Some((None, _, _)) => {
+                db_results.push(DbResult {
+                    db_name: db_name.clone(),
+                    status: DbStatus::NoMatch,
+                    elapsed: Some(Duration::ZERO),
+                    found_authors: vec![],
+                    paper_url: None,
+                    error_message: None,
+                });
+            }
+            None => {
+                miss_indices.push(i);
+            }
+        }
+    }
+
+    CachePreCheck {
+        db_results,
+        verified_info,
+        first_mismatch,
+        miss_indices,
+    }
+}
+
 // ── Coordinator ─────────────────────────────────────────────────────────
 
 /// Coordinator loop: pick a ref, run local DBs inline, fan out to drainers.
@@ -694,6 +803,184 @@ async fn coordinator_loop(
             continue;
         }
 
+        // --- Cache pre-check for all remote DBs ---
+        // Check cache for ALL remote DBs synchronously before dispatching
+        // to drainers. This prevents the race where a fast drainer sets
+        // `verified`, causing other drainers to skip without ever caching
+        // their results.
+        let pre = pre_check_remote_cache(
+            config.query_cache.as_deref(),
+            &title,
+            &reference.authors,
+            &drainer_txs,
+            config.check_openalex_authors,
+        );
+
+        // Emit Skipped for cache-hit DBs to decrement in-flight counters
+        // without inflating per-DB query stats.
+        for (i, (db_name, _)) in drainer_txs.iter().enumerate() {
+            if !pre.miss_indices.contains(&i) {
+                db_complete_cb(DbResult {
+                    db_name: db_name.clone(),
+                    status: DbStatus::Skipped,
+                    elapsed: None,
+                    found_authors: vec![],
+                    paper_url: None,
+                    error_message: None,
+                });
+            }
+        }
+
+        // If verified from cache, skip all drainers
+        if let Some(verified) = pre.verified_info {
+            // Emit Skipped for cache-miss DBs (they won't be queried either)
+            for &i in &pre.miss_indices {
+                db_complete_cb(DbResult {
+                    db_name: drainer_txs[i].0.clone(),
+                    status: DbStatus::Skipped,
+                    elapsed: None,
+                    found_authors: vec![],
+                    paper_url: None,
+                    error_message: None,
+                });
+            }
+
+            let mut all_db_results = local_result.db_results;
+            all_db_results.extend(pre.db_results);
+            for &i in &pre.miss_indices {
+                all_db_results.push(DbResult {
+                    db_name: drainer_txs[i].0.clone(),
+                    status: DbStatus::Skipped,
+                    elapsed: None,
+                    found_authors: vec![],
+                    paper_url: None,
+                    error_message: None,
+                });
+            }
+
+            let retraction_info = if let Some(ref doi) = reference.doi {
+                check_retraction_for_doi(
+                    doi,
+                    &client,
+                    Duration::from_secs(config.db_timeout_secs),
+                    config.crossref_mailto.as_deref(),
+                )
+                .await
+            } else {
+                check_retraction_for_title(
+                    &title,
+                    &client,
+                    Duration::from_secs(config.db_timeout_secs),
+                    config.crossref_mailto.as_deref(),
+                )
+                .await
+            };
+
+            let doi_info = reference.doi.as_ref().map(|doi| {
+                let valid = all_db_results.iter().any(|r| {
+                    r.db_name == "DOI"
+                        && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch)
+                });
+                DoiInfo {
+                    doi: doi.clone(),
+                    valid,
+                    title: None,
+                }
+            });
+
+            let result = ValidationResult {
+                title: title.clone(),
+                raw_citation: reference.raw_citation.clone(),
+                ref_authors: reference.authors.clone(),
+                status: Status::Verified,
+                source: Some(verified.source),
+                found_authors: verified.found_authors,
+                paper_url: verified.paper_url,
+                failed_dbs: local_result.failed_dbs,
+                db_results: all_db_results,
+                doi_info,
+                arxiv_info: reference.arxiv_id.as_ref().map(|id| ArxivInfo {
+                    arxiv_id: id.clone(),
+                    valid: false,
+                    title: None,
+                }),
+                retraction_info,
+            };
+
+            emit_final_events(progress.as_ref(), &result, ref_index, total, &title);
+            let _ = result_tx.send(result);
+            continue;
+        }
+
+        // If all remote DBs were in cache (no misses) but none verified
+        if pre.miss_indices.is_empty() {
+            let mut all_db_results = local_result.db_results;
+            all_db_results.extend(pre.db_results);
+
+            let first_mismatch = pre.first_mismatch.or_else(|| {
+                if local_result.status == Status::AuthorMismatch {
+                    Some(MismatchInfo {
+                        source: local_result.source.clone().unwrap_or_default(),
+                        found_authors: local_result.found_authors.clone(),
+                        paper_url: local_result.paper_url.clone(),
+                    })
+                } else {
+                    None
+                }
+            });
+
+            let (status, source, found_authors, paper_url) = if let Some(m) = first_mismatch {
+                (
+                    Status::AuthorMismatch,
+                    Some(m.source),
+                    m.found_authors,
+                    m.paper_url,
+                )
+            } else {
+                (Status::NotFound, None, vec![], None)
+            };
+
+            let result = ValidationResult {
+                title: title.clone(),
+                raw_citation: reference.raw_citation.clone(),
+                ref_authors: reference.authors.clone(),
+                status,
+                source,
+                found_authors,
+                paper_url,
+                failed_dbs: local_result.failed_dbs,
+                db_results: all_db_results,
+                doi_info: reference.doi.as_ref().map(|doi| DoiInfo {
+                    doi: doi.clone(),
+                    valid: false,
+                    title: None,
+                }),
+                arxiv_info: reference.arxiv_id.as_ref().map(|id| ArxivInfo {
+                    arxiv_id: id.clone(),
+                    valid: false,
+                    title: None,
+                }),
+                retraction_info: None,
+            };
+
+            emit_final_events(progress.as_ref(), &result, ref_index, total, &title);
+            let _ = result_tx.send(result);
+            continue;
+        }
+
+        // --- Fan out only cache-miss DBs to drainers ---
+        let first_mismatch = pre.first_mismatch.or_else(|| {
+            if local_result.status == Status::AuthorMismatch {
+                Some(MismatchInfo {
+                    source: local_result.source.clone().unwrap_or_default(),
+                    found_authors: local_result.found_authors.clone(),
+                    paper_url: local_result.paper_url.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
         let collector = Arc::new(RefCollector {
             reference,
             ref_index,
@@ -702,28 +989,20 @@ async fn coordinator_loop(
             progress,
             config: config.clone(),
             client: client.clone(),
-            remaining: AtomicUsize::new(drainer_txs.len()),
+            remaining: AtomicUsize::new(pre.miss_indices.len()),
             verified: AtomicBool::new(false),
             state: Mutex::new(AggState {
                 verified_info: None,
-                first_mismatch: if local_result.status == Status::AuthorMismatch {
-                    Some(MismatchInfo {
-                        source: local_result.source.clone().unwrap_or_default(),
-                        found_authors: local_result.found_authors.clone(),
-                        paper_url: local_result.paper_url.clone(),
-                    })
-                } else {
-                    None
-                },
+                first_mismatch,
                 failed_dbs: vec![],
-                db_results: vec![],
+                db_results: pre.db_results,
             }),
             result_tx: Mutex::new(Some(result_tx)),
             local_result,
         });
 
-        for (_, tx) in drainer_txs.iter() {
-            let _ = tx.try_send(DrainerJob {
+        for &i in &pre.miss_indices {
+            let _ = drainer_txs[i].1.try_send(DrainerJob {
                 collector: collector.clone(),
             });
         }

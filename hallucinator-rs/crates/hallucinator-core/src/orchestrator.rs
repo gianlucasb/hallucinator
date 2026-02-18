@@ -228,10 +228,51 @@ pub async fn query_remote_databases(
         };
     }
 
-    // Spawn remote DB queries concurrently
+    // --- Cache pre-check for all remote DBs ---
+    // Check cache synchronously before spawning concurrent tasks to avoid
+    // the race where a fast task returns Verified and aborts others before
+    // they can cache their results.
+    let mut cache_miss_dbs: Vec<&Arc<dyn DatabaseBackend>> = Vec::new();
+    for db in &remote_dbs {
+        let name = db.name().to_string();
+        let cached = cache.as_ref().and_then(|c| c.get(title, &name));
+
+        if let Some(cached_result) = cached {
+            completed_db_names.insert(name.clone());
+            match process_query_result(
+                name,
+                Ok(cached_result),
+                Duration::ZERO,
+                ref_authors,
+                check_openalex_authors,
+                on_db_complete,
+                &mut db_results,
+                &mut failed_dbs,
+                &mut first_mismatch,
+            ) {
+                Some(verified) => {
+                    emit_skipped(
+                        &all_db_names,
+                        &completed_db_names,
+                        on_db_complete,
+                        &mut db_results,
+                    );
+                    return DbSearchResult {
+                        db_results,
+                        ..verified
+                    };
+                }
+                None => {}
+            }
+        } else {
+            cache_miss_dbs.push(db);
+        }
+    }
+
+    // Spawn only cache-miss DBs concurrently
     let mut join_set = tokio::task::JoinSet::new();
 
-    for db in &remote_dbs {
+    for db in cache_miss_dbs {
         let db = Arc::clone(db);
         let title = title.to_string();
         let client = client.clone();

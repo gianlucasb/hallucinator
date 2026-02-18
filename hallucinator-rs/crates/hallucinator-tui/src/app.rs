@@ -1526,6 +1526,10 @@ impl App {
                         self.batch_complete = true;
                         self.processing_started = false;
                         self.activity.active_queries.clear();
+                    } else {
+                        // Batch completed — allow restart
+                        self.processing_started = false;
+                        self.start_processing();
                     }
                 }
             }

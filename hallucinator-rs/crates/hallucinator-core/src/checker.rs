@@ -1,6 +1,6 @@
 use crate::db::DatabaseBackend;
 use crate::db::searxng::Searxng;
-use crate::doi::{DoiMatchResult, check_doi_match, validate_doi};
+use crate::doi::{DoiMatchResult, DoiValidation, check_doi_match, validate_doi};
 use crate::orchestrator::query_all_databases;
 use crate::pool::{RefJob, ValidationPool};
 use crate::retraction::{check_retraction, check_retraction_by_title};
@@ -79,11 +79,71 @@ pub async fn check_single_reference(
     let title = reference.title.as_deref().unwrap_or("");
     let timeout = Duration::from_secs(config.db_timeout_secs);
 
-    // Step 1: Validate DOI if present
+    // Step 1: Validate DOI if present (with cache support)
     let mut doi_info = None;
     if let Some(ref doi) = reference.doi {
-        let doi_result = validate_doi(doi, client, timeout).await;
-        let match_result = check_doi_match(&doi_result, title, &reference.authors);
+        // Check cache first
+        let cached = config
+            .query_cache
+            .as_ref()
+            .and_then(|cache| cache.get(title, "DOI"));
+
+        let (doi_result, match_result) = if let Some(ref cached_result) = cached {
+            match cached_result {
+                (Some(cached_title), cached_authors, _url) => {
+                    // Cache hit with Found — reconstruct DOI validation and match
+                    let doi_val = DoiValidation {
+                        valid: true,
+                        title: Some(cached_title.clone()),
+                        authors: cached_authors.clone(),
+                        error: None,
+                    };
+                    let match_res = check_doi_match(&doi_val, title, &reference.authors);
+                    (doi_val, match_res)
+                }
+                (None, _, _) => {
+                    // Cache hit with NotFound — skip DOI validation entirely,
+                    // fall through to DB search by jumping past DOI block
+                    (
+                        DoiValidation {
+                            valid: false,
+                            title: None,
+                            authors: vec![],
+                            error: Some("Cached as not found".into()),
+                        },
+                        DoiMatchResult::Invalid {
+                            error: "Cached as not found".into(),
+                        },
+                    )
+                }
+            }
+        } else {
+            // Cache miss — call doi.org
+            let doi_val = validate_doi(doi, client, timeout).await;
+            let match_res = check_doi_match(&doi_val, title, &reference.authors);
+
+            // Cache the result
+            if let Some(ref cache) = config.query_cache {
+                let cache_entry: (Option<String>, Vec<String>, Option<String>) = match &match_res {
+                    DoiMatchResult::Verified {
+                        doi_title,
+                        doi_authors,
+                    }
+                    | DoiMatchResult::AuthorMismatch {
+                        doi_title,
+                        doi_authors,
+                    } => (
+                        Some(doi_title.clone()),
+                        doi_authors.clone(),
+                        Some(format!("https://doi.org/{}", doi)),
+                    ),
+                    _ => (None, vec![], None),
+                };
+                cache.insert(title, "DOI", &cache_entry);
+            }
+
+            (doi_val, match_res)
+        };
 
         doi_info = Some(DoiInfo {
             doi: doi.clone(),
