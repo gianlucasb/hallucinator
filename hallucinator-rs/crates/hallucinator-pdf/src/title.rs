@@ -8,7 +8,14 @@ use crate::text_processing::fix_hyphenation;
 /// Abbreviations that should NEVER be sentence boundaries (mid-title abbreviations).
 static MID_SENTENCE_ABBREVIATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
+        // Common title abbreviations
         "vs", "eg", "ie", "cf", "fig", "figs", "eq", "eqs", "sec", "ch", "pt", "no",
+        // Journal/venue abbreviations
+        "proc", "acm", "ieee", "trans", "conf", "int", "natl", "assoc", "soc",
+        "comput", "sci", "eng", "technol", "lett", "rev", "j", "vol", "pp",
+        "manag", "softw", "inf", "syst", "commun", "netw", "secur", "priv",
+        // Latin abbreviations
+        "et", "al",
     ]
     .into_iter()
     .collect()
@@ -257,6 +264,12 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
+    // FIX 2a (NeurIPS): Reject journal metadata extracted as title
+    // e.g., "Molecular Psychiatry 19, 659–667 (2014)"
+    if is_journal_metadata(&title) {
+        return String::new();
+    }
+
     // FIX 3 (NeurIPS): Reject author initials lists ("AL, Name Name, Name Name")
     static AUTHOR_INITIALS_LIST_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"^[A-Z]{1,3},\s+[A-Z][a-z]+\s+[A-Z][a-z]+,\s+[A-Z][a-z]+\s+[A-Z][a-z]+")
@@ -299,8 +312,9 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
-    // FIX 6 (CCS): Reject URLs as titles
-    static URL_TITLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^https?://").unwrap());
+    // FIX 6 (CCS): Reject URLs as titles (including "URL https://..." prefix)
+    static URL_TITLE_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^(?:URL\s+)?https?://").unwrap());
     if URL_TITLE_RE.is_match(&title) {
         return String::new();
     }
@@ -308,6 +322,28 @@ pub(crate) fn clean_title_with_config(
     // FIX 7 (CCS): Reject malformed titles starting with brackets (e.g., "[n" from "[n. d.]")
     if title.starts_with('[') && title.len() < 5 {
         return String::new();
+    }
+
+    // FIX 8 (NeurIPS): Reject numeric-only titles (DOI fragments like "3234567")
+    static NUMERIC_ONLY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d+$").unwrap());
+    if NUMERIC_ONLY_RE.is_match(title.trim()) {
+        return String::new();
+    }
+
+    // FIX 9 (NeurIPS): Reject very short titles that look like author fragments,
+    // abbreviations, or partial journal names
+    // e.g., "Al", "Proc", "et al", "Comput", "Class", "Rev", "Ix"
+    let trimmed = title.trim();
+    if trimmed.len() <= 7 {
+        static SHORT_REJECT_RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(
+                r"(?i)^(?:al|et al|proc|eds?|vol|pp|no|comput|class|rev|ix|phys|sci|eng|math)\.?$",
+            )
+            .unwrap()
+        });
+        if SHORT_REJECT_RE.is_match(trimmed) {
+            return String::new();
+        }
     }
 
     title = title.trim().to_string();
@@ -496,11 +532,12 @@ fn is_journal_metadata(text: &str) -> bool {
 
     static PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
-            // "In:" or "In " venue markers
-            Regex::new(r"(?i)^In[:\s]").unwrap(),
-            // "In: Proceedings..." or "In: 2019 IEEE..."
-            Regex::new(r"(?i)^In[:\s]+(?:Proceedings|Proc\.)").unwrap(),
-            Regex::new(r"(?i)^In[:\s]+\d{4}\s+(?:IEEE|ACM|USENIX)").unwrap(),
+            // "In:" venue markers (but NOT "In Word" which could be a title)
+            // Only reject if followed by colon or by known venue patterns
+            Regex::new(r"(?i)^In:").unwrap(),
+            // "In Proceedings..." or "In 2019 IEEE..."
+            Regex::new(r"(?i)^In\s+(?:Proceedings|Proc\.)").unwrap(),
+            Regex::new(r"(?i)^In\s+\d{4}\s+(?:IEEE|ACM|USENIX)").unwrap(),
             // Journal Vol(Issue), Pages (Year): "Educational Researcher 13(6), 4–16 (1984)"
             Regex::new(
                 r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)",
@@ -516,6 +553,15 @@ fn is_journal_metadata(text: &str) -> bool {
             Regex::new(r"^\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]\d+").unwrap(),
             // Journal name;year format: "IEEE Trans... 2018;17(3)"
             Regex::new(r"^[A-Z][A-Za-z\s]+\d{4};\d+").unwrap(),
+            // Journal Vol, Pages (Year): "Molecular Psychiatry 19, 659–667 (2014)"
+            Regex::new(r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*,\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)").unwrap(),
+            // Editor list + venue: "editors, International Conference..."
+            Regex::new(r"(?i)^editors?,\s+(?:International|Proceedings|Conference|Workshop)")
+                .unwrap(),
+            // arXiv preprint metadata
+            Regex::new(r"(?i)^arXiv\s+preprint").unwrap(),
+            // Just vol:pages like "31:4149–4161"
+            Regex::new(r"^\d+\s*:\s*\d+[\u{2013}\-]\d+").unwrap(),
         ]
     });
 
@@ -1219,7 +1265,7 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
     // Note: Rust regex doesn't support Unicode properties the same way, so we use
     // character classes for common diacritics
     static AUTHOR_AFTER: Lazy<Vec<Regex>> = Lazy::new(|| {
-        let sc = r"[a-zA-Z\u{00A0}-\u{017F}'\-`\u{00B4}]"; // surname chars
+        let sc = r"[a-zA-Z\u{00A0}-\u{017F}'\-`\u{00B4}\*]"; // surname chars (includes * for equal contrib)
         vec![
             // Surname followed by comma: "Smith,"
             Regex::new(&format!(r"^([A-Z]{}+)\s*,", sc)).unwrap(),
@@ -1243,6 +1289,8 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z]{}+)\s*,", sc, sc)).unwrap(),
             // Middle initial without period: "D Kaplan,"
             Regex::new(&format!(r"^[A-Z]\s+({}+)\s*,", sc)).unwrap(),
+            // Surname + "et al": "Abadjiev et al."
+            Regex::new(&format!(r"(?i)^([A-Z]{}+)\s+et\s+al", sc)).unwrap(),
         ]
     });
 
@@ -1299,7 +1347,10 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             word_start -= 1;
         }
         let word_before = &text[word_start..pos];
-        if MID_SENTENCE_ABBREVIATIONS.contains(word_before.to_lowercase().as_str()) {
+        // Only check 2+ letter words for abbreviations; single letters are author initials
+        if word_before.len() >= 2
+            && MID_SENTENCE_ABBREVIATIONS.contains(word_before.to_lowercase().as_str())
+        {
             continue;
         }
 
