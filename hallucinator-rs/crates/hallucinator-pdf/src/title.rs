@@ -299,6 +299,17 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
+    // FIX 6 (CCS): Reject URLs as titles
+    static URL_TITLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^https?://").unwrap());
+    if URL_TITLE_RE.is_match(&title) {
+        return String::new();
+    }
+
+    // FIX 7 (CCS): Reject malformed titles starting with brackets (e.g., "[n" from "[n. d.]")
+    if title.starts_with('[') && title.len() < 5 {
+        return String::new();
+    }
+
     title = title.trim().to_string();
     static TRAILING_PUNCT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.,;:]+$").unwrap());
     title = TRAILING_PUNCT.replace(&title, "").to_string();
@@ -1135,6 +1146,20 @@ fn try_direct_in_venue(ref_text: &str) -> Option<(String, bool)> {
     let caps = RE.captures(ref_text)?;
     let title = caps.get(1).unwrap().as_str().trim();
 
+    // Reject if this looks like an author list (high ratio of capitalized names + "and")
+    let words: Vec<&str> = title.split_whitespace().collect();
+    if words.len() >= 4 {
+        static CAP_WORD: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"^[A-Z][a-z]+[,.]?$").unwrap());
+        let cap_words = words.iter().filter(|w| CAP_WORD.is_match(w)).count();
+        let and_count = words.iter().filter(|w| w.to_lowercase() == "and").count();
+
+        // If >60% capitalized words and has "and", it's likely an author list
+        if (cap_words as f64 / words.len() as f64) > 0.6 && and_count > 0 {
+            return None;
+        }
+    }
+
     if title.split_whitespace().count() >= 4 {
         Some((title.to_string(), false))
     } else {
@@ -1151,9 +1176,11 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     let mut potential_title = sentences[1].trim().to_string();
 
     // Check if it looks like authors (high ratio of capitalized words + "and")
+    // Strip trailing punctuation when checking words (e.g., "Shen," should match)
     let words: Vec<&str> = potential_title.split_whitespace().collect();
     if !words.is_empty() {
-        static CAP_WORD: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Z][a-z]+$").unwrap());
+        static CAP_WORD: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"^[A-Z][a-z]+[,.]?$").unwrap());
         let cap_words = words.iter().filter(|w| CAP_WORD.is_match(w)).count();
         let and_count = words.iter().filter(|w| w.to_lowercase() == "and").count();
 
@@ -1165,9 +1192,12 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
         }
     }
 
-    // Skip if starts with "In " (venue)
-    static IN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[Ii]n\s+").unwrap());
-    if IN_RE.is_match(&potential_title) {
+    // Skip if starts with "In " followed by venue indicators, but NOT if it's a title
+    // (e.g., "In ChatGPT We Trust?" is a title, not a venue)
+    static IN_VENUE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^[Ii]n\s+(?:Proc|Proceedings|Conference|Workshop|Symposium|Annual|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR|The\s+\d|[A-Z]{2,}\s+\d)").unwrap()
+    });
+    if IN_VENUE_RE.is_match(&potential_title) {
         return None;
     }
 
@@ -1205,6 +1235,8 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(r"^[A-Z]\.-[A-Z]\.").unwrap(),
             // Surname + period + Capital: "Smith. X"
             Regex::new(&format!(r"^([A-Z]{}+)\.\s+[A-Z]", sc)).unwrap(),
+            // Surname + period + lowercase/digit: "Klein. seL4" (title starts with lowercase)
+            Regex::new(&format!(r"^([A-Z]{}+)\.\s+[a-z0-9]", sc)).unwrap(),
             // Surname + "and" + Capital
             Regex::new(&format!(r"(?i)^([A-Z]{}+)\s+and\s+[A-Z]", sc)).unwrap(),
             // Multi-part surname: "Van Goethem,"
@@ -2271,6 +2303,74 @@ mod tests {
             cleaned2.contains("gender pay gap"),
             "Title content should be preserved: {}",
             cleaned2
+        );
+    }
+
+    // ── CCS 2024 Fixes ──
+
+    #[test]
+    fn test_ccs_lowercase_title_start_sel4() {
+        // Issue 3: "G. Klein. seL4:" should not split at "G." because seL4 starts with lowercase
+        let ref_text = "T. C. Murray, D. Matichuk, M. Brassil, P. Gammie, T. Bourke, S. Seefried, C. Lewis, X. Gao, and G. Klein. seL4: From general purpose to a proof of information flow enforcement. IEEE S&P. 2013.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            cleaned.contains("seL4"),
+            "Title should contain 'seL4': {}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Klein"),
+            "Surname 'Klein' should not be the title: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_ccs_in_chatgpt_title() {
+        // Issue 6: Title starting with "In" should not be skipped if it's not a venue
+        let ref_text = "Xinyue Shen, Zeyuan Chen, Michael Backes, and Yang Zhang. In ChatGPT We Trust? Measuring and Characterizing the Reliability of ChatGPT. CoRR abs/2304.08979, 2023.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            cleaned.contains("In ChatGPT We Trust"),
+            "Title should be 'In ChatGPT We Trust?...': {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_ccs_url_title_rejected() {
+        // Issue 4: URLs should not be extracted as titles
+        let cleaned = clean_title("https://docs.clevertap.com/docs/att", false);
+        assert!(cleaned.is_empty(), "URL should be rejected as title");
+    }
+
+    #[test]
+    fn test_ccs_bracket_nd_rejected() {
+        // Issue 1: "[n" from "[n. d.]" pattern should be rejected
+        let cleaned = clean_title("[n", false);
+        assert!(
+            cleaned.is_empty(),
+            "Malformed bracket title should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_ccs_author_list_not_title() {
+        // Ensure author lists are rejected by try_direct_in_venue
+        let ref_text = "Omar Shaikh, Hongxin Zhang, William Held, Michael Bernstein, and Diyi Yang. On Second Thought, Let's Not Think Step by Step! In Annual Meeting of the Association.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            cleaned.contains("Second Thought"),
+            "Title should contain 'Second Thought': {}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Omar Shaikh"),
+            "Author list should not be the title: {}",
+            cleaned
         );
     }
 }

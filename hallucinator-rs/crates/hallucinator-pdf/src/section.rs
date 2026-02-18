@@ -78,6 +78,13 @@ pub(crate) fn segment_references_with_config(
     ref_text: &str,
     config: &PdfParsingConfig,
 ) -> Vec<String> {
+    let refs = segment_references_raw(ref_text, config);
+    // Clean each reference to remove PDF artifacts (line numbers, page headers)
+    refs.into_iter().map(|r| clean_reference(&r)).collect()
+}
+
+/// Segment references without post-processing cleanup.
+fn segment_references_raw(ref_text: &str, config: &PdfParsingConfig) -> Vec<String> {
     // Strategy 1: IEEE style [1], [2], ...
     if let Some(refs) = try_ieee_with_config(ref_text, config) {
         return refs;
@@ -115,6 +122,33 @@ pub(crate) fn segment_references_with_config(
 
     // Strategy 5: Fallback — split by double newlines
     fallback_double_newline_with_config(ref_text, config)
+}
+
+/// Clean a reference string by removing PDF extraction artifacts.
+///
+/// Removes:
+/// - Sequences of line numbers (e.g., "1625\n1626\n1627...")
+/// - Page headers that bleed into references
+fn clean_reference(ref_text: &str) -> String {
+    // Strip sequences of 4+ digit line numbers on separate lines
+    // These appear when PDF extraction captures margin line numbers
+    static LINE_NUMBERS_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?:\n\s*\d{4,}\s*)+\n").unwrap());
+    let cleaned = LINE_NUMBERS_RE.replace_all(ref_text, "\n");
+
+    // Strip page headers: "Page N" or just page numbers at end
+    static PAGE_HEADER_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\n\s*\d{1,3}\s*\n").unwrap());
+    let cleaned = PAGE_HEADER_RE.replace_all(&cleaned, "\n");
+
+    // Strip conference/paper headers that bleed into references
+    // e.g., "Conference'17, July 2017, City, Country"
+    static CONF_HEADER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\n[A-Z][^\n]{10,}\s+(?:Conference|CCS|USENIX|IEEE|ACM)[^\n]*\n").unwrap()
+    });
+    let cleaned = CONF_HEADER_RE.replace_all(&cleaned, "\n");
+
+    cleaned.trim().to_string()
 }
 
 fn try_ieee_with_config(ref_text: &str, config: &PdfParsingConfig) -> Option<Vec<String>> {
