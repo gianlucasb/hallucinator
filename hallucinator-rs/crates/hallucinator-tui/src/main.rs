@@ -287,6 +287,16 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
+    // Check SearxNG connectivity if enabled
+    if let Some(ref url) = config_state.searxng_url {
+        let searxng = hallucinator_core::db::searxng::Searxng::new(url.clone());
+        if let Err(msg) = searxng.check_connectivity().await {
+            startup_warnings.push(msg);
+        } else {
+            startup_info.push(format!("SearxNG available at {}", url));
+        }
+    }
+
     // Select theme
     let theme = match config_state.theme_name.as_str() {
         "modern" => theme::Theme::modern(),

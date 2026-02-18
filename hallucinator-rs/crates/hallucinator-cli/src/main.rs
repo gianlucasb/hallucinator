@@ -166,12 +166,18 @@ async fn check(
 
     // SearxNG URL: only enabled if --searxng flag is set
     let searxng_url = if searxng {
-        Some(
-            std::env::var("SEARXNG_URL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "http://localhost:8080".to_string()),
-        )
+        let url = std::env::var("SEARXNG_URL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "http://localhost:8080".to_string());
+
+        // Check connectivity and warn if not reachable
+        let searxng = hallucinator_core::db::searxng::Searxng::new(url.clone());
+        if let Err(msg) = searxng.check_connectivity().await {
+            eprintln!("\x1b[33mWarning:\x1b[0m {}", msg);
+        }
+
+        Some(url)
     } else {
         None
     };

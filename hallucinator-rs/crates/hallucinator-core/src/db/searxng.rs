@@ -24,6 +24,31 @@ impl Searxng {
     pub fn new(base_url: String) -> Self {
         Self { base_url }
     }
+
+    /// Check if SearxNG is reachable. Returns Ok(()) if reachable, Err with message otherwise.
+    pub async fn check_connectivity(&self) -> Result<(), String> {
+        let client = reqwest::Client::new();
+        let url = format!("{}/", self.base_url.trim_end_matches('/'));
+
+        match client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => Ok(()),
+            Ok(resp) => Err(format!("SearxNG returned HTTP {}", resp.status())),
+            Err(e) if e.is_connect() => Err(format!(
+                "Cannot connect to SearxNG at {} - is the container running?",
+                self.base_url
+            )),
+            Err(e) if e.is_timeout() => Err(format!(
+                "SearxNG at {} timed out - is the container running?",
+                self.base_url
+            )),
+            Err(e) => Err(format!("SearxNG error: {}", e)),
+        }
+    }
 }
 
 /// Lenient title matching for web search results.
