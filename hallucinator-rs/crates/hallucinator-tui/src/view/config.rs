@@ -267,11 +267,57 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         lines.push(Line::from(Span::styled(format!("      {}", status), style)));
     }
 
+    // Item 2: Cache path (editable)
+    let cursor = if config.item_cursor == 2 { "> " } else { "  " };
+    let display_val = if config.editing && config.item_cursor == 2 {
+        format!("{}\u{2588}", config.edit_buffer)
+    } else if config.cache_path.is_empty() {
+        "(not set)".to_string()
+    } else {
+        truncate_path(&config.cache_path, max_path_len)
+    };
+    let val_style = if config.editing && config.item_cursor == 2 {
+        Style::default().fg(theme.active)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {}{:<20}", cursor, "Cache Path"),
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(display_val, val_style),
+    ]));
+
+    // Show cache clear status inline
+    if let Some(ref status) = config.cache_clear_status {
+        let style = if status.starts_with("Failed") {
+            Style::default().fg(theme.not_found)
+        } else {
+            Style::default().fg(theme.verified)
+        };
+        lines.push(Line::from(Span::styled(format!("      {}", status), style)));
+    }
+
+    // Item 3: Clear Cache button
+    let cursor = if config.item_cursor == 3 { "> " } else { "  " };
+    let btn_style = if config.item_cursor == 3 {
+        Style::default()
+            .fg(theme.not_found)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  {}[Clear Cache]", cursor),
+        btn_style,
+    )));
+
     lines.push(Line::from(""));
 
-    // Items 2..N: DB toggles
+    // Items 4..N: DB toggles
     for (i, (name, enabled)) in config.disabled_dbs.iter().enumerate() {
-        let item_idx = i + 2; // offset by 2 for the DBLP + ACL path fields
+        let item_idx = i + 4; // offset by 4 for DBLP + ACL + cache_path + clear_cache
         let cursor = if config.item_cursor == item_idx {
             "> "
         } else {

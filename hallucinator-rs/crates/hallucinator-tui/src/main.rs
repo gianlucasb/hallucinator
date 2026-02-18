@@ -567,6 +567,9 @@ async fn main() -> anyhow::Result<()> {
                         }
                     });
                 }
+                tui_event::BackendCommand::ClearCache => {
+                    // Cache clearing is handled synchronously in the TUI app.
+                }
             }
         }
     });

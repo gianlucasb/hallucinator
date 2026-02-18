@@ -1169,6 +1169,7 @@ dependencies = [
  "rapidfuzz",
  "regex",
  "reqwest",
+ "rusqlite",
  "scraper",
  "serde",
  "serde_json",

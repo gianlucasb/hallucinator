@@ -64,6 +64,9 @@ pub struct ConfigState {
     pub disabled_dbs: Vec<(String, bool)>, // (name, enabled)
     pub dblp_offline_path: String,
     pub acl_offline_path: String,
+    pub cache_path: String,
+    /// Inline status message for cache clear operation.
+    pub cache_clear_status: Option<String>,
     pub num_workers: usize,
     pub max_rate_limit_retries: u32,
     pub db_timeout_secs: u64,
@@ -108,6 +111,8 @@ impl Default for ConfigState {
             disabled_dbs: all_dbs,
             dblp_offline_path: String::new(),
             acl_offline_path: String::new(),
+            cache_path: String::new(),
+            cache_clear_status: None,
             num_workers: 4,
             max_rate_limit_retries: 3,
             db_timeout_secs: 10,

@@ -184,6 +184,9 @@ pub struct Config {
     pub max_rate_limit_retries: u32,
     pub rate_limiters: Arc<RateLimiters>,
     pub query_cache: Option<Arc<QueryCache>>,
+    /// Path to the persistent SQLite cache database (optional).
+    /// When set, the query cache is backed by SQLite for persistence across restarts.
+    pub cache_path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -212,6 +215,7 @@ impl std::fmt::Debug for Config {
             )
             .field("max_rate_limit_retries", &self.max_rate_limit_retries)
             .field("query_cache", &self.query_cache.as_ref().map(|c| format!("{:?}", c)))
+            .field("cache_path", &self.cache_path)
             .finish()
     }
 }
@@ -234,8 +238,36 @@ impl Default for Config {
             max_rate_limit_retries: 3,
             rate_limiters: Arc::new(RateLimiters::default()),
             query_cache: Some(Arc::new(QueryCache::default())),
+            cache_path: None,
         }
     }
+}
+
+/// Build a [`QueryCache`] from configuration.
+///
+/// If `cache_path` is set, opens a persistent SQLite-backed cache.
+/// Otherwise, returns an in-memory-only cache.
+pub fn build_query_cache(cache_path: Option<&std::path::Path>) -> Arc<QueryCache> {
+    if let Some(path) = cache_path {
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match QueryCache::open(
+            path,
+            std::time::Duration::from_secs(7 * 24 * 60 * 60),
+            std::time::Duration::from_secs(24 * 60 * 60),
+        ) {
+            Ok(cache) => {
+                log::info!("Opened persistent cache at {}", path.display());
+                return Arc::new(cache);
+            }
+            Err(e) => {
+                log::warn!("Failed to open cache at {}: {}; falling back to in-memory", path.display(), e);
+            }
+        }
+    }
+    Arc::new(QueryCache::default())
 }
 
 /// Check a list of references against academic databases.

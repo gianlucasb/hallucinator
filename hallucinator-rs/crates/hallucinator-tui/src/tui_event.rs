@@ -25,6 +25,8 @@ pub enum BackendCommand {
     BuildDblp { db_path: PathBuf },
     /// Build/update the offline ACL Anthology database.
     BuildAcl { db_path: PathBuf },
+    /// Clear the query cache (both L1 in-memory and L2 SQLite).
+    ClearCache,
 }
 
 /// Events flowing from the backend processing task to the TUI.
