@@ -66,12 +66,12 @@ impl ValidationPool {
             all_dbs.into_iter().partition(|db| db.is_local());
 
         // Spawn one drainer per remote DB.
-        let mut drainer_txs: Vec<(String, async_channel::Sender<DrainerJob>)> = Vec::new();
+        let mut drainer_txs: Vec<(String, bool, async_channel::Sender<DrainerJob>)> = Vec::new();
         let mut drainer_handles: Vec<JoinHandle<()>> = Vec::new();
 
         for db in remote_dbs {
             let (tx, rx) = async_channel::unbounded::<DrainerJob>();
-            drainer_txs.push((db.name().to_string(), tx));
+            drainer_txs.push((db.name().to_string(), db.requires_doi(), tx));
             drainer_handles.push(tokio::spawn(drainer_loop(
                 rx,
                 Arc::clone(&db),
@@ -596,8 +596,9 @@ fn pre_check_remote_cache(
     cache: Option<&crate::cache::QueryCache>,
     title: &str,
     ref_authors: &[String],
-    drainer_txs: &[(String, async_channel::Sender<DrainerJob>)],
+    drainer_txs: &[(String, bool, async_channel::Sender<DrainerJob>)],
     check_openalex_authors: bool,
+    has_doi: bool,
 ) -> CachePreCheck {
     let cache = match cache {
         Some(c) => c,
@@ -606,7 +607,9 @@ fn pre_check_remote_cache(
                 db_results: vec![],
                 verified_info: None,
                 first_mismatch: None,
-                miss_indices: (0..drainer_txs.len()).collect(),
+                miss_indices: (0..drainer_txs.len())
+                    .filter(|&i| has_doi || !drainer_txs[i].1)
+                    .collect(),
             };
         }
     };
@@ -616,7 +619,11 @@ fn pre_check_remote_cache(
     let mut first_mismatch: Option<MismatchInfo> = None;
     let mut miss_indices = Vec::new();
 
-    for (i, (db_name, _)) in drainer_txs.iter().enumerate() {
+    for (i, (db_name, requires_doi, _)) in drainer_txs.iter().enumerate() {
+        // Skip DOI-requiring backends for refs without a DOI
+        if *requires_doi && !has_doi {
+            continue;
+        }
         match cache.get(title, db_name) {
             Some((Some(_), found_authors, paper_url)) => {
                 if ref_authors.is_empty() || validate_authors(ref_authors, &found_authors) {
@@ -688,7 +695,7 @@ async fn coordinator_loop(
     client: reqwest::Client,
     cancel: CancellationToken,
     _local_dbs: Vec<Arc<dyn DatabaseBackend>>,
-    drainer_txs: Arc<Vec<(String, async_channel::Sender<DrainerJob>)>>,
+    drainer_txs: Arc<Vec<(String, bool, async_channel::Sender<DrainerJob>)>>,
 ) {
     while let Ok(job) = job_rx.recv().await {
         if cancel.is_cancelled() {
@@ -814,11 +821,12 @@ async fn coordinator_loop(
             &reference.authors,
             &drainer_txs,
             config.check_openalex_authors,
+            reference.doi.is_some(),
         );
 
         // Emit Skipped for cache-hit DBs to decrement in-flight counters
         // without inflating per-DB query stats.
-        for (i, (db_name, _)) in drainer_txs.iter().enumerate() {
+        for (i, (db_name, _, _)) in drainer_txs.iter().enumerate() {
             if !pre.miss_indices.contains(&i) {
                 db_complete_cb(DbResult {
                     db_name: db_name.clone(),
@@ -1002,7 +1010,7 @@ async fn coordinator_loop(
         });
 
         for &i in &pre.miss_indices {
-            let _ = drainer_txs[i].1.try_send(DrainerJob {
+            let _ = drainer_txs[i].2.try_send(DrainerJob {
                 collector: collector.clone(),
             });
         }
