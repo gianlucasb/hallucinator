@@ -81,6 +81,11 @@ struct Cli {
     /// Target frames per second (default: 30)
     #[arg(long)]
     fps: Option<u32>,
+
+    /// Enable SearxNG web search fallback for unverified citations.
+    /// Uses SEARXNG_URL env var or defaults to http://localhost:8080
+    #[arg(long)]
+    searxng: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -184,6 +189,16 @@ async fn main() -> anyhow::Result<()> {
         config_state.fps = fps.clamp(1, 120);
     }
 
+    // SearxNG URL: only enabled if --searxng flag is set
+    if cli.searxng {
+        config_state.searxng_url = Some(
+            std::env::var("SEARXNG_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "http://localhost:8080".to_string()),
+        );
+    }
+
     // Mark disabled DBs from CLI args
     for (name, enabled) in &mut config_state.disabled_dbs {
         if cli.disable_dbs.iter().any(|d| d.eq_ignore_ascii_case(name)) {
@@ -274,6 +289,16 @@ async fn main() -> anyhow::Result<()> {
         } else {
             None
         };
+
+    // Check SearxNG connectivity if enabled
+    if let Some(ref url) = config_state.searxng_url {
+        let searxng = hallucinator_core::db::searxng::Searxng::new(url.clone());
+        if let Err(msg) = searxng.check_connectivity().await {
+            startup_warnings.push(msg);
+        } else {
+            startup_info.push(format!("SearxNG available at {}", url));
+        }
+    }
 
     // Select theme
     let theme = match config_state.theme_name.as_str() {

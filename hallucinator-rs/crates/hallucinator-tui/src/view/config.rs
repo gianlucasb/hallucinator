@@ -313,11 +313,36 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         btn_style,
     )));
 
+    // Item 4: SearxNG URL (editable)
+    let cursor = if config.item_cursor == 4 { "> " } else { "  " };
+    let display_val = if config.editing && config.item_cursor == 4 {
+        format!("{}\u{2588}", config.edit_buffer)
+    } else {
+        match &config.searxng_url {
+            Some(url) => truncate_path(url, max_path_len),
+            None => "(disabled)".to_string(),
+        }
+    };
+    let val_style = if config.editing && config.item_cursor == 4 {
+        Style::default().fg(theme.active)
+    } else if config.searxng_url.is_some() {
+        Style::default().fg(theme.verified)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {}{:<20}", cursor, "SearxNG URL"),
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(display_val, val_style),
+    ]));
+
     lines.push(Line::from(""));
 
-    // Items 4..N: DB toggles
+    // Items 5..N: DB toggles
     for (i, (name, enabled)) in config.disabled_dbs.iter().enumerate() {
-        let item_idx = i + 4; // offset by 4 for DBLP + ACL + cache_path + clear_cache
+        let item_idx = i + 5; // offset by 5 for DBLP + ACL + cache_path + clear_cache + searxng_url
         let cursor = if config.item_cursor == item_idx {
             "> "
         } else {

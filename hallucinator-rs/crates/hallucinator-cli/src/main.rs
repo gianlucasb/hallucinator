@@ -68,6 +68,11 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
 
+        /// Enable SearxNG web search fallback for unverified citations.
+        /// Uses SEARXNG_URL env var or defaults to http://localhost:8080
+        #[arg(long)]
+        searxng: bool,
+
         /// Path to persistent query cache database (SQLite)
         #[arg(long)]
         cache_path: Option<PathBuf>,
@@ -111,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
             num_workers,
             max_rate_limit_retries,
             dry_run,
+            searxng,
             cache_path,
             clear_cache,
         } => {
@@ -158,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
                     check_openalex_authors,
                     num_workers,
                     max_rate_limit_retries,
+                    searxng,
                     cache_path,
                 )
                 .await
@@ -179,6 +186,7 @@ async fn check(
     check_openalex_authors: bool,
     num_workers: Option<usize>,
     max_rate_limit_retries: Option<u32>,
+    searxng: bool,
     cache_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     // Resolve configuration: CLI flags > env vars > defaults
@@ -196,6 +204,24 @@ async fn check(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
+
+    // SearxNG URL: only enabled if --searxng flag is set
+    let searxng_url = if searxng {
+        let url = std::env::var("SEARXNG_URL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "http://localhost:8080".to_string());
+
+        // Check connectivity and warn if not reachable
+        let searxng = hallucinator_core::db::searxng::Searxng::new(url.clone());
+        if let Err(msg) = searxng.check_connectivity().await {
+            eprintln!("\x1b[33mWarning:\x1b[0m {}", msg);
+        }
+
+        Some(url)
+    } else {
+        None
+    };
 
     // Determine color mode and output writer
     let use_color = !no_color && output.is_none();
@@ -364,6 +390,7 @@ async fn check(
         crossref_mailto,
         max_rate_limit_retries,
         rate_limiters,
+        searxng_url,
         query_cache: Some(query_cache),
         cache_path,
     };

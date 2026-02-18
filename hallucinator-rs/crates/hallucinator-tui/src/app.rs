@@ -514,6 +514,13 @@ impl App {
         self.start_time = Some(Instant::now());
         self.frozen_elapsed = None;
         self.activity = ActivityState::default();
+        // Pre-seed "Web Search" in activity panel if SearxNG is configured
+        if self.config_state.searxng_url.is_some() {
+            self.activity.db_health.insert(
+                "Web Search".to_string(),
+                crate::model::activity::DbHealth::new(),
+            );
+        }
         self.throughput_since_last = 0;
         self.last_throughput_tick = self.tick;
 
@@ -595,6 +602,7 @@ impl App {
             } else {
                 Some(self.config_state.crossref_mailto.clone())
             },
+            searxng_url: self.config_state.searxng_url.clone(),
             cache_path: if self.config_state.cache_path.is_empty() {
                 None
             } else {
@@ -1705,7 +1713,7 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::ApiKeys => 3,
-            ConfigSection::Databases => 4 + self.config_state.disabled_dbs.len(), // DBLP + ACL + cache_path + clear_cache + toggles
+            ConfigSection::Databases => 5 + self.config_state.disabled_dbs.len(), // DBLP + ACL + cache_path + clear_cache + searxng_url + toggles
             ConfigSection::Concurrency => 5,
             ConfigSection::Display => 2, // theme + fps
         }
@@ -1771,8 +1779,14 @@ impl App {
                 } else if self.config_state.item_cursor == 3 {
                     // Item 3: clear cache button
                     self.clear_query_cache();
+                } else if self.config_state.item_cursor == 4 {
+                    // Item 4: edit SearxNG URL
+                    self.config_state.editing = true;
+                    self.config_state.edit_buffer =
+                        self.config_state.searxng_url.clone().unwrap_or_default();
+                    self.input_mode = InputMode::TextInput;
                 } else {
-                    // Items 4+: toggle DB (same as space)
+                    // Items 5+: toggle DB (same as space)
                     self.handle_config_space();
                 }
             }
@@ -1784,9 +1798,9 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::Databases => {
-                // Items 4+ are DB toggles (0-1: paths, 2: cache path, 3: clear cache)
-                if self.config_state.item_cursor >= 4 {
-                    let toggle_idx = self.config_state.item_cursor - 4;
+                // Items 5+ are DB toggles (0-1: paths, 2: cache path, 3: clear cache, 4: searxng url)
+                if self.config_state.item_cursor >= 5 {
+                    let toggle_idx = self.config_state.item_cursor - 5;
                     if let Some((_, enabled)) = self.config_state.disabled_dbs.get_mut(toggle_idx) {
                         *enabled = !*enabled;
                         self.config_state.dirty = true;
@@ -1862,6 +1876,9 @@ impl App {
                     } else {
                         clean_canonicalize(&PathBuf::from(&buf))
                     };
+                }
+                4 => {
+                    self.config_state.searxng_url = if buf.is_empty() { None } else { Some(buf) };
                 }
                 _ => {}
             },

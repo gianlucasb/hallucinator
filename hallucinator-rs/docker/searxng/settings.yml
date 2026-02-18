@@ -1,0 +1,38 @@
+# SearxNG configuration for hallucinator web search fallback
+#
+# This configuration enables JSON API access required by hallucinator.
+
+use_default_settings: true
+
+server:
+  # Generate a random secret key for production use
+  secret_key: "hallucinator-searxng-change-me-in-production"
+  # Disable rate limiting for local use
+  limiter: false
+  # Bind to all interfaces inside container
+  bind_address: "0.0.0.0:8080"
+
+search:
+  # Enable JSON format for API access (required by hallucinator)
+  formats:
+    - html
+    - json
+  # Safe search off by default (academic papers need full results)
+  safe_search: 0
+  # Default language
+  default_lang: "en"
+
+# Enable useful search engines for academic content
+engines:
+  # Google is good for finding PDFs
+  - name: google
+    disabled: false
+  # Bing as fallback
+  - name: bing
+    disabled: false
+  # DuckDuckGo for privacy
+  - name: duckduckgo
+    disabled: false
+  # Google Scholar (if available)
+  - name: google scholar
+    disabled: false
