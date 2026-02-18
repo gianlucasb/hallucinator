@@ -1156,6 +1156,7 @@ version = "0.1.1-alpha.2"
 dependencies = [
  "arc-swap",
  "async-channel",
+ "dashmap",
  "fastrand",
  "governor",
  "hallucinator-acl",
@@ -1168,6 +1169,7 @@ dependencies = [
  "rapidfuzz",
  "regex",
  "reqwest",
+ "rusqlite",
  "scraper",
  "serde",
  "serde_json",

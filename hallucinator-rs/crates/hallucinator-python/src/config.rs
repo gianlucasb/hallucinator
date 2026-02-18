@@ -22,6 +22,7 @@ pub struct PyValidatorConfig {
     pub(crate) s2_api_key: Option<String>,
     pub(crate) dblp_offline_path: Option<String>,
     pub(crate) acl_offline_path: Option<String>,
+    pub(crate) cache_path: Option<String>,
     pub(crate) num_workers: usize,
     pub(crate) max_rate_limit_retries: u32,
     pub(crate) db_timeout_secs: u64,
@@ -77,6 +78,10 @@ impl PyValidatorConfig {
             crossref_mailto: self.crossref_mailto.clone(),
             max_rate_limit_retries: self.max_rate_limit_retries,
             rate_limiters,
+            cache_path: self.cache_path.as_ref().map(PathBuf::from),
+            query_cache: Some(hallucinator_core::build_query_cache(
+                self.cache_path.as_ref().map(std::path::Path::new),
+            )),
         })
     }
 }
@@ -90,6 +95,7 @@ impl PyValidatorConfig {
             s2_api_key: None,
             dblp_offline_path: None,
             acl_offline_path: None,
+            cache_path: None,
             num_workers: 4,
             max_rate_limit_retries: 3,
             db_timeout_secs: 10,
@@ -142,6 +148,17 @@ impl PyValidatorConfig {
     #[setter]
     fn set_acl_offline_path(&mut self, value: Option<String>) {
         self.acl_offline_path = value;
+    }
+
+    /// Path to persistent query cache SQLite database (optional).
+    #[getter]
+    fn get_cache_path(&self) -> Option<&str> {
+        self.cache_path.as_deref()
+    }
+
+    #[setter]
+    fn set_cache_path(&mut self, value: Option<String>) {
+        self.cache_path = value;
     }
 
     /// Number of concurrent reference checks (default: 4).

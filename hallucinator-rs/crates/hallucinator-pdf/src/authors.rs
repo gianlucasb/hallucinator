@@ -230,9 +230,8 @@ fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<Stri
         // - Is all uppercase with 2+ letters (ALL CAPS format like "SMITH")
         let has_upper = part.chars().any(|c| c.is_uppercase());
         let has_lower = part.chars().any(|c| c.is_lowercase());
-        let is_all_caps = has_upper
-            && !has_lower
-            && part.chars().filter(|c| c.is_ascii_uppercase()).count() >= 2;
+        let is_all_caps =
+            has_upper && !has_lower && part.chars().filter(|c| c.is_ascii_uppercase()).count() >= 2;
 
         if part.len() > 2 && (has_upper && has_lower || is_all_caps) {
             authors.push(part.to_string());
@@ -317,6 +316,10 @@ mod tests {
         // ALL CAPS with AAAI-style semicolons
         let ref_text = "SMITH, J.; JONES, A.; AND WILLIAMS, C. 2023. Title.";
         let authors = extract_authors_from_reference(ref_text);
-        assert!(authors.len() >= 2, "Expected at least 2 authors, got: {:?}", authors);
+        assert!(
+            authors.len() >= 2,
+            "Expected at least 2 authors, got: {:?}",
+            authors
+        );
     }
 }

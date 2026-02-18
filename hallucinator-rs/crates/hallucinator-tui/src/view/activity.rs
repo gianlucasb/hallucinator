@@ -76,6 +76,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             theme.active
         };
 
+        // Avg column: gray when idle/normal, yellow mild 429 backoff (2-4x), red severe (8x+)
+        let backoff = app
+            .current_rate_limiters
+            .as_ref()
+            .map(|rl| rl.backoff_factor(name))
+            .unwrap_or(1);
+        let avg_color = if health.in_flight == 0 {
+            theme.dim
+        } else if backoff >= 8 {
+            Color::Red
+        } else if backoff >= 2 {
+            Color::Yellow
+        } else {
+            theme.dim
+        };
+
         // Build a tiny load bar (4 chars max) + count
         let bar_width: usize = 4;
         let filled = if max_in_flight > 0 && health.in_flight > 0 {
@@ -109,12 +125,55 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 format!("{:>4} ", health.hits),
                 Style::default().fg(hits_color),
             ),
-            Span::styled(format!("{:>6} ", avg), Style::default().fg(theme.dim)),
+            Span::styled(format!("{:>6} ", avg), Style::default().fg(avg_color)),
             Span::styled(bar_label, Style::default().fg(bar_color)),
         ]));
     }
 
-    if activity.db_health.is_empty() {
+    // Cache stats row (if a query cache is active)
+    if let Some(cache) = &app.current_query_cache {
+        let hits = cache.hits();
+        let total = hits + cache.misses();
+        let cache_color = if theme.is_t800() {
+            theme.dim
+        } else {
+            theme.text
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" \u{229A} ", Style::default().fg(cache_color)), // ⊚
+            Span::styled(
+                format!("{:<14} ", "Cache"),
+                Style::default().fg(cache_color),
+            ),
+            Span::styled(format!("{:>4} ", total), Style::default().fg(theme.dim)),
+            Span::styled(
+                format!("{:>4} ", hits),
+                Style::default().fg(if theme.is_t800() {
+                    Color::White
+                } else {
+                    theme.active
+                }),
+            ),
+            Span::styled(
+                format!(
+                    "{:>6} ",
+                    if total > 0 {
+                        let ms = cache.avg_lookup_ms();
+                        if ms >= 1000.0 {
+                            format!("{:.1}s", ms / 1000.0)
+                        } else {
+                            format!("{:.0}ms", ms)
+                        }
+                    } else {
+                        "\u{2014}".to_string()
+                    }
+                ),
+                Style::default().fg(theme.dim),
+            ),
+        ]));
+    }
+
+    if activity.db_health.is_empty() && app.current_query_cache.is_none() {
         lines.push(Line::from(Span::styled(
             " (no data yet)",
             Style::default().fg(theme.dim),

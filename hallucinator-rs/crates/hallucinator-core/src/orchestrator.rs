@@ -95,6 +95,7 @@ pub async fn query_local_databases(
 
     let rate_limiters = config.rate_limiters.clone();
     let max_retries = config.max_rate_limit_retries;
+    let cache = config.query_cache.as_deref();
 
     let mut first_mismatch: Option<DbSearchResult> = None;
     let mut failed_dbs = Vec::new();
@@ -110,6 +111,7 @@ pub async fn query_local_databases(
             timeout,
             &rate_limiters,
             max_retries,
+            cache,
         )
         .await;
         let elapsed = rl_result.elapsed;
@@ -194,6 +196,7 @@ pub async fn query_remote_databases(
 
     let rate_limiters = config.rate_limiters.clone();
     let max_retries = config.max_rate_limit_retries;
+    let cache = config.query_cache.clone();
 
     // Carry forward state from local phase
     let mut first_mismatch: Option<DbSearchResult> =
@@ -234,6 +237,7 @@ pub async fn query_remote_databases(
         let client = client.clone();
         let ref_authors = ref_authors.to_vec();
         let rate_limiters = rate_limiters.clone();
+        let cache = cache.clone();
 
         join_set.spawn(async move {
             let name = db.name().to_string();
@@ -244,6 +248,7 @@ pub async fn query_remote_databases(
                 timeout,
                 &rate_limiters,
                 max_retries,
+                cache.as_deref(),
             )
             .await;
             (name, rl_result.result, ref_authors, rl_result.elapsed)
@@ -505,6 +510,9 @@ pub(crate) fn build_database_list(
     if should_include("PubMed") {
         databases.push(Box::new(pubmed::PubMed));
     }
+    if should_include("DOI") {
+        databases.push(Box::new(doi_resolver::DoiResolver));
+    }
     if let Some(ref key) = config.openalex_key
         && should_include("OpenAlex")
     {
@@ -535,6 +543,7 @@ mod tests {
                 "Europe PMC".into(),
                 "PubMed".into(),
                 "OpenAlex".into(),
+                "DOI".into(),
             ],
             ..Config::default()
         }
@@ -553,6 +562,7 @@ mod tests {
             "ACL Anthology",
             "Europe PMC",
             "PubMed",
+            "DOI",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
@@ -628,6 +638,7 @@ mod tests {
                 timeout,
                 &rate_limiters_clone,
                 max_retries,
+                None,
             )
             .await;
             (name, rl_result.result, ref_authors_owned, rl_result.elapsed)

@@ -293,6 +293,10 @@ pub struct App {
     pub extracted_count: usize,
     /// Number of `run_batch_with_offset` tasks still running.
     inflight_batches: usize,
+    /// Rate limiters for the current run (shared with backend for backoff state).
+    pub current_rate_limiters: Option<std::sync::Arc<hallucinator_core::RateLimiters>>,
+    /// Query cache for the current run (shared with backend for cache stats).
+    pub current_query_cache: Option<std::sync::Arc<hallucinator_core::QueryCache>>,
     /// Frame counter for FPS measurement.
     frame_count: u32,
     /// Last time FPS was sampled.
@@ -358,6 +362,8 @@ impl App {
             archive_streaming_name: None,
             extracted_count: 0,
             inflight_batches: 0,
+            current_rate_limiters: None,
+            current_query_cache: None,
             frame_count: 0,
             last_fps_instant: Instant::now(),
             measured_fps: 0.0,
@@ -525,6 +531,9 @@ impl App {
 
         if let Some(tx) = &self.backend_cmd_tx {
             let config = self.build_config();
+            // Keep references to rate limiters and cache for the activity panel
+            self.current_rate_limiters = Some(config.rate_limiters.clone());
+            self.current_query_cache = config.query_cache.clone();
             let _ = tx.send(BackendCommand::ProcessFiles {
                 files: real_files,
                 starting_index: 0,
@@ -586,6 +595,18 @@ impl App {
             } else {
                 Some(self.config_state.crossref_mailto.clone())
             },
+            cache_path: if self.config_state.cache_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(&self.config_state.cache_path))
+            },
+            query_cache: Some(hallucinator_core::build_query_cache(
+                if self.config_state.cache_path.is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&self.config_state.cache_path))
+                },
+            )),
         }
     }
 
@@ -1680,7 +1701,7 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::ApiKeys => 3,
-            ConfigSection::Databases => 2 + self.config_state.disabled_dbs.len(),
+            ConfigSection::Databases => 4 + self.config_state.disabled_dbs.len(), // DBLP + ACL + cache_path + clear_cache + toggles
             ConfigSection::Concurrency => 5,
             ConfigSection::Display => 2, // theme + fps
         }
@@ -1738,8 +1759,16 @@ impl App {
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.acl_offline_path.clone();
                     self.input_mode = InputMode::TextInput;
+                } else if self.config_state.item_cursor == 2 {
+                    // Item 2: edit cache path
+                    self.config_state.editing = true;
+                    self.config_state.edit_buffer = self.config_state.cache_path.clone();
+                    self.input_mode = InputMode::TextInput;
+                } else if self.config_state.item_cursor == 3 {
+                    // Item 3: clear cache button
+                    self.clear_query_cache();
                 } else {
-                    // Items 2+: toggle DB (same as space)
+                    // Items 4+: toggle DB (same as space)
                     self.handle_config_space();
                 }
             }
@@ -1751,9 +1780,9 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::Databases => {
-                // Items 2+ are DB toggles (items 0-1 are DBLP/ACL paths)
-                if self.config_state.item_cursor >= 2 {
-                    let toggle_idx = self.config_state.item_cursor - 2;
+                // Items 4+ are DB toggles (0-1: paths, 2: cache path, 3: clear cache)
+                if self.config_state.item_cursor >= 4 {
+                    let toggle_idx = self.config_state.item_cursor - 4;
                     if let Some((_, enabled)) = self.config_state.disabled_dbs.get_mut(toggle_idx) {
                         *enabled = !*enabled;
                         self.config_state.dirty = true;
@@ -1823,6 +1852,13 @@ impl App {
                         clean_canonicalize(&PathBuf::from(&buf))
                     };
                 }
+                2 => {
+                    self.config_state.cache_path = if buf.is_empty() {
+                        buf
+                    } else {
+                        clean_canonicalize(&PathBuf::from(&buf))
+                    };
+                }
                 _ => {}
             },
             ConfigSection::Display => {
@@ -1837,6 +1873,50 @@ impl App {
         self.config_state.editing = false;
         self.config_state.edit_buffer.clear();
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Clear the query cache (both in-memory and on-disk).
+    fn clear_query_cache(&mut self) {
+        // Prefer the live cache handle — clears both L1 DashMap and L2 SQLite,
+        // and VACUUM runs on the same connection so there's no locking conflict.
+        if let Some(ref cache) = self.current_query_cache {
+            cache.clear();
+            self.config_state.cache_clear_status = Some("Cache cleared".to_string());
+            self.activity.log("Query cache cleared".to_string());
+            return;
+        }
+
+        // No live cache — open a temporary handle to clear the file on disk.
+        let cache_path = if self.config_state.cache_path.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(&self.config_state.cache_path))
+        };
+
+        if let Some(ref path) = cache_path {
+            if path.exists() {
+                match hallucinator_core::QueryCache::open(
+                    path,
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(1),
+                ) {
+                    Ok(cache) => {
+                        cache.clear();
+                        self.config_state.cache_clear_status = Some("Cache cleared".to_string());
+                        self.activity.log("Query cache cleared".to_string());
+                    }
+                    Err(e) => {
+                        self.config_state.cache_clear_status = Some(format!("Failed: {}", e));
+                        self.activity
+                            .log_warn(format!("Failed to clear cache: {}", e));
+                    }
+                }
+            } else {
+                self.config_state.cache_clear_status = Some("No cache file found".to_string());
+            }
+        } else {
+            self.config_state.cache_clear_status = Some("No cache path configured".to_string());
+        }
     }
 
     /// Save config to disk and clear the dirty flag.
@@ -3376,7 +3456,7 @@ mod tests {
         let mut app = test_app();
         app.screen = Screen::Config;
         app.config_state.section = ConfigSection::Databases;
-        app.config_state.item_cursor = 2; // first DB toggle
+        app.config_state.item_cursor = 4; // first DB toggle (0=DBLP, 1=ACL, 2=cache, 3=clear, 4+=toggles)
 
         app.update(Action::ToggleSafe);
 

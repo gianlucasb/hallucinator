@@ -116,9 +116,12 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &PdfParsingConfig)
         // But if it's a longer word starting with uppercase (like "Bridge" in "Base-Bridge"),
         // it's likely CamelCase that broke across lines — remove the hyphen.
         static HYPHEN_CONNECTORS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-            ["The", "To", "Of", "In", "On", "Up", "Out", "At", "By", "For", "And", "Or", "A", "An"]
-                .into_iter()
-                .collect()
+            [
+                "The", "To", "Of", "In", "On", "Up", "Out", "At", "By", "For", "And", "Or", "A",
+                "An",
+            ]
+            .into_iter()
+            .collect()
         });
         if HYPHEN_CONNECTORS.contains(after_word.as_str()) {
             return format!("{}-{}", before, after_word);
