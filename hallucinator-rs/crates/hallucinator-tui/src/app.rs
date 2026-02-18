@@ -590,6 +590,7 @@ impl App {
             } else {
                 Some(self.config_state.crossref_mailto.clone())
             },
+            searxng_url: None, // TODO: Add TUI option for SearxNG
         }
     }
 

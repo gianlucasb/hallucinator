@@ -181,6 +181,10 @@ pub struct Config {
     pub crossref_mailto: Option<String>,
     pub max_rate_limit_retries: u32,
     pub rate_limiters: Arc<RateLimiters>,
+    /// SearxNG base URL for web search fallback (e.g., "http://localhost:8080").
+    /// If set, SearxNG will be queried as a fallback when a reference is not found
+    /// in any academic database.
+    pub searxng_url: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -208,6 +212,7 @@ impl std::fmt::Debug for Config {
                 &self.crossref_mailto.as_ref().map(|_| "***"),
             )
             .field("max_rate_limit_retries", &self.max_rate_limit_retries)
+            .field("searxng_url", &self.searxng_url)
             .finish()
     }
 }
@@ -229,6 +234,7 @@ impl Default for Config {
             crossref_mailto: None,
             max_rate_limit_retries: 3,
             rate_limiters: Arc::new(RateLimiters::default()),
+            searxng_url: None,
         }
     }
 }

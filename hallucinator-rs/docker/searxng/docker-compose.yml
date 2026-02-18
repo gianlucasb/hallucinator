@@ -1,0 +1,23 @@
+# SearxNG - Self-hosted metasearch engine for web search fallback
+#
+# Usage:
+#   cd docker/searxng
+#   docker compose up -d
+#
+# Then run hallucinator with:
+#   hallucinator check --searxng paper.pdf
+#
+# Or with custom URL:
+#   SEARXNG_URL=http://localhost:8080 hallucinator check --searxng paper.pdf
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+    restart: unless-stopped
