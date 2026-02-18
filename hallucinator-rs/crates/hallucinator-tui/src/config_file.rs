@@ -26,6 +26,7 @@ pub struct DatabasesConfig {
     pub dblp_offline_path: Option<String>,
     pub acl_offline_path: Option<String>,
     pub cache_path: Option<String>,
+    pub searxng_url: Option<String>,
     pub disabled: Option<Vec<String>>,
 }
 
@@ -116,6 +117,11 @@ fn merge(base: ConfigFile, overlay: ConfigFile) -> ConfigFile {
                 .as_ref()
                 .and_then(|d| d.cache_path.clone())
                 .or_else(|| base.databases.as_ref().and_then(|d| d.cache_path.clone())),
+            searxng_url: overlay
+                .databases
+                .as_ref()
+                .and_then(|d| d.searxng_url.clone())
+                .or_else(|| base.databases.as_ref().and_then(|d| d.searxng_url.clone())),
             disabled: overlay
                 .databases
                 .as_ref()
@@ -225,6 +231,11 @@ pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
         {
             state.cache_path = path.clone();
         }
+        if let Some(ref url) = db.searxng_url
+            && !url.is_empty()
+        {
+            state.searxng_url = Some(url.clone());
+        }
         if let Some(ref disabled) = db.disabled {
             for (name, enabled) in &mut state.disabled_dbs {
                 if disabled.iter().any(|d| d.eq_ignore_ascii_case(name)) {
@@ -305,6 +316,7 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
             } else {
                 Some(state.cache_path.clone())
             },
+            searxng_url: state.searxng_url.clone(),
             disabled: if disabled.is_empty() {
                 None
             } else {

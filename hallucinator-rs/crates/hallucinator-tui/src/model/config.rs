@@ -74,6 +74,8 @@ pub struct ConfigState {
     pub max_archive_size_mb: u32, // 0 = unlimited
     pub theme_name: String,
     pub fps: u32,
+    /// SearxNG URL for web search fallback (None = disabled)
+    pub searxng_url: Option<String>,
 }
 
 impl Default for ConfigState {
@@ -121,6 +123,7 @@ impl Default for ConfigState {
             max_archive_size_mb: 0, // unlimited
             theme_name: "hacker".to_string(),
             fps: 30,
+            searxng_url: None,
         }
     }
 }
