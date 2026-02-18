@@ -221,6 +221,15 @@ pub(crate) fn clean_title_with_config(
         title = title[..=punct_pos].to_string();
     }
 
+    // Handle "? The American Economic Review" — full journal name starting with "The" after ?/!
+    static QMARK_THE_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"[?!]\s+The\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+").unwrap()
+    });
+    if let Some(m) = QMARK_THE_JOURNAL_RE.find(&title) {
+        let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
+        title = title[..=punct_pos].to_string();
+    }
+
     // Remove editor lists: ". In Name, Name, and Name, editors, Venue"
     static EDITOR_LIST_RE: Lazy<Regex> = Lazy::new(|| {
         let name = r"[A-Za-z\u{00C0}-\u{024F}]+(?:\s+[A-Z]\.)*(?:\s+[A-Za-z\u{00C0}-\u{024F}]+)?";
@@ -236,6 +245,13 @@ pub(crate) fn clean_title_with_config(
 
     // Apply cutoff patterns to remove trailing venue/metadata
     title = apply_cutoff_patterns_with_config(&title, config);
+
+    // Remove trailing ", MONTH YEAR" patterns like ", 5 2019" or ", 3 2023"
+    static TRAILING_MONTH_YEAR_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r",\s+\d{1,2}\s+(?:19|20)\d{2}\s*$").unwrap());
+    if let Some(m) = TRAILING_MONTH_YEAR_RE.find(&title) {
+        title = title[..m.start()].to_string();
+    }
 
     // FIX 2 (NeurIPS): Reject venue-only titles
     if is_venue_only(&title) {
@@ -2185,6 +2201,53 @@ mod tests {
             !cleaned.contains("Issue CSCW"),
             "Title should not be 'Issue CSCW': {}",
             cleaned
+        );
+    }
+
+    #[test]
+    fn test_the_journal_after_question_mark() {
+        // "The American Economic Review" after ? should not leak into title
+        let title = "Will affirmative-action policies eliminate negative stereotypes? The American Economic Review";
+        let cleaned = clean_title(title, false);
+        assert!(
+            !cleaned.contains("American Economic"),
+            "Journal name should not leak into title: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("eliminate negative stereotypes?"),
+            "Title should end with question mark: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_trailing_month_year() {
+        // ", 5 2019" or ", 3 2023" at end should be stripped
+        let title1 = "The privilege, bias, and diversity challenges in college admissions, 5 2019";
+        let cleaned1 = clean_title(title1, false);
+        assert!(
+            !cleaned1.contains("2019"),
+            "Month/year should be stripped: {}",
+            cleaned1
+        );
+        assert!(
+            cleaned1.contains("college admissions"),
+            "Title content should be preserved: {}",
+            cleaned1
+        );
+
+        let title2 = "The enduring grip of the gender pay gap, 3 2023";
+        let cleaned2 = clean_title(title2, false);
+        assert!(
+            !cleaned2.contains("2023"),
+            "Month/year should be stripped: {}",
+            cleaned2
+        );
+        assert!(
+            cleaned2.contains("gender pay gap"),
+            "Title content should be preserved: {}",
+            cleaned2
         );
     }
 }
