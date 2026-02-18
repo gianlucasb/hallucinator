@@ -1,4 +1,4 @@
-use hallucinator_core::{Status, ValidationResult};
+use hallucinator_core::{Reference, Status, ValidationResult};
 
 pub use hallucinator_reporting::FpReason;
 
@@ -34,6 +34,29 @@ pub struct RefState {
 }
 
 impl RefState {
+    /// Reconstruct a `Reference` from this ref state (for retry support).
+    pub fn to_reference(&self) -> Reference {
+        let title = if self.title.is_empty() {
+            None
+        } else {
+            Some(self.title.clone())
+        };
+        let skip_reason = if let RefPhase::Skipped(reason) = &self.phase {
+            Some(reason.clone())
+        } else {
+            None
+        };
+        Reference {
+            raw_citation: self.raw_citation.clone(),
+            title,
+            authors: self.authors.clone(),
+            doi: self.doi.clone(),
+            arxiv_id: self.arxiv_id.clone(),
+            original_number: self.index + 1,
+            skip_reason,
+        }
+    }
+
     /// Whether the user has marked this reference as safe (any FP reason).
     pub fn is_marked_safe(&self) -> bool {
         self.fp_reason.is_some()

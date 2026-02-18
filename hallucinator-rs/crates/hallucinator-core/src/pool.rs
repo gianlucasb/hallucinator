@@ -1,7 +1,7 @@
 //! Per-DB drainer pool for reference validation.
 //!
-//! Architecture: one dedicated drainer task per enabled remote DB, plus
-//! coordinator tasks that handle DOI + local DBs inline before fanning out
+//! Architecture: one dedicated drainer task per enabled remote DB (including DOI),
+//! plus coordinator tasks that handle local DBs inline before fanning out
 //! to per-DB drainer queues. Each drainer is the sole consumer of its DB's
 //! rate limiter, eliminating governor contention.
 
@@ -14,12 +14,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::authors::validate_authors;
-use crate::db::searxng::Searxng;
 use crate::db::DatabaseBackend;
+use crate::db::searxng::Searxng;
 use crate::orchestrator::{build_database_list, query_local_databases};
-use crate::rate_limit;
+use crate::rate_limit::{self, DoiContext};
 use crate::{
-    ArxivInfo, Config, DbResult, DbStatus, ProgressEvent, Reference, Status, ValidationResult,
+    ArxivInfo, Config, DbResult, DbStatus, DoiInfo, ProgressEvent, Reference, Status,
+    ValidationResult,
 };
 
 // ── Public API (unchanged) ──────────────────────────────────────────────
@@ -47,10 +48,14 @@ impl ValidationPool {
     /// Create a new pool with `num_workers` coordinator tasks.
     ///
     /// One drainer task is spawned per enabled remote DB. Coordinators handle
-    /// DOI + local DBs inline, then fan out to per-DB drainer queues.
+    /// local DBs inline, then fan out to per-DB drainer queues (including DOI).
     pub fn new(config: Arc<Config>, cancel: CancellationToken, num_workers: usize) -> Self {
         let (job_tx, job_rx) = async_channel::unbounded::<RefJob>();
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         // Build database list and partition into local/remote
         let all_dbs: Vec<Arc<dyn DatabaseBackend>> = build_database_list(&config, None)
@@ -72,6 +77,7 @@ impl ValidationPool {
                 Arc::clone(&db),
                 config.clone(),
                 client.clone(),
+                cancel.clone(),
             )));
         }
 
@@ -196,12 +202,21 @@ async fn drainer_loop(
     db: Arc<dyn DatabaseBackend>,
     config: Arc<Config>,
     client: reqwest::Client,
+    cancel: CancellationToken,
 ) {
     let timeout = Duration::from_secs(config.db_timeout_secs);
     let rate_limiters = config.rate_limiters.clone();
+    let cache = config.query_cache.clone();
+    let requires_doi = db.requires_doi();
 
     while let Ok(job) = rx.recv().await {
         let collector = &job.collector;
+
+        // Skip remaining jobs after cancellation
+        if cancel.is_cancelled() {
+            skip_and_decrement(collector, db.name()).await;
+            continue;
+        }
 
         // Skip if already verified by another drainer
         if collector.verified.load(Ordering::Acquire) {
@@ -209,13 +224,27 @@ async fn drainer_loop(
             continue;
         }
 
-        // Query (includes governor acquire + HTTP call)
+        // DOI-requiring backends skip refs without a DOI
+        if requires_doi && collector.reference.doi.is_none() {
+            skip_and_decrement(collector, db.name()).await;
+            continue;
+        }
+
+        // Build DOI context if this ref has a DOI (used by DOI backend)
+        let doi_ctx = collector.reference.doi.as_deref().map(|doi| DoiContext {
+            doi,
+            authors: &collector.reference.authors,
+        });
+
+        // Query (includes cache check + governor acquire + HTTP call)
         let rl_result = rate_limit::query_with_rate_limit(
             db.as_ref(),
             &collector.title,
             &client,
             timeout,
             &rate_limiters,
+            cache.as_deref(),
+            doi_ctx.as_ref(),
         )
         .await;
 
@@ -413,21 +442,45 @@ async fn finalize_collector(collector: &RefCollector) {
                 let searxng = Searxng::new(searxng_url.clone());
                 let timeout = Duration::from_secs(collector.config.db_timeout_secs);
 
-                if let Ok((Some(_found_title), _, url)) =
-                    searxng.query(&collector.title, &collector.client, timeout).await
-                {
+                let start = std::time::Instant::now();
+                let searxng_result = searxng
+                    .query(&collector.title, &collector.client, timeout)
+                    .await;
+                let elapsed = start.elapsed();
+
+                if let Ok((Some(_found_title), _, url)) = searxng_result {
+                    (collector.progress)(ProgressEvent::DatabaseQueryComplete {
+                        paper_index: 0,
+                        ref_index: collector.ref_index,
+                        db_name: "Web Search".to_string(),
+                        status: DbStatus::Match,
+                        elapsed,
+                    });
                     // Web search found the paper
                     let mut db_results = remote_db_results;
                     db_results.push(DbResult {
                         db_name: "Web Search".into(),
                         status: DbStatus::Match,
-                        elapsed: None,
+                        elapsed: Some(elapsed),
                         found_authors: vec![],
                         paper_url: url.clone(),
                         error_message: None,
                     });
-                    (Status::Verified, Some("Web Search".into()), vec![], url, db_results)
+                    (
+                        Status::Verified,
+                        Some("Web Search".into()),
+                        vec![],
+                        url,
+                        db_results,
+                    )
                 } else {
+                    (collector.progress)(ProgressEvent::DatabaseQueryComplete {
+                        paper_index: 0,
+                        ref_index: collector.ref_index,
+                        db_name: "Web Search".to_string(),
+                        status: DbStatus::NoMatch,
+                        elapsed,
+                    });
                     (status, source, found_authors, paper_url, remote_db_results)
                 }
             } else {
@@ -444,15 +497,38 @@ async fn finalize_collector(collector: &RefCollector) {
     let mut all_failed_dbs = collector.local_result.failed_dbs.clone();
     all_failed_dbs.extend(remote_failed_dbs);
 
-    // Retraction check if verified (briefly blocks the last drainer)
+    // Build doi_info from reference DOI + DOI drainer result
+    let doi_info = collector.reference.doi.as_ref().map(|doi| {
+        let valid = all_db_results.iter().any(|r| {
+            r.db_name == "DOI" && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch)
+        });
+        DoiInfo {
+            doi: doi.clone(),
+            valid,
+            title: None,
+        }
+    });
+
+    // Retraction check if verified
     let retraction_info = if status == Status::Verified {
-        check_retraction_for_title(
-            &collector.title,
-            &collector.client,
-            Duration::from_secs(collector.config.db_timeout_secs),
-            collector.config.crossref_mailto.as_deref(),
-        )
-        .await
+        // Prefer DOI-based retraction check when available
+        if let Some(ref doi) = collector.reference.doi {
+            check_retraction_for_doi(
+                doi,
+                &collector.client,
+                Duration::from_secs(collector.config.db_timeout_secs),
+                collector.config.crossref_mailto.as_deref(),
+            )
+            .await
+        } else {
+            check_retraction_for_title(
+                &collector.title,
+                &collector.client,
+                Duration::from_secs(collector.config.db_timeout_secs),
+                collector.config.crossref_mailto.as_deref(),
+            )
+            .await
+        }
     } else {
         None
     };
@@ -467,7 +543,7 @@ async fn finalize_collector(collector: &RefCollector) {
         paper_url,
         failed_dbs: all_failed_dbs,
         db_results: all_db_results,
-        doi_info: None,
+        doi_info,
         arxiv_info: collector.reference.arxiv_id.as_ref().map(|id| ArxivInfo {
             arxiv_id: id.clone(),
             valid: false,
@@ -496,13 +572,13 @@ async fn finalize_collector(collector: &RefCollector) {
 
 // ── Coordinator ─────────────────────────────────────────────────────────
 
-/// Coordinator loop: pick a ref, run DOI + local DBs inline, fan out to drainers.
+/// Coordinator loop: pick a ref, run local DBs inline, fan out to drainers.
 async fn coordinator_loop(
     job_rx: async_channel::Receiver<RefJob>,
     config: Arc<Config>,
     client: reqwest::Client,
     cancel: CancellationToken,
-    local_dbs: Vec<Arc<dyn DatabaseBackend>>,
+    _local_dbs: Vec<Arc<dyn DatabaseBackend>>,
     drainer_txs: Arc<Vec<(String, async_channel::Sender<DrainerJob>)>>,
 ) {
     while let Ok(job) = job_rx.recv().await {
@@ -526,32 +602,6 @@ async fn coordinator_loop(
             total,
             title: title.clone(),
         });
-
-        // --- DOI fast path (inline, typically <100ms) ---
-        if let Some(result) = check_doi_fast(&reference, &config, &client).await {
-            // Emit Skipped for all DBs (local + remote)
-            for db in &local_dbs {
-                (progress)(ProgressEvent::DatabaseQueryComplete {
-                    paper_index: 0,
-                    ref_index,
-                    db_name: db.name().to_string(),
-                    status: DbStatus::Skipped,
-                    elapsed: Duration::ZERO,
-                });
-            }
-            for (db_name, _) in drainer_txs.iter() {
-                (progress)(ProgressEvent::DatabaseQueryComplete {
-                    paper_index: 0,
-                    ref_index,
-                    db_name: db_name.clone(),
-                    status: DbStatus::Skipped,
-                    elapsed: Duration::ZERO,
-                });
-            }
-            emit_final_events(progress.as_ref(), &result, ref_index, total, &title);
-            let _ = result_tx.send(result);
-            continue;
-        }
 
         // --- Local DB phase (inline, <1ms) ---
         let db_complete_cb = make_db_callback(progress.clone(), ref_index);
@@ -583,15 +633,24 @@ async fn coordinator_loop(
                     let searxng = Searxng::new(searxng_url.clone());
                     let timeout = Duration::from_secs(config.db_timeout_secs);
 
-                    if let Ok((Some(_), _, url)) =
-                        searxng.query(&title, &client, timeout).await
-                    {
+                    let start = std::time::Instant::now();
+                    let searxng_result = searxng.query(&title, &client, timeout).await;
+                    let elapsed = start.elapsed();
+
+                    if let Ok((Some(_), _, url)) = searxng_result {
+                        progress(ProgressEvent::DatabaseQueryComplete {
+                            paper_index: 0,
+                            ref_index,
+                            db_name: "Web Search".to_string(),
+                            status: DbStatus::Match,
+                            elapsed,
+                        });
                         // Web search found the paper
                         let mut db_results = local_result.db_results.clone();
                         db_results.push(DbResult {
                             db_name: "Web Search".into(),
                             status: DbStatus::Match,
-                            elapsed: None,
+                            elapsed: Some(elapsed),
                             found_authors: vec![],
                             paper_url: url.clone(),
                             error_message: None,
@@ -615,6 +674,13 @@ async fn coordinator_loop(
                             retraction_info: None,
                         }
                     } else {
+                        progress(ProgressEvent::DatabaseQueryComplete {
+                            paper_index: 0,
+                            ref_index,
+                            db_name: "Web Search".to_string(),
+                            status: DbStatus::NoMatch,
+                            elapsed,
+                        });
                         build_validation_result(&reference, &title, local_result, None)
                     }
                 } else {
@@ -664,7 +730,7 @@ async fn coordinator_loop(
     }
 }
 
-// ── Helpers (unchanged from previous implementation) ────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Build per-ref DB completion callback.
 fn make_db_callback(
@@ -718,90 +784,6 @@ fn emit_final_events(
     });
 }
 
-/// DOI fast path: check DOI inline if present.
-async fn check_doi_fast(
-    reference: &Reference,
-    config: &Config,
-    client: &reqwest::Client,
-) -> Option<ValidationResult> {
-    use crate::doi::{DoiMatchResult, check_doi_match, validate_doi};
-    use crate::retraction::check_retraction;
-    use crate::{DoiInfo, RetractionInfo};
-
-    let doi = reference.doi.as_ref()?;
-    let title = reference.title.as_deref().unwrap_or("");
-    let timeout = std::time::Duration::from_secs(config.db_timeout_secs);
-
-    let doi_result = validate_doi(doi, client, timeout).await;
-    let match_result = check_doi_match(&doi_result, title, &reference.authors);
-
-    let doi_info = Some(DoiInfo {
-        doi: doi.clone(),
-        valid: doi_result.valid,
-        title: doi_result.title.clone(),
-    });
-
-    match match_result {
-        DoiMatchResult::Verified { doi_authors, .. } => {
-            let retraction =
-                check_retraction(doi, client, timeout, config.crossref_mailto.as_deref()).await;
-            let retraction_info = if retraction.retracted {
-                Some(RetractionInfo {
-                    is_retracted: true,
-                    retraction_doi: retraction.retraction_doi,
-                    retraction_source: retraction.retraction_type,
-                })
-            } else {
-                None
-            };
-
-            Some(ValidationResult {
-                title: title.to_string(),
-                raw_citation: reference.raw_citation.clone(),
-                ref_authors: reference.authors.clone(),
-                status: Status::Verified,
-                source: Some("DOI".into()),
-                found_authors: doi_authors,
-                paper_url: Some(format!("https://doi.org/{}", doi)),
-                failed_dbs: vec![],
-                db_results: vec![DbResult {
-                    db_name: "DOI".into(),
-                    status: DbStatus::Match,
-                    elapsed: None,
-                    found_authors: vec![],
-                    paper_url: Some(format!("https://doi.org/{}", doi)),
-                    error_message: None,
-                }],
-                doi_info,
-                arxiv_info: None,
-                retraction_info,
-            })
-        }
-        DoiMatchResult::AuthorMismatch { doi_authors, .. } => Some(ValidationResult {
-            title: title.to_string(),
-            raw_citation: reference.raw_citation.clone(),
-            ref_authors: reference.authors.clone(),
-            status: Status::AuthorMismatch,
-            source: Some("DOI".into()),
-            found_authors: doi_authors,
-            paper_url: Some(format!("https://doi.org/{}", doi)),
-            failed_dbs: vec![],
-            db_results: vec![DbResult {
-                db_name: "DOI".into(),
-                status: DbStatus::AuthorMismatch,
-                elapsed: None,
-                found_authors: vec![],
-                paper_url: Some(format!("https://doi.org/{}", doi)),
-                error_message: None,
-            }],
-            doi_info,
-            arxiv_info: None,
-            retraction_info: None,
-        }),
-        _ => None,
-    }
-}
-
 /// Build ValidationResult from a DbSearchResult.
 fn build_validation_result(
     reference: &Reference,
@@ -826,6 +808,25 @@ fn build_validation_result(
             title: None,
         }),
         retraction_info,
+    }
+}
+
+/// Check retraction by DOI, returning info if retracted.
+async fn check_retraction_for_doi(
+    doi: &str,
+    client: &reqwest::Client,
+    timeout: std::time::Duration,
+    mailto: Option<&str>,
+) -> Option<crate::RetractionInfo> {
+    let retraction = crate::retraction::check_retraction(doi, client, timeout, mailto).await;
+    if retraction.retracted {
+        Some(crate::RetractionInfo {
+            is_retracted: true,
+            retraction_doi: retraction.retraction_doi,
+            retraction_source: retraction.retraction_type,
+        })
+    } else {
+        None
     }
 }
 

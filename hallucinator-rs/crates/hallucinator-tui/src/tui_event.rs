@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use hallucinator_core::{ProgressEvent, Reference, ValidationResult};
+use hallucinator_core::{ProgressEvent, Reference};
 use hallucinator_pdf::SkipStats;
 
 /// Commands sent from the TUI to the backend.
@@ -37,7 +37,6 @@ pub enum BackendEvent {
     ExtractionComplete {
         paper_index: usize,
         ref_count: usize,
-        ref_titles: Vec<String>,
         references: Vec<Reference>,
         skip_stats: SkipStats,
     },
@@ -49,10 +48,7 @@ pub enum BackendEvent {
         event: Box<ProgressEvent>,
     },
     /// All references for a paper have been checked.
-    PaperComplete {
-        paper_index: usize,
-        results: Vec<ValidationResult>,
-    },
+    PaperComplete { paper_index: usize },
     /// All papers have been processed.
     BatchComplete,
     /// Progress from a DBLP database build.

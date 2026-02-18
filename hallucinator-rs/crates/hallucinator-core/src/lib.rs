@@ -5,6 +5,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 pub mod authors;
+pub mod cache;
 pub mod checker;
 pub mod db;
 pub mod doi;
@@ -15,6 +16,7 @@ pub mod rate_limit;
 pub mod retraction;
 
 // Re-export for convenience
+pub use cache::QueryCache;
 pub use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
 pub use orchestrator::{DbSearchResult, query_all_databases};
 pub use rate_limit::{DbQueryError, RateLimitedResult, RateLimiters};
@@ -185,6 +187,10 @@ pub struct Config {
     /// If set, SearxNG will be queried as a fallback when a reference is not found
     /// in any academic database.
     pub searxng_url: Option<String>,
+    pub query_cache: Option<Arc<QueryCache>>,
+    /// Path to the persistent SQLite cache database (optional).
+    /// When set, the query cache is backed by SQLite for persistence across restarts.
+    pub cache_path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -213,6 +219,11 @@ impl std::fmt::Debug for Config {
             )
             .field("max_rate_limit_retries", &self.max_rate_limit_retries)
             .field("searxng_url", &self.searxng_url)
+            .field(
+                "query_cache",
+                &self.query_cache.as_ref().map(|c| format!("{:?}", c)),
+            )
+            .field("cache_path", &self.cache_path)
             .finish()
     }
 }
@@ -235,7 +246,101 @@ impl Default for Config {
             max_rate_limit_retries: 3,
             rate_limiters: Arc::new(RateLimiters::default()),
             searxng_url: None,
+            query_cache: Some(Arc::new(QueryCache::default())),
+            cache_path: None,
         }
+    }
+}
+
+/// Build a [`QueryCache`] from configuration.
+///
+/// If `cache_path` is set, opens a persistent SQLite-backed cache.
+/// Otherwise, returns an in-memory-only cache.
+pub fn build_query_cache(cache_path: Option<&std::path::Path>) -> Arc<QueryCache> {
+    if let Some(path) = cache_path {
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match QueryCache::open(
+            path,
+            std::time::Duration::from_secs(7 * 24 * 60 * 60),
+            std::time::Duration::from_secs(24 * 60 * 60),
+        ) {
+            Ok(cache) => {
+                log::info!("Opened persistent cache at {}", path.display());
+                return Arc::new(cache);
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to open cache at {}: {}; falling back to in-memory",
+                    path.display(),
+                    e
+                );
+            }
+        }
+    }
+    Arc::new(QueryCache::default())
+}
+
+#[cfg(test)]
+mod build_cache_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_path() -> PathBuf {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir()
+            .join(format!(
+                "hallucinator_build_cache_test_{}_{}",
+                std::process::id(),
+                id,
+            ))
+            .join("cache.db")
+    }
+
+    #[test]
+    fn none_path_returns_in_memory() {
+        let cache = build_query_cache(None);
+        assert!(!cache.has_persistence());
+    }
+
+    #[test]
+    fn valid_path_returns_persistent() {
+        let path = temp_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = build_query_cache(Some(&path));
+        assert!(cache.has_persistence());
+
+        // Verify default TTLs (7 days positive, 24 hours negative)
+        assert_eq!(
+            cache.positive_ttl(),
+            std::time::Duration::from_secs(7 * 24 * 60 * 60)
+        );
+        assert_eq!(
+            cache.negative_ttl(),
+            std::time::Duration::from_secs(24 * 60 * 60)
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn creates_parent_directory() {
+        let path = temp_path();
+        // Remove the parent directory entirely
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+
+        let cache = build_query_cache(Some(&path));
+        assert!(cache.has_persistence());
+        assert!(path.parent().unwrap().exists());
+
+        let _ = std::fs::remove_file(&path);
     }
 }
 

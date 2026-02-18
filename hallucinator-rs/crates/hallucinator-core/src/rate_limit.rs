@@ -14,6 +14,7 @@ use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 
+use crate::cache::QueryCache;
 use crate::db::{DatabaseBackend, DbQueryResult};
 
 /// Type alias for governor's direct rate limiter.
@@ -113,13 +114,13 @@ impl AdaptiveDbLimiter {
         }
     }
 
-    /// If 60s have passed since the last 429, restore the original rate.
+    /// If 30s have passed since the last 429, restore the original rate.
     fn try_decay(&self) {
         let should_restore = self
             .last_429
             .lock()
             .ok()
-            .and_then(|last| last.map(|t| t.elapsed().as_secs() >= 60))
+            .and_then(|last| last.map(|t| t.elapsed().as_secs() >= 30))
             .unwrap_or(false);
 
         if should_restore && self.current_factor.load(Ordering::SeqCst) > 1 {
@@ -180,6 +181,9 @@ impl RateLimiters {
         // OpenAlex: 10/s without key, 100/s with key — light governor so adaptive
         // backoff kicks in if we get 429'd
         limiters.insert("OpenAlex", AdaptiveDbLimiter::per_second(10));
+        // DOI (doi.org): generous limit, no documented cap but be polite
+        limiters.insert("DOI", AdaptiveDbLimiter::per_second(3));
+
         // SSRN: disabled, skip limiter
         // NeurIPS: disabled, skip limiter
         // Offline DBs (DBLP offline, ACL offline) share names but don't make HTTP requests
@@ -190,6 +194,14 @@ impl RateLimiters {
     /// Get the rate limiter for a given database, if one exists.
     pub fn get(&self, db_name: &str) -> Option<&AdaptiveDbLimiter> {
         self.limiters.get(db_name)
+    }
+
+    /// Return the current backoff factor for a database (1 = normal, 2/4/8/16 = throttled).
+    pub fn backoff_factor(&self, db_name: &str) -> u32 {
+        self.limiters
+            .get(db_name)
+            .map(|l| l.current_factor.load(Ordering::Relaxed))
+            .unwrap_or(1)
     }
 }
 
@@ -226,7 +238,7 @@ pub fn parse_retry_after(value: &str) -> Option<Duration> {
 /// Query a database with proactive governor rate limiting.
 ///
 /// 1. Acquires the per-DB governor (waits if needed)
-/// 2. Calls `db.query()`
+/// 2. Calls `db.query()` (or `db.query_doi()` if `doi_context` is provided)
 /// 3. On 429: adapts governor to slower rate and returns error immediately
 ///    (the pool-level retry queue will re-check failed DBs later)
 /// 4. On other errors or success: returns immediately
@@ -238,13 +250,53 @@ pub struct RateLimitedResult {
     pub elapsed: Duration,
 }
 
+/// Context for DOI-based queries, passed to backends that support `query_doi`.
+pub struct DoiContext<'a> {
+    pub doi: &'a str,
+    pub authors: &'a [String],
+}
+
+/// Execute the appropriate query for a backend, trying `query_doi` first if context is provided.
+async fn execute_query(
+    db: &dyn DatabaseBackend,
+    title: &str,
+    client: &reqwest::Client,
+    timeout: Duration,
+    doi_context: Option<&DoiContext<'_>>,
+) -> Result<DbQueryResult, DbQueryError> {
+    if let Some(ctx) = doi_context
+        && let Some(result) = db
+            .query_doi(ctx.doi, title, ctx.authors, client, timeout)
+            .await
+    {
+        return result;
+    }
+    db.query(title, client, timeout).await
+}
+
 pub async fn query_with_rate_limit(
     db: &dyn DatabaseBackend,
     title: &str,
     client: &reqwest::Client,
     timeout: Duration,
     rate_limiters: &RateLimiters,
+    cache: Option<&QueryCache>,
+    doi_context: Option<&DoiContext<'_>>,
 ) -> RateLimitedResult {
+    // Check cache before making any network request or waiting on the governor.
+    // Skip cache for local/offline backends — they have their own SQLite DBs.
+    let use_cache = !db.is_local();
+    if use_cache
+        && let Some(c) = cache
+        && let Some(cached_result) = c.get(title, db.name())
+    {
+        log::debug!("{}: cache hit for {:?}", db.name(), title);
+        return RateLimitedResult {
+            result: Ok(cached_result),
+            elapsed: Duration::ZERO,
+        };
+    }
+
     // Skip rate limiting for local/offline backends (SQLite queries need no throttling)
     let limiter = if db.is_local() {
         None
@@ -260,7 +312,7 @@ pub async fn query_with_rate_limit(
     // Timer starts AFTER governor — measures actual HTTP time only
     let start = Instant::now();
 
-    let result = match db.query(title, client, timeout).await {
+    let result = match execute_query(db, title, client, timeout, doi_context).await {
         Ok(result) => Ok(result),
         Err(DbQueryError::RateLimited { retry_after }) => {
             // Adapt governor to slower rate so subsequent requests are throttled
@@ -286,10 +338,19 @@ pub async fn query_with_rate_limit(
             }
 
             // Single retry — if still 429, give up
-            db.query(title, client, timeout).await
+            execute_query(db, title, client, timeout, doi_context).await
         }
         Err(other) => Err(other),
     };
+
+    // Cache successful results (found or not-found); never cache errors.
+    // Skip cache for local/offline backends.
+    if use_cache
+        && let Ok(ref query_result) = result
+        && let Some(c) = cache
+    {
+        c.insert(title, db.name(), query_result);
+    }
 
     RateLimitedResult {
         result,
@@ -308,8 +369,9 @@ pub async fn query_with_retry(
     timeout: Duration,
     rate_limiters: &RateLimiters,
     _max_retries: u32,
+    cache: Option<&QueryCache>,
 ) -> RateLimitedResult {
-    query_with_rate_limit(db, title, client, timeout, rate_limiters).await
+    query_with_rate_limit(db, title, client, timeout, rate_limiters, cache, None).await
 }
 
 #[cfg(test)]
@@ -418,16 +480,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decay_restores_after_60s() {
+    async fn decay_restores_after_30s() {
         let limiter = AdaptiveDbLimiter::per_second(10);
         limiter.on_rate_limited();
         limiter.on_rate_limited();
         assert_eq!(limiter.current_factor.load(Ordering::SeqCst), 4);
 
-        // Manually backdate last_429 to 61 seconds ago
+        // Manually backdate last_429 to 31 seconds ago
         {
             let mut last = limiter.last_429.lock().unwrap();
-            *last = Some(Instant::now() - Duration::from_secs(61));
+            *last = Some(Instant::now() - Duration::from_secs(31));
         }
 
         // acquire() calls try_decay() internally
@@ -448,6 +510,7 @@ mod tests {
             "Europe PMC",
             "PubMed",
             "ACL Anthology",
+            "DOI",
         ] {
             assert!(limiters.get(name).is_some(), "missing limiter for {name}");
         }
@@ -490,9 +553,16 @@ mod tests {
         let client = reqwest::Client::new();
         let limiters = RateLimiters::new(false, false);
 
-        let rl_result =
-            query_with_rate_limit(&db, "A Paper", &client, Duration::from_secs(10), &limiters)
-                .await;
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            None,
+            None,
+        )
+        .await;
 
         assert!(rl_result.result.is_ok());
         let (title, _, _) = rl_result.result.unwrap();
@@ -511,9 +581,16 @@ mod tests {
         let client = reqwest::Client::new();
         let limiters = RateLimiters::new(false, false);
 
-        let rl_result =
-            query_with_rate_limit(&db, "A Paper", &client, Duration::from_secs(10), &limiters)
-                .await;
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            None,
+            None,
+        )
+        .await;
 
         assert!(rl_result.result.is_err());
         // Called twice: initial attempt + one retry after honoring Retry-After
@@ -526,11 +603,202 @@ mod tests {
         let client = reqwest::Client::new();
         let limiters = RateLimiters::new(false, false);
 
-        let rl_result =
-            query_with_rate_limit(&db, "A Paper", &client, Duration::from_secs(10), &limiters)
-                .await;
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            None,
+            None,
+        )
+        .await;
 
         assert!(rl_result.result.is_err());
         assert_eq!(db.call_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cache_hit_skips_query() {
+        let db = MockDb::new(
+            "TestDB",
+            MockResponse::Found {
+                title: "A Paper".into(),
+                authors: vec!["Author".into()],
+                url: None,
+            },
+        );
+        let client = reqwest::Client::new();
+        let limiters = RateLimiters::new(false, false);
+        let cache = QueryCache::default();
+
+        // First call: cache miss, queries DB
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_ok());
+        assert_eq!(db.call_count(), 1);
+        assert_eq!(cache.hits(), 0);
+        assert_eq!(cache.misses(), 1);
+
+        // Second call: cache hit, skips DB
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_ok());
+        assert_eq!(db.call_count(), 1); // still 1 — DB not called again
+        assert_eq!(cache.hits(), 1);
+        assert_eq!(rl_result.elapsed, Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cache_stores_not_found() {
+        // Verify that not-found results are cached (negative caching).
+        let db = MockDb::new("TestDB", MockResponse::NotFound);
+        let client = reqwest::Client::new();
+        let limiters = RateLimiters::new(false, false);
+        let cache = QueryCache::default();
+
+        let rl_result = query_with_rate_limit(
+            &db,
+            "Missing Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_ok());
+        let (title, _, _) = rl_result.result.unwrap();
+        assert!(title.is_none());
+        assert_eq!(cache.len(), 1); // not-found cached
+
+        // Second call should hit cache, not query DB
+        let rl_result = query_with_rate_limit(
+            &db,
+            "Missing Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_ok());
+        assert_eq!(db.call_count(), 1); // still only 1 DB call
+        assert_eq!(cache.hits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cache_populated_after_429_retry_success() {
+        // When first call gets 429 and retry succeeds, the result should be cached.
+        let db = MockDb::with_sequence(
+            "TestDB",
+            vec![
+                MockResponse::RateLimited {
+                    retry_after: Some(Duration::from_secs(1)),
+                },
+                MockResponse::Found {
+                    title: "A Paper".into(),
+                    authors: vec!["Author".into()],
+                    url: None,
+                },
+            ],
+        );
+        let client = reqwest::Client::new();
+        let limiters = RateLimiters::new(false, false);
+        let cache = QueryCache::default();
+
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_ok());
+        assert_eq!(db.call_count(), 2); // 429 + retry
+        assert_eq!(cache.len(), 1); // result cached after successful retry
+
+        // Third call should hit cache
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_ok());
+        assert_eq!(db.call_count(), 2); // no additional DB call
+        assert_eq!(cache.hits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cache_not_populated_after_429_retry_failure() {
+        // When first call gets 429 and retry also gets 429, nothing should be cached.
+        let db = MockDb::new(
+            "TestDB",
+            MockResponse::RateLimited {
+                retry_after: Some(Duration::from_secs(1)),
+            },
+        );
+        let client = reqwest::Client::new();
+        let limiters = RateLimiters::new(false, false);
+        let cache = QueryCache::default();
+
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_err());
+        assert!(cache.is_empty()); // errors never cached
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cache_does_not_store_errors() {
+        let db = MockDb::new("TestDB", MockResponse::Error("connection refused".into()));
+        let client = reqwest::Client::new();
+        let limiters = RateLimiters::new(false, false);
+        let cache = QueryCache::default();
+
+        let rl_result = query_with_rate_limit(
+            &db,
+            "A Paper",
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            Some(&cache),
+            None,
+        )
+        .await;
+        assert!(rl_result.result.is_err());
+        assert!(cache.is_empty()); // errors not cached
     }
 }

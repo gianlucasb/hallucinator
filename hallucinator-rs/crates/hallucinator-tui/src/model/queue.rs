@@ -1,6 +1,14 @@
-use hallucinator_core::{CheckStats, Status, ValidationResult};
+use hallucinator_core::{CheckStats, Status};
 
 pub use hallucinator_reporting::PaperVerdict;
+
+/// Lightweight summary of a validation result, stored in PaperState.
+/// The full ValidationResult is kept only in RefState.result.
+#[derive(Debug, Clone)]
+pub struct ResultSummary {
+    pub status: Status,
+    pub is_retracted: bool,
+}
 
 /// Processing phase of a paper in the queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +46,7 @@ pub struct PaperState {
     pub total_refs: usize,
     pub stats: CheckStats,
     /// Indexed by reference position; `None` = not yet completed.
-    pub results: Vec<Option<ValidationResult>>,
+    pub results: Vec<Option<ResultSummary>>,
     pub error: Option<String>,
     /// Total refs to retry in the retry pass.
     pub retry_total: usize,
@@ -68,12 +76,12 @@ impl PaperState {
         self.results = vec![None; count];
     }
 
-    /// Record (or replace) a validation result at the given index.
+    /// Record (or replace) a validation result summary at the given index.
     ///
     /// If the slot already contains a result (retry pass), the old status
     /// counters are decremented before the new ones are incremented, preventing
     /// double-counting.
-    pub fn record_result(&mut self, index: usize, result: ValidationResult) {
+    pub fn record_status(&mut self, index: usize, status: Status, is_retracted: bool) {
         // Grow if needed (shouldn't happen after init_results, but be safe)
         if index >= self.results.len() {
             self.results.resize(index + 1, None);
@@ -88,26 +96,25 @@ impl PaperState {
                     self.stats.author_mismatch = self.stats.author_mismatch.saturating_sub(1)
                 }
             }
-            if old.retraction_info.as_ref().is_some_and(|r| r.is_retracted) {
+            if old.is_retracted {
                 self.stats.retracted = self.stats.retracted.saturating_sub(1);
             }
         }
 
         // Increment new counters
-        match result.status {
+        match status {
             Status::Verified => self.stats.verified += 1,
             Status::NotFound => self.stats.not_found += 1,
             Status::AuthorMismatch => self.stats.author_mismatch += 1,
         }
-        if result
-            .retraction_info
-            .as_ref()
-            .is_some_and(|r| r.is_retracted)
-        {
+        if is_retracted {
             self.stats.retracted += 1;
         }
 
-        self.results[index] = Some(result);
+        self.results[index] = Some(ResultSummary {
+            status,
+            is_retracted,
+        });
     }
 
     /// Number of completed results.

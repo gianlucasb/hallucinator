@@ -204,9 +204,8 @@ pub(crate) fn clean_title_with_config(
 
     // Handle "? ACRONYM, year" — ALL-CAPS venue acronym + comma + 4-digit year after ?/!
     // Catches venues like PACMPL, JMLR, VLDB, etc. that aren't in the explicit list above
-    static QMARK_ACRONYM_VENUE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"[?!]\s+[A-Z]{3,}[a-z]?\s*,\s*(?:19|20)\d{2}").unwrap()
-    });
+    static QMARK_ACRONYM_VENUE_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[?!]\s+[A-Z]{3,}[a-z]?\s*,\s*(?:19|20)\d{2}").unwrap());
     if let Some(m) = QMARK_ACRONYM_VENUE_RE.find(&title) {
         let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
         title = title[..=punct_pos].to_string();
@@ -983,7 +982,10 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
             r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
         let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
         // Require at least 2 chars in surname to avoid matching single-letter initials like "G."
-        let surname = format!(r"{}{}{{2,}}(?:\s+{}+)*", particle, surname_chars, surname_chars);
+        let surname = format!(
+            r"{}{}{{2,}}(?:\s+{}+)*",
+            particle, surname_chars, surname_chars
+        );
         let pattern = format!(
             r#",?\s+and\s+{}\s*{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
             initial, surname,
@@ -1043,10 +1045,8 @@ fn try_book_citation(ref_text: &str) -> Option<(String, bool)> {
     // where title starts with capital letter and contains lowercase (not all caps)
     static BOOK_AUTHOR_RE: Lazy<Regex> = Lazy::new(|| {
         // Match: "and I. I. Surname," or "and I. Surname," where Surname is 2+ letters
-        Regex::new(
-            r"(?i)\band\s+(?:[A-Z]\.\s*)+[A-Za-z\u{00C0}-\u{024F}'-]{2,},\s*([A-Z][a-z])",
-        )
-        .unwrap()
+        Regex::new(r"(?i)\band\s+(?:[A-Z]\.\s*)+[A-Za-z\u{00C0}-\u{024F}'-]{2,},\s*([A-Z][a-z])")
+            .unwrap()
     });
 
     let caps = BOOK_AUTHOR_RE.captures(ref_text)?;

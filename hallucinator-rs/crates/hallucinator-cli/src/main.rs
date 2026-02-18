@@ -72,6 +72,14 @@ enum Command {
         /// Uses SEARXNG_URL env var or defaults to http://localhost:8080
         #[arg(long)]
         searxng: bool,
+
+        /// Path to persistent query cache database (SQLite)
+        #[arg(long)]
+        cache_path: Option<PathBuf>,
+
+        /// Clear the query cache and exit
+        #[arg(long)]
+        clear_cache: bool,
     },
 
     /// Download and build the offline DBLP database
@@ -109,7 +117,38 @@ async fn main() -> anyhow::Result<()> {
             max_rate_limit_retries,
             dry_run,
             searxng,
+            cache_path,
+            clear_cache,
         } => {
+            if clear_cache {
+                let path = cache_path.or_else(|| {
+                    std::env::var("HALLUCINATOR_CACHE_PATH")
+                        .ok()
+                        .map(PathBuf::from)
+                });
+                return match path {
+                    Some(p) if p.exists() => {
+                        let cache = hallucinator_core::QueryCache::open(
+                            &p,
+                            std::time::Duration::from_secs(1),
+                            std::time::Duration::from_secs(1),
+                        )
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                        cache.clear();
+                        println!("Cache cleared: {}", p.display());
+                        Ok(())
+                    }
+                    Some(p) => {
+                        println!("No cache file at {}", p.display());
+                        Ok(())
+                    }
+                    None => {
+                        anyhow::bail!(
+                            "No cache path specified. Use --cache-path or set HALLUCINATOR_CACHE_PATH"
+                        );
+                    }
+                };
+            }
             if dry_run {
                 dry_run_check(file_path, no_color, output).await
             } else {
@@ -126,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
                     num_workers,
                     max_rate_limit_retries,
                     searxng,
+                    cache_path,
                 )
                 .await
             }
@@ -147,6 +187,7 @@ async fn check(
     num_workers: Option<usize>,
     max_rate_limit_retries: Option<u32>,
     searxng: bool,
+    cache_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     // Resolve configuration: CLI flags > env vars > defaults
     let openalex_key = openalex_key.or_else(|| std::env::var("OPENALEX_KEY").ok());
@@ -327,6 +368,13 @@ async fn check(
         s2_api_key.is_some(),
     ));
 
+    let cache_path = cache_path.or_else(|| {
+        std::env::var("HALLUCINATOR_CACHE_PATH")
+            .ok()
+            .map(PathBuf::from)
+    });
+    let query_cache = hallucinator_core::build_query_cache(cache_path.as_deref());
+
     let config = hallucinator_core::Config {
         openalex_key: openalex_key.clone(),
         s2_api_key,
@@ -343,6 +391,8 @@ async fn check(
         max_rate_limit_retries,
         rate_limiters,
         searxng_url,
+        query_cache: Some(query_cache),
+        cache_path,
     };
 
     // Set up progress callback

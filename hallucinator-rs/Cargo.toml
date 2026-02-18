@@ -96,8 +96,14 @@ governor = "0.8"
 arc-swap = "1"
 fastrand = "2"
 
+# Concurrent data structures
+dashmap = "6"
+
 # TUI
 ratatui = "0.29"
+
+# Memory allocator
+mimalloc = { version = "0.1", features = ["override"] }
 
 # Encoding
 base64 = "0.22"

@@ -1,5 +1,5 @@
-use crate::db::searxng::Searxng;
 use crate::db::DatabaseBackend;
+use crate::db::searxng::Searxng;
 use crate::doi::{DoiMatchResult, check_doi_match, validate_doi};
 use crate::orchestrator::query_all_databases;
 use crate::pool::{RefJob, ValidationPool};
@@ -176,33 +176,44 @@ pub async fn check_single_reference(
     .await;
 
     // Step 2.5: SearxNG fallback for NotFound references
-    if db_result.status == Status::NotFound {
-        if let Some(ref searxng_url) = config.searxng_url {
-            let searxng = Searxng::new(searxng_url.clone());
-            let searxng_timeout = Duration::from_secs(config.db_timeout_secs);
+    if db_result.status == Status::NotFound
+        && let Some(ref searxng_url) = config.searxng_url
+    {
+        let searxng = Searxng::new(searxng_url.clone());
+        let searxng_timeout = Duration::from_secs(config.db_timeout_secs);
 
-            if let Ok((Some(_found_title), _, paper_url)) =
-                searxng.query(title, client, searxng_timeout).await
-            {
-                // Web search found the paper - update result
-                let web_db_result = DbResult {
-                    db_name: "Web Search".into(),
-                    status: DbStatus::Match,
-                    elapsed: None,
-                    found_authors: vec![], // Web search cannot verify authors
-                    paper_url: paper_url.clone(),
-                    error_message: None,
-                };
-                if let Some(cb) = on_db_complete {
-                    cb(web_db_result.clone());
-                }
-                db_result.db_results.push(web_db_result);
+        let start = std::time::Instant::now();
+        let searxng_result = searxng.query(title, client, searxng_timeout).await;
+        let elapsed = start.elapsed();
 
-                db_result.status = Status::Verified;
-                db_result.source = Some("Web Search".into());
-                db_result.found_authors = vec![];
-                db_result.paper_url = paper_url;
+        if let Ok((Some(_found_title), _, paper_url)) = searxng_result {
+            // Web search found the paper - update result
+            let web_db_result = DbResult {
+                db_name: "Web Search".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: vec![], // Web search cannot verify authors
+                paper_url: paper_url.clone(),
+                error_message: None,
+            };
+            if let Some(cb) = on_db_complete {
+                cb(web_db_result.clone());
             }
+            db_result.db_results.push(web_db_result);
+
+            db_result.status = Status::Verified;
+            db_result.source = Some("Web Search".into());
+            db_result.found_authors = vec![];
+            db_result.paper_url = paper_url;
+        } else if let Some(cb) = on_db_complete {
+            cb(DbResult {
+                db_name: "Web Search".into(),
+                status: DbStatus::NoMatch,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: None,
+                error_message: None,
+            });
         }
     }
 

@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use hallucinator_core::pool::{RefJob, ValidationPool};
-use hallucinator_core::{Config, ProgressEvent, ValidationResult};
+use hallucinator_core::{Config, ProgressEvent};
 use hallucinator_pdf::ExtractionResult;
 
 use crate::tui_event::BackendEvent;
@@ -161,10 +161,6 @@ async fn process_single_paper(
 
     let skip_stats = extraction.skip_stats.clone();
     let all_refs = extraction.references;
-    let ref_titles: Vec<String> = all_refs
-        .iter()
-        .map(|r| r.title.clone().unwrap_or_default())
-        .collect();
 
     // Count only non-skipped refs for the ref_count (used for stats/progress)
     let checkable_count = all_refs.iter().filter(|r| r.skip_reason.is_none()).count();
@@ -172,19 +168,20 @@ async fn process_single_paper(
     let _ = tx.send(BackendEvent::ExtractionComplete {
         paper_index,
         ref_count: checkable_count,
-        ref_titles,
         references: all_refs.clone(),
         skip_stats,
     });
 
     // Build a mapping from filtered (checkable) index → original all_refs index,
     // so that progress events use indices into the full ref_states array.
-    let index_map: Vec<usize> = all_refs
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.skip_reason.is_none())
-        .map(|(i, _)| i)
-        .collect();
+    let index_map: Arc<Vec<usize>> = Arc::new(
+        all_refs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.skip_reason.is_none())
+            .map(|(i, _)| i)
+            .collect(),
+    );
 
     // Filter to only checkable refs for validation
     let refs: Vec<_> = all_refs
@@ -193,10 +190,7 @@ async fn process_single_paper(
         .collect();
 
     if refs.is_empty() {
-        let _ = tx.send(BackendEvent::PaperComplete {
-            paper_index,
-            results: vec![],
-        });
+        let _ = tx.send(BackendEvent::PaperComplete { paper_index });
         return;
     }
 
@@ -213,7 +207,7 @@ async fn process_single_paper(
 
         // Build per-ref progress callback that remaps indices and tags with paper_index
         let tx_progress = tx.clone();
-        let index_map = index_map.clone();
+        let index_map = Arc::clone(&index_map);
         let progress_cb = move |event: ProgressEvent| {
             let event = remap_progress_index(event, &index_map);
             let _ = tx_progress.send(BackendEvent::Progress {
@@ -234,18 +228,12 @@ async fn process_single_paper(
         receivers.push((i, result_rx));
     }
 
-    // Collect results in order
-    let mut results: Vec<Option<ValidationResult>> = vec![None; total];
-    for (i, rx) in receivers {
-        if let Ok(result) = rx.await {
-            results[i] = Some(result);
-        }
+    // Await all receivers (results are already sent via Progress events)
+    for (_i, rx) in receivers {
+        let _ = rx.await;
     }
 
-    let _ = tx.send(BackendEvent::PaperComplete {
-        paper_index,
-        results: results.into_iter().flatten().collect(),
-    });
+    let _ = tx.send(BackendEvent::PaperComplete { paper_index });
 }
 
 /// Retry specific references for a paper, re-checking against failed (or all) databases.
@@ -255,7 +243,11 @@ pub async fn retry_references(
     config: Config,
     tx: mpsc::UnboundedSender<BackendEvent>,
 ) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(2)
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let config = Arc::new(config);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(config.num_workers.max(1)));
     let total = refs_to_retry.len();

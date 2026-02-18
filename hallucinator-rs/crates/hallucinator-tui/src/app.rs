@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 use hallucinator_pdf::archive::ArchiveItem;
 
-use hallucinator_core::{DbStatus, ProgressEvent, Reference};
+use hallucinator_core::{DbStatus, ProgressEvent};
 
 use crate::action::Action;
 use crate::model::activity::{ActiveQuery, ActivityState};
@@ -217,8 +217,6 @@ pub struct App {
     pub papers: Vec<PaperState>,
     /// Per-paper reference states, indexed in parallel with `papers`.
     pub ref_states: Vec<Vec<RefState>>,
-    /// Per-paper extracted references (for retry support).
-    pub paper_refs: Vec<Vec<Reference>>,
     pub queue_cursor: usize,
     pub paper_cursor: usize,
     pub sort_order: SortOrder,
@@ -295,12 +293,18 @@ pub struct App {
     pub extracted_count: usize,
     /// Number of `run_batch_with_offset` tasks still running.
     inflight_batches: usize,
+    /// Rate limiters for the current run (shared with backend for backoff state).
+    pub current_rate_limiters: Option<std::sync::Arc<hallucinator_core::RateLimiters>>,
+    /// Query cache for the current run (shared with backend for cache stats).
+    pub current_query_cache: Option<std::sync::Arc<hallucinator_core::QueryCache>>,
     /// Frame counter for FPS measurement.
     frame_count: u32,
     /// Last time FPS was sampled.
     last_fps_instant: Instant,
     /// Measured FPS for display.
     pub measured_fps: f32,
+    /// Measured process RSS in bytes (updated once per second).
+    pub measured_rss_bytes: usize,
 }
 
 impl App {
@@ -308,14 +312,12 @@ impl App {
         let papers: Vec<PaperState> = filenames.into_iter().map(PaperState::new).collect();
         let paper_count = papers.len();
         let ref_states = vec![Vec::new(); paper_count];
-        let paper_refs = vec![Vec::new(); paper_count];
         let queue_sorted: Vec<usize> = (0..papers.len()).collect();
 
         Self {
             screen: Screen::Banner,
             papers,
             ref_states,
-            paper_refs,
             queue_cursor: 0,
             paper_cursor: 0,
             sort_order: SortOrder::ProblematicPct,
@@ -360,9 +362,12 @@ impl App {
             archive_streaming_name: None,
             extracted_count: 0,
             inflight_batches: 0,
+            current_rate_limiters: None,
+            current_query_cache: None,
             frame_count: 0,
             last_fps_instant: Instant::now(),
             measured_fps: 0.0,
+            measured_rss_bytes: get_rss_bytes().unwrap_or(0),
         }
     }
 
@@ -509,6 +514,13 @@ impl App {
         self.start_time = Some(Instant::now());
         self.frozen_elapsed = None;
         self.activity = ActivityState::default();
+        // Pre-seed "Web Search" in activity panel if SearxNG is configured
+        if self.config_state.searxng_url.is_some() {
+            self.activity.db_health.insert(
+                "Web Search".to_string(),
+                crate::model::activity::DbHealth::new(),
+            );
+        }
         self.throughput_since_last = 0;
         self.last_throughput_tick = self.tick;
 
@@ -523,12 +535,12 @@ impl App {
         for rs in &mut self.ref_states {
             rs.clear();
         }
-        for pr in &mut self.paper_refs {
-            pr.clear();
-        }
 
         if let Some(tx) = &self.backend_cmd_tx {
             let config = self.build_config();
+            // Keep references to rate limiters and cache for the activity panel
+            self.current_rate_limiters = Some(config.rate_limiters.clone());
+            self.current_query_cache = config.query_cache.clone();
             let _ = tx.send(BackendCommand::ProcessFiles {
                 files: real_files,
                 starting_index: 0,
@@ -591,6 +603,18 @@ impl App {
                 Some(self.config_state.crossref_mailto.clone())
             },
             searxng_url: self.config_state.searxng_url.clone(),
+            cache_path: if self.config_state.cache_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(&self.config_state.cache_path))
+            },
+            query_cache: Some(hallucinator_core::build_query_cache(
+                if self.config_state.cache_path.is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&self.config_state.cache_path))
+                },
+            )),
         }
     }
 
@@ -615,10 +639,9 @@ impl App {
                 match crate::load::load_results_file(&path) {
                     Ok(loaded) => {
                         let count = loaded.len();
-                        for (paper, refs, paper_refs) in loaded {
+                        for (paper, refs) in loaded {
                             self.papers.push(paper);
                             self.ref_states.push(refs);
-                            self.paper_refs.push(paper_refs);
                             self.file_paths.push(PathBuf::new()); // placeholder
                         }
                         self.batch_complete = true;
@@ -654,7 +677,6 @@ impl App {
                     .unwrap_or_else(|| path.display().to_string());
                 self.papers.push(PaperState::new(filename));
                 self.ref_states.push(Vec::new());
-                self.paper_refs.push(Vec::new());
                 self.file_paths.push(path);
             }
         }
@@ -733,7 +755,6 @@ impl App {
                     let display_name = format!("{}/{}", archive_name, pdf.filename);
                     self.papers.push(PaperState::new(display_name));
                     self.ref_states.push(Vec::new());
-                    self.paper_refs.push(Vec::new());
                     new_pdfs.push(pdf.path.clone());
                     self.file_paths.push(pdf.path);
                 }
@@ -927,15 +948,29 @@ impl App {
                                     .unwrap_or_else(|| (0..self.papers.len()).collect())
                             }
                         };
+                        // Build full results from ref_states for export
+                        let results_vecs: Vec<Vec<Option<hallucinator_core::ValidationResult>>> =
+                            paper_indices
+                                .iter()
+                                .map(|&i| {
+                                    self.ref_states
+                                        .get(i)
+                                        .map(|refs| {
+                                            refs.iter().map(|rs| rs.result.clone()).collect()
+                                        })
+                                        .unwrap_or_default()
+                                })
+                                .collect();
                         let report_papers: Vec<hallucinator_reporting::ReportPaper<'_>> =
                             paper_indices
                                 .iter()
-                                .filter_map(|&i| {
+                                .zip(results_vecs.iter())
+                                .filter_map(|(&i, results)| {
                                     let paper = self.papers.get(i)?;
                                     Some(hallucinator_reporting::ReportPaper {
                                         filename: &paper.filename,
                                         stats: &paper.stats,
-                                        results: &paper.results,
+                                        results,
                                         verdict: paper.verdict,
                                     })
                                 })
@@ -1490,6 +1525,7 @@ impl App {
                         self.frozen_elapsed = Some(self.elapsed());
                         self.batch_complete = true;
                         self.processing_started = false;
+                        self.activity.active_queries.clear();
                     }
                 }
             }
@@ -1673,7 +1709,7 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::ApiKeys => 3,
-            ConfigSection::Databases => 2 + self.config_state.disabled_dbs.len(),
+            ConfigSection::Databases => 5 + self.config_state.disabled_dbs.len(), // DBLP + ACL + cache_path + clear_cache + searxng_url + toggles
             ConfigSection::Concurrency => 5,
             ConfigSection::Display => 2, // theme + fps
         }
@@ -1731,8 +1767,22 @@ impl App {
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.acl_offline_path.clone();
                     self.input_mode = InputMode::TextInput;
+                } else if self.config_state.item_cursor == 2 {
+                    // Item 2: edit cache path
+                    self.config_state.editing = true;
+                    self.config_state.edit_buffer = self.config_state.cache_path.clone();
+                    self.input_mode = InputMode::TextInput;
+                } else if self.config_state.item_cursor == 3 {
+                    // Item 3: clear cache button
+                    self.clear_query_cache();
+                } else if self.config_state.item_cursor == 4 {
+                    // Item 4: edit SearxNG URL
+                    self.config_state.editing = true;
+                    self.config_state.edit_buffer =
+                        self.config_state.searxng_url.clone().unwrap_or_default();
+                    self.input_mode = InputMode::TextInput;
                 } else {
-                    // Items 2+: toggle DB (same as space)
+                    // Items 5+: toggle DB (same as space)
                     self.handle_config_space();
                 }
             }
@@ -1744,9 +1794,9 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::Databases => {
-                // Items 2+ are DB toggles (items 0-1 are DBLP/ACL paths)
-                if self.config_state.item_cursor >= 2 {
-                    let toggle_idx = self.config_state.item_cursor - 2;
+                // Items 5+ are DB toggles (0-1: paths, 2: cache path, 3: clear cache, 4: searxng url)
+                if self.config_state.item_cursor >= 5 {
+                    let toggle_idx = self.config_state.item_cursor - 5;
                     if let Some((_, enabled)) = self.config_state.disabled_dbs.get_mut(toggle_idx) {
                         *enabled = !*enabled;
                         self.config_state.dirty = true;
@@ -1816,6 +1866,16 @@ impl App {
                         clean_canonicalize(&PathBuf::from(&buf))
                     };
                 }
+                2 => {
+                    self.config_state.cache_path = if buf.is_empty() {
+                        buf
+                    } else {
+                        clean_canonicalize(&PathBuf::from(&buf))
+                    };
+                }
+                4 => {
+                    self.config_state.searxng_url = if buf.is_empty() { None } else { Some(buf) };
+                }
                 _ => {}
             },
             ConfigSection::Display => {
@@ -1830,6 +1890,50 @@ impl App {
         self.config_state.editing = false;
         self.config_state.edit_buffer.clear();
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Clear the query cache (both in-memory and on-disk).
+    fn clear_query_cache(&mut self) {
+        // Prefer the live cache handle — clears both L1 DashMap and L2 SQLite,
+        // and VACUUM runs on the same connection so there's no locking conflict.
+        if let Some(ref cache) = self.current_query_cache {
+            cache.clear();
+            self.config_state.cache_clear_status = Some("Cache cleared".to_string());
+            self.activity.log("Query cache cleared".to_string());
+            return;
+        }
+
+        // No live cache — open a temporary handle to clear the file on disk.
+        let cache_path = if self.config_state.cache_path.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(&self.config_state.cache_path))
+        };
+
+        if let Some(ref path) = cache_path {
+            if path.exists() {
+                match hallucinator_core::QueryCache::open(
+                    path,
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(1),
+                ) {
+                    Ok(cache) => {
+                        cache.clear();
+                        self.config_state.cache_clear_status = Some("Cache cleared".to_string());
+                        self.activity.log("Query cache cleared".to_string());
+                    }
+                    Err(e) => {
+                        self.config_state.cache_clear_status = Some(format!("Failed: {}", e));
+                        self.activity
+                            .log_warn(format!("Failed to clear cache: {}", e));
+                    }
+                }
+            } else {
+                self.config_state.cache_clear_status = Some("No cache file found".to_string());
+            }
+        } else {
+            self.config_state.cache_clear_status = Some("No cache path configured".to_string());
+        }
     }
 
     /// Save config to disk and clear the dirty flag.
@@ -1909,7 +2013,6 @@ impl App {
             BackendEvent::ExtractionComplete {
                 paper_index,
                 ref_count,
-                ref_titles,
                 references,
                 skip_stats: _,
             } => {
@@ -1927,10 +2030,9 @@ impl App {
                     paper.phase = PaperPhase::Checking;
                 }
                 if paper_index < self.ref_states.len() {
-                    self.ref_states[paper_index] = ref_titles
+                    self.ref_states[paper_index] = references
                         .into_iter()
-                        .zip(references.iter())
-                        .map(|(title, r)| {
+                        .map(|r| {
                             let phase = if let Some(reason) = &r.skip_reason {
                                 RefPhase::Skipped(reason.clone())
                             } else {
@@ -1938,20 +2040,17 @@ impl App {
                             };
                             RefState {
                                 index: r.original_number.saturating_sub(1),
-                                title,
+                                title: r.title.clone().unwrap_or_default(),
                                 phase,
                                 result: None,
                                 fp_reason: None,
-                                raw_citation: r.raw_citation.clone(),
-                                authors: r.authors.clone(),
-                                doi: r.doi.clone(),
-                                arxiv_id: r.arxiv_id.clone(),
+                                raw_citation: r.raw_citation,
+                                authors: r.authors,
+                                doi: r.doi,
+                                arxiv_id: r.arxiv_id,
                             }
                         })
                         .collect();
-                }
-                if paper_index < self.paper_refs.len() {
-                    self.paper_refs[paper_index] = references;
                 }
             }
             BackendEvent::ExtractionFailed { paper_index, error } => {
@@ -1963,10 +2062,7 @@ impl App {
             BackendEvent::Progress { paper_index, event } => {
                 self.handle_progress(paper_index, *event);
             }
-            BackendEvent::PaperComplete {
-                paper_index,
-                results: _,
-            } => {
+            BackendEvent::PaperComplete { paper_index } => {
                 if let Some(paper) = self.papers.get_mut(paper_index)
                     && paper.phase != PaperPhase::ExtractionFailed
                 {
@@ -2093,7 +2189,11 @@ impl App {
                     if paper.phase == PaperPhase::Retrying {
                         paper.retry_done += 1;
                     }
-                    paper.record_result(index, result.clone());
+                    let is_retracted = result
+                        .retraction_info
+                        .as_ref()
+                        .is_some_and(|r| r.is_retracted);
+                    paper.record_status(index, result.status.clone(), is_retracted);
                 }
                 if let Some(refs) = self.ref_states.get_mut(paper_index)
                     && let Some(rs) = refs.get_mut(index)
@@ -2186,6 +2286,7 @@ impl App {
             self.measured_fps = self.frame_count as f32 / elapsed.as_secs_f32();
             self.frame_count = 0;
             self.last_fps_instant = Instant::now();
+            self.measured_rss_bytes = get_rss_bytes().unwrap_or(self.measured_rss_bytes);
         }
     }
 
@@ -2330,8 +2431,8 @@ impl App {
             }
         };
 
-        let reference = match self.paper_refs.get(paper_idx).and_then(|r| r.get(ref_idx)) {
-            Some(r) => r.clone(),
+        let reference = match self.ref_states.get(paper_idx).and_then(|r| r.get(ref_idx)) {
+            Some(rs) => rs.to_reference(),
             None => return,
         };
 
@@ -2374,19 +2475,14 @@ impl App {
             Some(r) => r,
             None => return,
         };
-        let paper_refs = match self.paper_refs.get(paper_idx) {
-            Some(r) => r,
-            None => return,
-        };
 
         // Collect retryable refs: NotFound with failed_dbs, or NotFound for full re-check
         let mut to_retry: Vec<(usize, hallucinator_core::Reference, Vec<String>)> = Vec::new();
         for (i, rs) in refs.iter().enumerate() {
             if let Some(result) = &rs.result
                 && result.status == hallucinator_core::Status::NotFound
-                && let Some(reference) = paper_refs.get(i)
             {
-                to_retry.push((i, reference.clone(), result.failed_dbs.clone()));
+                to_retry.push((i, rs.to_reference(), result.failed_dbs.clone()));
             }
         }
 
@@ -2809,6 +2905,92 @@ fn verdict_sort_key(rs: &RefState) -> u8 {
             }
         }
         None => 4,
+    }
+}
+
+/// Get the process resident set size (working set) in bytes.
+/// Returns what Task Manager / top / Activity Monitor would show.
+fn get_rss_bytes() -> Option<usize> {
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        #[allow(non_snake_case)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            PageFaultCount: u32,
+            PeakWorkingSetSize: usize,
+            WorkingSetSize: usize,
+            QuotaPeakPagedPoolUsage: usize,
+            QuotaPagedPoolUsage: usize,
+            QuotaPeakNonPagedPoolUsage: usize,
+            QuotaNonPagedPoolUsage: usize,
+            PagefileUsage: usize,
+            PeakPagefileUsage: usize,
+        }
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(
+                process: isize,
+                ppsmemCounters: *mut ProcessMemoryCounters,
+                cb: u32,
+            ) -> i32;
+        }
+        unsafe {
+            let mut pmc: ProcessMemoryCounters = std::mem::zeroed();
+            pmc.cb = std::mem::size_of::<ProcessMemoryCounters>() as u32;
+            if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
+                return Some(pmc.WorkingSetSize);
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+        let rss_pages: usize = statm.split_whitespace().nth(1)?.parse().ok()?;
+        Some(rss_pages * 4096)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        struct MachTaskBasicInfo {
+            virtual_size: u64,
+            resident_size: u64,
+            resident_size_max: u64,
+            user_time: [u32; 2],
+            system_time: [u32; 2],
+            policy: i32,
+            suspend_count: i32,
+        }
+        unsafe extern "C" {
+            fn mach_task_self() -> u32;
+            fn task_info(
+                target_task: u32,
+                flavor: u32,
+                task_info_out: *mut MachTaskBasicInfo,
+                task_info_count: *mut u32,
+            ) -> i32;
+        }
+        const MACH_TASK_BASIC_INFO: u32 = 20;
+        unsafe {
+            let mut info: MachTaskBasicInfo = std::mem::zeroed();
+            let mut count =
+                (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<u32>()) as u32;
+            if task_info(
+                mach_task_self(),
+                MACH_TASK_BASIC_INFO,
+                &mut info,
+                &mut count,
+            ) == 0
+            {
+                return Some(info.resident_size as usize);
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        None
     }
 }
 
@@ -3291,7 +3473,7 @@ mod tests {
         let mut app = test_app();
         app.screen = Screen::Config;
         app.config_state.section = ConfigSection::Databases;
-        app.config_state.item_cursor = 2; // first DB toggle
+        app.config_state.item_cursor = 4; // first DB toggle (0=DBLP, 1=ACL, 2=cache, 3=clear, 4+=toggles)
 
         app.update(Action::ToggleSafe);
 
