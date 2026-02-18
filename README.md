@@ -98,6 +98,7 @@ The tool queries these databases simultaneously:
 | **Europe PMC** | Life science literature (42M+ abstracts, mirrors PubMed/PMC) |
 | **PubMed** | Biomedical literature via NCBI E-utilities |
 | **OpenAlex** | 250M+ works (optional, needs free API key) |
+| **Web Search** | SearxNG fallback for unindexed papers (optional, see below) |
 
 ~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
 
@@ -223,10 +224,54 @@ Re-run `--update-dblp` to download the latest dump. DBLP publishes daily updates
 
 ---
 
+## Web Search Fallback (SearxNG)
+
+For papers not found in any academic database, you can enable a web search fallback using [SearxNG](https://docs.searxng.org/), a self-hosted metasearch engine. This is useful for technical reports, workshop papers, or other publications not indexed in traditional academic databases.
+
+> **Important:** Web search matches are **weaker** than database matches. They only confirm that a paper with a matching title exists somewhere on the web—they **cannot verify authors**. Use web matches as a hint for manual verification, not as definitive proof. The tool will display these as "Web Search" matches to distinguish them from verified database matches.
+
+### Setup (Rust TUI/CLI only)
+
+```bash
+cd hallucinator-rs/docker/searxng
+docker compose up -d
+```
+
+This starts a SearxNG instance on `http://localhost:8080`.
+
+### Usage
+
+```bash
+# CLI
+hallucinator-cli check --searxng paper.pdf
+
+# TUI - configure in the Config screen (press ,)
+# Set SearxNG URL to http://localhost:8080
+```
+
+### Custom URL
+
+```bash
+# Use a different SearxNG instance
+SEARXNG_URL=http://your-searxng:8080 hallucinator-cli check --searxng paper.pdf
+```
+
+### How it works
+
+1. References are checked against all academic databases first
+2. If a reference is **not found** in any database, SearxNG is queried
+3. SearxNG searches Google, Bing, DuckDuckGo, and Google Scholar
+4. If a matching title is found, the reference is marked as "Verified (Web Search)"
+5. No author verification is performed—only title matching
+
+---
+
 ## Understanding Results
 
 ### Verified
 The reference was found in at least one database with matching authors. It exists.
+
+**Note on Web Search matches:** If a reference is marked as "Verified (Web Search)", this is a weaker match—the title was found on the web but authors could not be verified. These should be manually confirmed.
 
 ### Author Mismatch
 The title was found but with different authors. Could be:

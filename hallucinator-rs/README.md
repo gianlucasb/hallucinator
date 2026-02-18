@@ -81,6 +81,8 @@ hallucinator-cli check --no-color paper.pdf
 | `--no-color` | Disable colored output |
 | `--disable-dbs=CSV` | Comma-separated database names to skip |
 | `--check-openalex-authors` | Flag author mismatches from OpenAlex (off by default) |
+| `--searxng` | Enable SearxNG web search fallback (see below) |
+| `--cache-path=PATH` | Path to query cache database |
 
 ### Building Offline Databases
 
@@ -158,7 +160,7 @@ The TUI also has `update-dblp` and `update-acl` subcommands, same as the CLI.
 Settings are loaded from (highest to lowest priority):
 
 1. CLI arguments
-2. Environment variables (`OPENALEX_KEY`, `S2_API_KEY`, `DBLP_OFFLINE_PATH`, `ACL_OFFLINE_PATH`, `DB_TIMEOUT`, `DB_TIMEOUT_SHORT`)
+2. Environment variables (`OPENALEX_KEY`, `S2_API_KEY`, `DBLP_OFFLINE_PATH`, `ACL_OFFLINE_PATH`, `SEARXNG_URL`, `DB_TIMEOUT`, `DB_TIMEOUT_SHORT`)
 3. Config file
 4. Defaults
 
@@ -217,8 +219,52 @@ Same 10 databases as the Python version:
 | Europe PMC | Life science literature (42M+ abstracts) |
 | PubMed | Biomedical literature via NCBI |
 | OpenAlex | 250M+ works (optional, needs API key) |
+| Web Search | SearxNG fallback (optional, weaker than DB matches) |
 
 Each reference is checked against all enabled databases concurrently. First verified match wins (early exit).
+
+---
+
+## Web Search Fallback (SearxNG)
+
+For papers not found in any academic database, you can enable a web search fallback using [SearxNG](https://docs.searxng.org/), a self-hosted metasearch engine.
+
+> **Important:** Web search matches are **weaker** than database matches. They only confirm that a paper with a matching title exists somewhere on the web—they **cannot verify authors**. The tool displays these as "Web Search" matches to distinguish them from verified database matches. Treat web matches as hints for manual verification.
+
+### Setup
+
+```bash
+cd docker/searxng
+docker compose up -d
+```
+
+This starts SearxNG on `http://localhost:8080` with Google, Bing, DuckDuckGo, and Google Scholar enabled.
+
+### Usage
+
+```bash
+# CLI
+hallucinator-cli check --searxng paper.pdf
+
+# Custom URL
+SEARXNG_URL=http://your-server:8080 hallucinator-cli check --searxng paper.pdf
+```
+
+In the TUI, configure via the Config screen (press `,`): set SearxNG URL to `http://localhost:8080`.
+
+### Config file
+
+```toml
+[databases]
+searxng_url = "http://localhost:8080"
+```
+
+### How it works
+
+1. References are checked against all academic databases first
+2. If not found anywhere, SearxNG is queried as a fallback
+3. Results are filtered for academic domains and exact title matches
+4. Matches are marked as "Web Search" (no author verification)
 
 ---
 
