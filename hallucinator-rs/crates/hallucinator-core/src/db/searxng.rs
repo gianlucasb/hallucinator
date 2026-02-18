@@ -62,51 +62,6 @@ fn titles_match_lenient(reference_title: &str, search_title: &str) -> bool {
     false
 }
 
-/// Check if a URL is from an academic domain.
-fn is_academic_url(url: &str) -> bool {
-    const ACADEMIC_DOMAINS: &[&str] = &[
-        "scholar.google",
-        "arxiv.org",
-        "semanticscholar.org",
-        "researchgate.net",
-        "academia.edu",
-        "acm.org",
-        "ieee.org",
-        "springer.com",
-        "sciencedirect.com",
-        "wiley.com",
-        "nature.com",
-        "pnas.org",
-        "nih.gov",
-        "pubmed",
-        "jstor.org",
-        "aclanthology.org",
-        "aclweb.org",
-        "openreview.net",
-        "neurips.cc",
-        "proceedings.mlr.press",
-        "jmlr.org",
-        "ssrn.com",
-        "europepmc.org",
-        "ncbi.nlm.nih.gov",
-        "biorxiv.org",
-        "medrxiv.org",
-        "plos.org",
-        "frontiersin.org",
-        "mdpi.com",
-        "tandfonline.com",
-        "cambridge.org",
-        "oup.com",
-        "sagepub.com",
-        "dblp.org",
-        ".edu/",
-        ".ac.uk/",
-    ];
-
-    let url_lower = url.to_lowercase();
-    ACADEMIC_DOMAINS.iter().any(|d| url_lower.contains(d))
-}
-
 /// Response from SearxNG JSON API.
 #[derive(Debug, serde::Deserialize)]
 struct SearxngResponse {
@@ -160,13 +115,8 @@ impl DatabaseBackend for Searxng {
                 .await
                 .map_err(|e| DbQueryError::Other(e.to_string()))?;
 
-            // Check results for academic URLs with matching titles
+            // Check results for matching titles
             for result in data.results {
-                // Only accept results from academic domains
-                if !is_academic_url(&result.url) {
-                    continue;
-                }
-
                 // Verify the title matches (lenient matching for web search)
                 if titles_match_lenient(title, &result.title) {
                     // Return found result - no authors available from web search
@@ -183,20 +133,6 @@ impl DatabaseBackend for Searxng {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_academic_url() {
-        assert!(is_academic_url("https://arxiv.org/abs/1234.5678"));
-        assert!(is_academic_url("https://www.semanticscholar.org/paper/..."));
-        assert!(is_academic_url("https://dl.acm.org/doi/10.1145/123456"));
-        assert!(is_academic_url("https://ieeexplore.ieee.org/document/123"));
-        assert!(is_academic_url("https://cs.stanford.edu/papers/paper.pdf"));
-        assert!(is_academic_url("https://www.cam.ac.uk/research/paper.pdf"));
-
-        assert!(!is_academic_url("https://github.com/user/repo"));
-        assert!(!is_academic_url("https://medium.com/article"));
-        assert!(!is_academic_url("https://random-blog.com/post"));
-    }
 
     #[test]
     fn test_titles_match_lenient_exact() {
