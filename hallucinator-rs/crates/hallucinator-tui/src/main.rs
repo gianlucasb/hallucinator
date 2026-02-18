@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -392,10 +395,9 @@ async fn main() -> anyhow::Result<()> {
         match load::load_results_file(load_path) {
             Ok(loaded) => {
                 let count = loaded.len();
-                for (paper, refs, paper_refs) in loaded {
+                for (paper, refs) in loaded {
                     app.papers.push(paper);
                     app.ref_states.push(refs);
-                    app.paper_refs.push(paper_refs);
                     app.file_paths.push(PathBuf::new()); // placeholder
                 }
                 app.batch_complete = true;

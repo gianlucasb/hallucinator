@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use hallucinator_core::{
-    ArxivInfo, DbResult, DbStatus, DoiInfo, Reference, RetractionInfo, Status, ValidationResult,
+    ArxivInfo, DbResult, DbStatus, DoiInfo, RetractionInfo, Status, ValidationResult,
 };
 
 use crate::model::paper::{FpReason, RefPhase, RefState};
@@ -133,7 +133,7 @@ fn parse_fp_reason(loaded_ref: &LoadedRef) -> Option<FpReason> {
     }
 }
 
-fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Reference>) {
+fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
     let ref_count = loaded.references.len();
     let mut paper = PaperState::new(loaded.filename);
     paper.phase = PaperPhase::Complete;
@@ -142,7 +142,6 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
     paper.verdict = loaded.verdict.as_deref().and_then(parse_verdict);
 
     let mut ref_states = Vec::with_capacity(ref_count);
-    let mut references = Vec::with_capacity(ref_count);
 
     for loaded_ref in &loaded.references {
         let title = loaded_ref.title.clone().unwrap_or_default();
@@ -162,23 +161,14 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
             let authors = loaded_ref.ref_authors.clone().unwrap_or_default();
             ref_states.push(RefState {
                 index: orig_num.saturating_sub(1),
-                title: title.clone(),
-                phase: RefPhase::Skipped(reason.clone()),
+                title,
+                phase: RefPhase::Skipped(reason),
                 result: None,
                 fp_reason,
-                raw_citation: raw_cit.clone(),
-                authors: authors.clone(),
-                doi: None,
-                arxiv_id: None,
-            });
-            references.push(Reference {
                 raw_citation: raw_cit,
-                title: if title.is_empty() { None } else { Some(title) },
                 authors,
                 doi: None,
                 arxiv_id: None,
-                original_number: orig_num,
-                skip_reason: Some(reason),
             });
             continue;
         }
@@ -192,23 +182,14 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
                 let arxiv_id = loaded_ref.arxiv_info.as_ref().map(|a| a.arxiv_id.clone());
                 ref_states.push(RefState {
                     index: orig_num.saturating_sub(1),
-                    title: title.clone(),
+                    title,
                     phase: RefPhase::Done,
                     result: None,
                     fp_reason,
-                    raw_citation: raw_cit.clone(),
-                    authors: authors.clone(),
-                    doi: doi.clone(),
-                    arxiv_id: arxiv_id.clone(),
-                });
-                references.push(Reference {
                     raw_citation: raw_cit,
-                    title: if title.is_empty() { None } else { Some(title) },
                     authors,
                     doi,
                     arxiv_id,
-                    original_number: orig_num,
-                    skip_reason: None,
                 });
                 continue;
             }
@@ -285,7 +266,11 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
             retraction_info,
         };
 
-        paper.record_result(loaded_ref.index, result.clone());
+        let is_retracted = result
+            .retraction_info
+            .as_ref()
+            .is_some_and(|r| r.is_retracted);
+        paper.record_status(loaded_ref.index, result.status.clone(), is_retracted);
 
         let raw_cit = loaded_ref.raw_citation.clone().unwrap_or_default();
         let ref_authors = loaded_ref.ref_authors.clone().unwrap_or_default();
@@ -297,31 +282,17 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
             phase: RefPhase::Done,
             result: Some(result),
             fp_reason,
-            raw_citation: raw_cit.clone(),
-            authors: ref_authors.clone(),
-            doi: ref_doi.clone(),
-            arxiv_id: ref_arxiv.clone(),
-        });
-
-        references.push(Reference {
             raw_citation: raw_cit,
-            title: if title.is_empty() { None } else { Some(title) },
             authors: ref_authors,
             doi: ref_doi,
             arxiv_id: ref_arxiv,
-            original_number: orig_num,
-            skip_reason: None,
         });
     }
 
-    // Sort ref_states and references by original position so they align
+    // Sort ref_states by original position so they align
     // with paper.results (which is indexed by original position).
     // This handles JSON files where entries are sorted by severity.
-    let mut pairs: Vec<(RefState, Reference)> = ref_states.into_iter().zip(references).collect();
-    pairs.sort_by_key(|(rs, _)| rs.index);
-    let (sorted_states, sorted_refs): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-    ref_states = sorted_states;
-    references = sorted_refs;
+    ref_states.sort_by_key(|rs| rs.index);
 
     // Set total and skipped from loaded stats if available
     if let Some(stats) = &loaded.stats {
@@ -334,7 +305,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
         paper.total_refs = ref_count;
     }
 
-    (paper, ref_states, references)
+    (paper, ref_states)
 }
 
 // ---------------------------------------------------------------------------
@@ -346,10 +317,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>, Vec<Referen
 /// Handles both formats:
 /// - **Export format**: JSON array of paper objects (from TUI export or `--load`)
 /// - **Persistence format**: Single JSON object (from auto-save in `~/.cache/hallucinator/runs/`)
-#[allow(clippy::type_complexity)]
-pub fn load_results_file(
-    path: &Path,
-) -> Result<Vec<(PaperState, Vec<RefState>, Vec<Reference>)>, String> {
+pub fn load_results_file(path: &Path) -> Result<Vec<(PaperState, Vec<RefState>)>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 

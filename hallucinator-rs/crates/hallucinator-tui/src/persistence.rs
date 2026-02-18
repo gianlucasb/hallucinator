@@ -28,10 +28,12 @@ pub fn save_paper_results(
     ref_states: &[RefState],
 ) {
     let out_path = run_dir.join(format!("paper_{}.json", paper_index));
+    let results_from_refs: Vec<Option<hallucinator_core::ValidationResult>> =
+        ref_states.iter().map(|rs| rs.result.clone()).collect();
     let report_paper = hallucinator_reporting::ReportPaper {
         filename: &paper.filename,
         stats: &paper.stats,
-        results: &paper.results,
+        results: &results_from_refs,
         verdict: paper.verdict,
     };
     let report_refs: Vec<hallucinator_reporting::ReportRef> = ref_states

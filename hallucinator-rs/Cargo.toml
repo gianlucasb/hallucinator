@@ -99,6 +99,9 @@ fastrand = "2"
 # TUI
 ratatui = "0.29"
 
+# Memory allocator
+mimalloc = { version = "0.1", features = ["override"] }
+
 # Encoding
 base64 = "0.22"
 

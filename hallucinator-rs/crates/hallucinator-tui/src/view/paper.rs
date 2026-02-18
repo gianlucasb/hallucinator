@@ -228,12 +228,12 @@ fn render_preview(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
         let ri = indices[app.paper_cursor];
         let rs = &refs[ri];
         if matches!(rs.phase, RefPhase::Skipped(_)) {
-            // Show raw citation from extracted refs for skipped entries
-            app.paper_refs
-                .get(paper_index)
-                .and_then(|pr| pr.get(ri))
-                .map(|r| r.raw_citation.clone())
-                .unwrap_or_else(|| "(skipped)".to_string())
+            // Show raw citation directly from RefState for skipped entries
+            if rs.raw_citation.is_empty() {
+                "(skipped)".to_string()
+            } else {
+                rs.raw_citation.clone()
+            }
         } else {
             match &rs.result {
                 Some(r) => r.raw_citation.clone(),

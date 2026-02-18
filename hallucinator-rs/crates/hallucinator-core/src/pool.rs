@@ -49,7 +49,11 @@ impl ValidationPool {
     /// DOI + local DBs inline, then fan out to per-DB drainer queues.
     pub fn new(config: Arc<Config>, cancel: CancellationToken, num_workers: usize) -> Self {
         let (job_tx, job_rx) = async_channel::unbounded::<RefJob>();
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         // Build database list and partition into local/remote
         let all_dbs: Vec<Arc<dyn DatabaseBackend>> = build_database_list(&config, None)
@@ -71,6 +75,7 @@ impl ValidationPool {
                 Arc::clone(&db),
                 config.clone(),
                 client.clone(),
+                cancel.clone(),
             )));
         }
 
@@ -195,12 +200,19 @@ async fn drainer_loop(
     db: Arc<dyn DatabaseBackend>,
     config: Arc<Config>,
     client: reqwest::Client,
+    cancel: CancellationToken,
 ) {
     let timeout = Duration::from_secs(config.db_timeout_secs);
     let rate_limiters = config.rate_limiters.clone();
 
     while let Ok(job) = rx.recv().await {
         let collector = &job.collector;
+
+        // Skip remaining jobs after cancellation
+        if cancel.is_cancelled() {
+            skip_and_decrement(collector, db.name()).await;
+            continue;
+        }
 
         // Skip if already verified by another drainer
         if collector.verified.load(Ordering::Acquire) {
