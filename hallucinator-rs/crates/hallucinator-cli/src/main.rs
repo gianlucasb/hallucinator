@@ -17,6 +17,10 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
+    /// Write tracing/debug logs to this file (default: stderr)
+    #[arg(long, global = true)]
+    log: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -108,7 +112,22 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
-    tracing_subscriber::fmt::init();
+
+    // Initialize tracing: file (no ANSI) if --log given, otherwise stderr.
+    if let Some(ref log_path) = cli.log {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .unwrap_or_else(|e| panic!("Cannot open log file {}: {}", log_path.display(), e));
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
 
     // Load config file (explicit --config path, or auto-detect)
     let (file_config, config_source) = match &cli.config {
