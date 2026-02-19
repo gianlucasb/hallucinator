@@ -56,6 +56,12 @@ pub struct ConfigState {
     pub acl_build_started: Option<std::time::Instant>,
     /// When the ACL parse phase started (for records/s calculations).
     pub acl_parse_started: Option<std::time::Instant>,
+    /// Whether an OpenAlex index build is in progress.
+    pub openalex_building: bool,
+    /// Status message for the OpenAlex build progress.
+    pub openalex_build_status: Option<String>,
+    /// When the OpenAlex build started (for ETA/speed calculations).
+    pub openalex_build_started: Option<std::time::Instant>,
 
     // Editable fields
     pub openalex_key: String,
@@ -64,6 +70,7 @@ pub struct ConfigState {
     pub disabled_dbs: Vec<(String, bool)>, // (name, enabled)
     pub dblp_offline_path: String,
     pub acl_offline_path: String,
+    pub openalex_offline_path: String,
     pub cache_path: String,
     /// Inline status message for cache clear operation.
     pub cache_clear_status: Option<String>,
@@ -108,12 +115,16 @@ impl Default for ConfigState {
             acl_build_status: None,
             acl_build_started: None,
             acl_parse_started: None,
+            openalex_building: false,
+            openalex_build_status: None,
+            openalex_build_started: None,
             openalex_key: String::new(),
             s2_api_key: String::new(),
             crossref_mailto: String::new(),
             disabled_dbs: all_dbs,
             dblp_offline_path: String::new(),
             acl_offline_path: String::new(),
+            openalex_offline_path: String::new(),
             cache_path: String::new(),
             cache_clear_status: None,
             num_workers: 4,

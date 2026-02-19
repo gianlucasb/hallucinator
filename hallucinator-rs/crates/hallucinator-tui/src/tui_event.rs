@@ -24,6 +24,8 @@ pub enum BackendCommand {
     BuildDblp { db_path: PathBuf },
     /// Build/update the offline ACL Anthology database.
     BuildAcl { db_path: PathBuf },
+    /// Build/update the offline OpenAlex Tantivy index.
+    BuildOpenalex { db_path: PathBuf },
 }
 
 /// Events flowing from the backend processing task to the TUI.
@@ -66,6 +68,16 @@ pub enum BackendEvent {
     },
     /// ACL database build completed.
     AclBuildComplete {
+        success: bool,
+        error: Option<String>,
+        db_path: PathBuf,
+    },
+    /// Progress from an OpenAlex index build.
+    OpenAlexBuildProgress {
+        event: hallucinator_openalex::BuildProgress,
+    },
+    /// OpenAlex index build completed.
+    OpenAlexBuildComplete {
         success: bool,
         error: Option<String>,
         db_path: PathBuf,

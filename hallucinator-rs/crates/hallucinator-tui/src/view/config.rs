@@ -267,16 +267,57 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         lines.push(Line::from(Span::styled(format!("      {}", status), style)));
     }
 
-    // Item 2: Cache path (editable)
+    // Item 2: OpenAlex offline path (editable)
     let cursor = if config.item_cursor == 2 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 2 {
+        format!("{}\u{2588}", config.edit_buffer)
+    } else if config.openalex_offline_path.is_empty() {
+        "(not set)".to_string()
+    } else {
+        truncate_path(&config.openalex_offline_path, max_path_len)
+    };
+    let val_style = if config.editing && config.item_cursor == 2 {
+        Style::default().fg(theme.active)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!("  {}{:<20}", cursor, "OpenAlex Offline Path"),
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(display_val, val_style),
+    ];
+    if config.item_cursor == 2 && !config.editing {
+        spans.push(Span::styled(
+            "  (o:browse  b:build)",
+            Style::default().fg(theme.dim),
+        ));
+    }
+    lines.push(Line::from(spans));
+
+    // Show OpenAlex build status inline
+    if let Some(ref status) = config.openalex_build_status {
+        let style = if config.openalex_building {
+            Style::default().fg(theme.active)
+        } else if status.starts_with("Failed") {
+            Style::default().fg(theme.not_found)
+        } else {
+            Style::default().fg(theme.verified)
+        };
+        lines.push(Line::from(Span::styled(format!("      {}", status), style)));
+    }
+
+    // Item 3: Cache path (editable)
+    let cursor = if config.item_cursor == 3 { "> " } else { "  " };
+    let display_val = if config.editing && config.item_cursor == 3 {
         format!("{}\u{2588}", config.edit_buffer)
     } else if config.cache_path.is_empty() {
         "(not set)".to_string()
     } else {
         truncate_path(&config.cache_path, max_path_len)
     };
-    let val_style = if config.editing && config.item_cursor == 2 {
+    let val_style = if config.editing && config.item_cursor == 3 {
         Style::default().fg(theme.active)
     } else {
         Style::default().fg(theme.dim)
@@ -299,9 +340,9 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         lines.push(Line::from(Span::styled(format!("      {}", status), style)));
     }
 
-    // Item 3: Clear Cache button
-    let cursor = if config.item_cursor == 3 { "> " } else { "  " };
-    let btn_style = if config.item_cursor == 3 {
+    // Item 4: Clear Cache button
+    let cursor = if config.item_cursor == 4 { "> " } else { "  " };
+    let btn_style = if config.item_cursor == 4 {
         Style::default()
             .fg(theme.not_found)
             .add_modifier(Modifier::BOLD)
@@ -313,9 +354,9 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         btn_style,
     )));
 
-    // Item 4: Clear Not-Found button
-    let cursor = if config.item_cursor == 4 { "> " } else { "  " };
-    let btn_style = if config.item_cursor == 4 {
+    // Item 5: Clear Not-Found button
+    let cursor = if config.item_cursor == 5 { "> " } else { "  " };
+    let btn_style = if config.item_cursor == 5 {
         Style::default()
             .fg(theme.author_mismatch)
             .add_modifier(Modifier::BOLD)
@@ -327,9 +368,9 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         btn_style,
     )));
 
-    // Item 5: SearxNG URL (editable)
-    let cursor = if config.item_cursor == 5 { "> " } else { "  " };
-    let display_val = if config.editing && config.item_cursor == 5 {
+    // Item 6: SearxNG URL (editable)
+    let cursor = if config.item_cursor == 6 { "> " } else { "  " };
+    let display_val = if config.editing && config.item_cursor == 6 {
         format!("{}\u{2588}", config.edit_buffer)
     } else {
         match &config.searxng_url {
@@ -337,7 +378,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
             None => "(disabled)".to_string(),
         }
     };
-    let val_style = if config.editing && config.item_cursor == 5 {
+    let val_style = if config.editing && config.item_cursor == 6 {
         Style::default().fg(theme.active)
     } else if config.searxng_url.is_some() {
         Style::default().fg(theme.verified)
@@ -354,9 +395,9 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
 
     lines.push(Line::from(""));
 
-    // Items 5..N: DB toggles
+    // Items 7..N: DB toggles
     for (i, (name, enabled)) in config.disabled_dbs.iter().enumerate() {
-        let item_idx = i + 6; // offset by 6 for DBLP + ACL + cache_path + clear_cache + clear_not_found + searxng_url
+        let item_idx = i + 7; // offset by 7 for DBLP + ACL + OpenAlex + cache_path + clear_cache + clear_not_found + searxng_url
         let cursor = if config.item_cursor == item_idx {
             "> "
         } else {

@@ -640,6 +640,14 @@ impl App {
                 ))
             },
             acl_offline_db: None, // Populated from main.rs
+            openalex_offline_path: if self.config_state.openalex_offline_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(
+                    &self.config_state.openalex_offline_path,
+                ))
+            },
+            openalex_offline_db: None, // Populated from main.rs
             num_workers: self.config_state.num_workers,
             max_rate_limit_retries: self.config_state.max_rate_limit_retries,
             rate_limiters: std::sync::Arc::new(hallucinator_core::RateLimiters::new(
@@ -1196,8 +1204,10 @@ impl App {
                                 let canonical = clean_canonicalize(path);
                                 if config_item == 0 {
                                     self.config_state.dblp_offline_path = canonical;
-                                } else {
+                                } else if config_item == 1 {
                                     self.config_state.acl_offline_path = canonical;
+                                } else {
+                                    self.config_state.openalex_offline_path = canonical;
                                 }
                                 self.config_state.dirty = true;
                             }
@@ -1276,8 +1286,10 @@ impl App {
                                 {
                                     if config_item == 0 {
                                         self.config_state.dblp_offline_path = canonical;
-                                    } else {
+                                    } else if config_item == 1 {
                                         self.config_state.acl_offline_path = canonical;
+                                    } else {
+                                        self.config_state.openalex_offline_path = canonical;
                                     }
                                     self.config_state.dirty = true;
                                 }
@@ -1639,7 +1651,7 @@ impl App {
             Action::AddFiles => {
                 if self.screen == Screen::Config
                     && self.config_state.section == crate::model::config::ConfigSection::Databases
-                    && self.config_state.item_cursor <= 1
+                    && self.config_state.item_cursor <= 2
                 {
                     // Open file picker in database selection mode
                     let config_item = self.config_state.item_cursor;
@@ -1649,8 +1661,10 @@ impl App {
                     // Navigate to the current path's parent if set
                     let current_path = if config_item == 0 {
                         &self.config_state.dblp_offline_path
-                    } else {
+                    } else if config_item == 1 {
                         &self.config_state.acl_offline_path
+                    } else {
+                        &self.config_state.openalex_offline_path
                     };
                     if !current_path.is_empty() {
                         let p = PathBuf::from(current_path);
@@ -1761,7 +1775,7 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::ApiKeys => 3,
-            ConfigSection::Databases => 6 + self.config_state.disabled_dbs.len(), // DBLP + ACL + cache_path + clear_cache + clear_not_found + searxng_url + toggles
+            ConfigSection::Databases => 7 + self.config_state.disabled_dbs.len(), // DBLP + ACL + OpenAlex + cache_path + clear_cache + clear_not_found + searxng_url + toggles
             ConfigSection::Concurrency => 5,
             ConfigSection::Display => 2, // theme + fps
         }
@@ -1820,24 +1834,29 @@ impl App {
                     self.config_state.edit_buffer = self.config_state.acl_offline_path.clone();
                     self.input_mode = InputMode::TextInput;
                 } else if self.config_state.item_cursor == 2 {
-                    // Item 2: edit cache path
+                    // Item 2: edit OpenAlex offline path
+                    self.config_state.editing = true;
+                    self.config_state.edit_buffer = self.config_state.openalex_offline_path.clone();
+                    self.input_mode = InputMode::TextInput;
+                } else if self.config_state.item_cursor == 3 {
+                    // Item 3: edit cache path
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.cache_path.clone();
                     self.input_mode = InputMode::TextInput;
-                } else if self.config_state.item_cursor == 3 {
-                    // Item 3: clear cache button
-                    self.clear_query_cache();
                 } else if self.config_state.item_cursor == 4 {
-                    // Item 4: clear not-found button
-                    self.clear_not_found_cache();
+                    // Item 4: clear cache button
+                    self.clear_query_cache();
                 } else if self.config_state.item_cursor == 5 {
-                    // Item 5: edit SearxNG URL
+                    // Item 5: clear not-found button
+                    self.clear_not_found_cache();
+                } else if self.config_state.item_cursor == 6 {
+                    // Item 6: edit SearxNG URL
                     self.config_state.editing = true;
                     self.config_state.edit_buffer =
                         self.config_state.searxng_url.clone().unwrap_or_default();
                     self.input_mode = InputMode::TextInput;
                 } else {
-                    // Items 6+: toggle DB (same as space)
+                    // Items 7+: toggle DB (same as space)
                     self.handle_config_space();
                 }
             }
@@ -1849,9 +1868,9 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::Databases => {
-                // Items 6+ are DB toggles (0-1: paths, 2: cache path, 3: clear cache, 4: clear not-found, 5: searxng url)
-                if self.config_state.item_cursor >= 6 {
-                    let toggle_idx = self.config_state.item_cursor - 6;
+                // Items 7+ are DB toggles (0-2: offline paths, 3: cache path, 4: clear cache, 5: clear not-found, 6: searxng url)
+                if self.config_state.item_cursor >= 7 {
+                    let toggle_idx = self.config_state.item_cursor - 7;
                     if let Some((_, enabled)) = self.config_state.disabled_dbs.get_mut(toggle_idx) {
                         *enabled = !*enabled;
                         self.config_state.dirty = true;
@@ -1922,13 +1941,20 @@ impl App {
                     };
                 }
                 2 => {
+                    self.config_state.openalex_offline_path = if buf.is_empty() {
+                        buf
+                    } else {
+                        clean_canonicalize(&PathBuf::from(&buf))
+                    };
+                }
+                3 => {
                     self.config_state.cache_path = if buf.is_empty() {
                         buf
                     } else {
                         clean_canonicalize(&PathBuf::from(&buf))
                     };
                 }
-                5 => {
+                6 => {
                     self.config_state.searxng_url = if buf.is_empty() { None } else { Some(buf) };
                 }
                 _ => {}
@@ -2103,6 +2129,26 @@ impl App {
             if let Some(tx) = &self.backend_cmd_tx {
                 let _ = tx.send(BackendCommand::BuildAcl { db_path });
             }
+        } else if item == 2 {
+            // OpenAlex
+            if self.config_state.openalex_building {
+                return;
+            }
+            let db_path = if self.config_state.openalex_offline_path.is_empty() {
+                default_db_path("openalex.idx")
+            } else {
+                PathBuf::from(&self.config_state.openalex_offline_path)
+            };
+            self.config_state.openalex_building = true;
+            self.config_state.openalex_build_status = Some("Starting...".to_string());
+            self.config_state.openalex_build_started = Some(Instant::now());
+            self.activity.log(format!(
+                "Building OpenAlex index at {}...",
+                db_path.display()
+            ));
+            if let Some(tx) = &self.backend_cmd_tx {
+                let _ = tx.send(BackendCommand::BuildOpenalex { db_path });
+            }
         }
     }
 
@@ -2257,6 +2303,36 @@ impl App {
                     let msg = error.unwrap_or_else(|| "unknown error".to_string());
                     self.config_state.acl_build_status = Some(format!("Failed: {}", msg));
                     self.activity.log_warn(format!("ACL build failed: {}", msg));
+                }
+            }
+            BackendEvent::OpenAlexBuildProgress { event } => {
+                self.config_state.openalex_build_status = Some(format_openalex_progress(
+                    &event,
+                    self.config_state.openalex_build_started,
+                ));
+            }
+            BackendEvent::OpenAlexBuildComplete {
+                success,
+                error,
+                db_path,
+            } => {
+                self.config_state.openalex_building = false;
+                if success {
+                    let elapsed = self
+                        .config_state
+                        .openalex_build_started
+                        .map(|s| s.elapsed())
+                        .unwrap_or_default();
+                    self.config_state.openalex_build_status =
+                        Some(format!("Build complete! (total {:.0?})", elapsed));
+                    self.config_state.openalex_offline_path = db_path.display().to_string();
+                    self.activity
+                        .log(format!("OpenAlex index built: {}", db_path.display()));
+                } else {
+                    let msg = error.unwrap_or_else(|| "unknown error".to_string());
+                    self.config_state.openalex_build_status = Some(format!("Failed: {}", msg));
+                    self.activity
+                        .log_warn(format!("OpenAlex build failed: {}", msg));
                 }
             }
         }
@@ -2940,6 +3016,83 @@ fn format_acl_progress(
     }
 }
 
+/// Format OpenAlex build progress for display in the config panel.
+fn format_openalex_progress(
+    event: &hallucinator_openalex::BuildProgress,
+    build_started: Option<Instant>,
+) -> String {
+    match event {
+        hallucinator_openalex::BuildProgress::ListingPartitions { message } => message.clone(),
+        hallucinator_openalex::BuildProgress::Downloading {
+            partitions_done,
+            partitions_total,
+            bytes_downloaded,
+            records_indexed,
+        } => {
+            let speed = build_started
+                .map(|s| {
+                    let elapsed = s.elapsed().as_secs_f64();
+                    if elapsed > 0.5 {
+                        format!(
+                            " {}/s",
+                            format_bytes((*bytes_downloaded as f64 / elapsed) as u64)
+                        )
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            let rate = build_started
+                .map(|s| {
+                    let elapsed = s.elapsed().as_secs_f64();
+                    if elapsed > 0.5 {
+                        format!(
+                            " ({}/s)",
+                            format_number((*records_indexed as f64 / elapsed) as u64)
+                        )
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            let eta = format_eta(*partitions_done, *partitions_total, build_started);
+            format!(
+                "Downloading... {}/{} partitions, {} indexed, {}{}{}",
+                partitions_done,
+                partitions_total,
+                format_number(*records_indexed),
+                format_bytes(*bytes_downloaded),
+                speed,
+                if rate.is_empty() {
+                    eta
+                } else {
+                    format!("{}{}", rate, eta)
+                }
+            )
+        }
+        hallucinator_openalex::BuildProgress::Committing { records_indexed } => {
+            format!(
+                "Committing... {} records indexed",
+                format_number(*records_indexed)
+            )
+        }
+        hallucinator_openalex::BuildProgress::Merging => "Merging index segments...".to_string(),
+        hallucinator_openalex::BuildProgress::Complete {
+            publications,
+            skipped,
+        } => {
+            if *skipped {
+                "Already up to date".to_string()
+            } else {
+                format!(
+                    "Complete: {} publications indexed",
+                    format_number(*publications)
+                )
+            }
+        }
+    }
+}
+
 /// Format an ETA string from progress and elapsed time.
 fn format_eta(done: u64, total: u64, started: Option<Instant>) -> String {
     if done == 0 || total == 0 {
@@ -3606,7 +3759,7 @@ mod tests {
         let mut app = test_app();
         app.screen = Screen::Config;
         app.config_state.section = ConfigSection::Databases;
-        app.config_state.item_cursor = 6; // first DB toggle (0=DBLP, 1=ACL, 2=cache, 3=clear, 4=clear-nf, 5=searxng, 6+=toggles)
+        app.config_state.item_cursor = 7; // first DB toggle (0=DBLP, 1=ACL, 2=OpenAlex, 3=cache, 4=clear, 5=clear-nf, 6=searxng, 7+=toggles)
 
         app.update(Action::ToggleSafe);
 

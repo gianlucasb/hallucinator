@@ -562,15 +562,19 @@ pub(crate) fn build_database_list(
     if should_include("DOI") {
         databases.push(Box::new(doi_resolver::DoiResolver));
     }
-    if let Some(ref key) = config.openalex_key
-        && should_include("OpenAlex")
-    {
-        databases.insert(
-            0,
-            Box::new(openalex::OpenAlex {
-                api_key: key.clone(),
-            }),
-        );
+    if should_include("OpenAlex") {
+        if let Some(ref db) = config.openalex_offline_db {
+            databases.push(Box::new(openalex_offline::OpenAlexOffline {
+                db: std::sync::Arc::clone(db),
+            }));
+        } else if let Some(ref key) = config.openalex_key {
+            databases.insert(
+                0,
+                Box::new(openalex::OpenAlex {
+                    api_key: key.clone(),
+                }),
+            );
+        }
     }
 
     databases

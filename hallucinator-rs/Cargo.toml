@@ -7,6 +7,7 @@ members = [
     "crates/hallucinator-core",
     "crates/hallucinator-dblp",
     "crates/hallucinator-acl",
+    "crates/hallucinator-openalex",
     "crates/hallucinator-ingest",
     "crates/hallucinator-cli",
     "crates/hallucinator-tui",
@@ -36,6 +37,7 @@ hallucinator-bbl = { path = "crates/hallucinator-bbl" }
 hallucinator-core = { path = "crates/hallucinator-core" }
 hallucinator-dblp = { path = "crates/hallucinator-dblp" }
 hallucinator-acl = { path = "crates/hallucinator-acl" }
+hallucinator-openalex = { path = "crates/hallucinator-openalex" }
 hallucinator-ingest = { path = "crates/hallucinator-ingest" }
 hallucinator-reporting = { path = "crates/hallucinator-reporting" }
 
@@ -59,6 +61,7 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
+tantivy = "0.22"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

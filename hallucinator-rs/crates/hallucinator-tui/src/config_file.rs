@@ -33,6 +33,11 @@ pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
         {
             state.acl_offline_path = path.clone();
         }
+        if let Some(ref path) = db.openalex_offline_path
+            && !path.is_empty()
+        {
+            state.openalex_offline_path = path.clone();
+        }
         if let Some(ref path) = db.cache_path
             && !path.is_empty()
         {
@@ -117,6 +122,11 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
                 None
             } else {
                 Some(state.acl_offline_path.clone())
+            },
+            openalex_offline_path: if state.openalex_offline_path.is_empty() {
+                None
+            } else {
+                Some(state.openalex_offline_path.clone())
             },
             cache_path: if state.cache_path.is_empty() {
                 None

@@ -86,6 +86,8 @@ pub enum CoreError {
     Dblp(#[from] hallucinator_dblp::DblpError),
     #[error("ACL error: {0}")]
     Acl(#[from] hallucinator_acl::AclError),
+    #[error("OpenAlex error: {0}")]
+    OpenAlex(#[from] hallucinator_openalex::OpenAlexError),
     #[error("validation error: {0}")]
     Validation(String),
 }
@@ -208,6 +210,8 @@ pub struct Config {
     pub dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>>,
     pub acl_offline_path: Option<PathBuf>,
     pub acl_offline_db: Option<Arc<Mutex<hallucinator_acl::AclDatabase>>>,
+    pub openalex_offline_path: Option<PathBuf>,
+    pub openalex_offline_db: Option<Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>>,
     pub num_workers: usize,
     pub db_timeout_secs: u64,
     pub db_timeout_short_secs: u64,
@@ -245,6 +249,11 @@ impl std::fmt::Debug for Config {
                 "acl_offline_db",
                 &self.acl_offline_db.as_ref().map(|_| "<open>"),
             )
+            .field("openalex_offline_path", &self.openalex_offline_path)
+            .field(
+                "openalex_offline_db",
+                &self.openalex_offline_db.as_ref().map(|_| "<open>"),
+            )
             .field("num_workers", &self.num_workers)
             .field("db_timeout_secs", &self.db_timeout_secs)
             .field("db_timeout_short_secs", &self.db_timeout_short_secs)
@@ -276,6 +285,8 @@ impl Default for Config {
             dblp_offline_db: None,
             acl_offline_path: None,
             acl_offline_db: None,
+            openalex_offline_path: None,
+            openalex_offline_db: None,
             num_workers: 4,
             db_timeout_secs: 10,
             db_timeout_short_secs: 5,

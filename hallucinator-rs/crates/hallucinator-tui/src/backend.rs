@@ -321,3 +321,18 @@ pub fn open_acl_db(
     let db = hallucinator_acl::AclDatabase::open(path)?;
     Ok(Arc::new(Mutex::new(db)))
 }
+
+/// Open offline OpenAlex Tantivy index if a path is configured, returning the Arc<Mutex<..>> handle.
+pub fn open_openalex_db(
+    path: &std::path::Path,
+) -> anyhow::Result<Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>> {
+    if !path.exists() {
+        anyhow::bail!(
+            "Offline OpenAlex index not found at {}. Build from Config > Databases (b) or run 'hallucinator-tui update-openalex'.",
+            path.display(),
+        );
+    }
+    let db = hallucinator_openalex::OpenAlexDatabase::open(path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(Arc::new(Mutex::new(db)))
+}

@@ -1,0 +1,29 @@
+[package]
+name = "hallucinator-openalex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Offline OpenAlex database builder and querier using Tantivy"
+
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+tantivy.workspace = true
+reqwest.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rapidfuzz.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+async-compression.workspace = true
+flate2.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

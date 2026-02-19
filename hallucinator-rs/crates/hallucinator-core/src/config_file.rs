@@ -23,6 +23,7 @@ pub struct ApiKeysConfig {
 pub struct DatabasesConfig {
     pub dblp_offline_path: Option<String>,
     pub acl_offline_path: Option<String>,
+    pub openalex_offline_path: Option<String>,
     pub cache_path: Option<String>,
     pub searxng_url: Option<String>,
     pub disabled: Option<Vec<String>>,
@@ -111,6 +112,15 @@ pub fn merge(base: ConfigFile, overlay: ConfigFile) -> ConfigFile {
                     base.databases
                         .as_ref()
                         .and_then(|d| d.acl_offline_path.clone())
+                }),
+            openalex_offline_path: overlay
+                .databases
+                .as_ref()
+                .and_then(|d| d.openalex_offline_path.clone())
+                .or_else(|| {
+                    base.databases
+                        .as_ref()
+                        .and_then(|d| d.openalex_offline_path.clone())
                 }),
             cache_path: overlay
                 .databases

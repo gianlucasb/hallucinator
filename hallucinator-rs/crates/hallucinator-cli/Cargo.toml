@@ -14,6 +14,7 @@ hallucinator-pdf-mupdf.workspace = true
 hallucinator-bbl.workspace = true
 hallucinator-dblp.workspace = true
 hallucinator-acl.workspace = true
+hallucinator-openalex.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

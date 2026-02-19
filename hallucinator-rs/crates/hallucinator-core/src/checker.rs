@@ -278,6 +278,55 @@ pub async fn check_single_reference(
         }
     }
 
+    // Step 2.6: OpenAlex API fallback when offline DB is active but didn't find it
+    if db_result.status == Status::NotFound
+        && config.openalex_offline_db.is_some()
+        && let Some(ref api_key) = config.openalex_key
+    {
+        let openalex = crate::db::openalex::OpenAlex {
+            api_key: api_key.clone(),
+        };
+        let openalex_timeout = Duration::from_secs(config.db_timeout_secs);
+
+        let start = std::time::Instant::now();
+        let openalex_result: Result<crate::db::DbQueryResult, crate::rate_limit::DbQueryError> =
+            openalex.query(title, client, openalex_timeout).await;
+        let elapsed = start.elapsed();
+
+        if let Ok(ref qr) = openalex_result
+            && qr.is_found()
+        {
+            let found_authors = qr.authors.clone();
+            let paper_url = qr.paper_url.clone();
+            let api_db_result = DbResult {
+                db_name: "OpenAlex API".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: found_authors.clone(),
+                paper_url: paper_url.clone(),
+                error_message: None,
+            };
+            if let Some(cb) = on_db_complete {
+                cb(api_db_result.clone());
+            }
+            db_result.db_results.push(api_db_result);
+
+            db_result.status = Status::Verified;
+            db_result.source = Some("OpenAlex API".into());
+            db_result.found_authors = found_authors;
+            db_result.paper_url = paper_url;
+        } else if let Some(cb) = on_db_complete {
+            cb(DbResult {
+                db_name: "OpenAlex API".into(),
+                status: DbStatus::NoMatch,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: None,
+                error_message: None,
+            });
+        }
+    }
+
     // Step 3: Check retraction using inline data from DB results.
     // CrossRef populates retraction info in its DbQueryResult, which flows
     // through the cache. No separate API call needed.

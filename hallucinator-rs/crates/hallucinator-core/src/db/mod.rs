@@ -8,6 +8,7 @@ pub mod doi_resolver;
 pub mod europe_pmc;
 pub mod neurips;
 pub mod openalex;
+pub mod openalex_offline;
 pub mod pubmed;
 pub mod searxng;
 pub mod semantic_scholar;

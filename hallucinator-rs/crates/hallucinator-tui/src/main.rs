@@ -59,6 +59,10 @@ struct Cli {
     #[arg(long)]
     acl_offline: Option<PathBuf>,
 
+    /// Path to offline OpenAlex Tantivy index
+    #[arg(long)]
+    openalex_offline: Option<PathBuf>,
+
     /// Comma-separated list of databases to disable
     #[arg(long, value_delimiter = ',')]
     disable_dbs: Vec<String>,
@@ -90,6 +94,7 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::enum_variant_names)]
 enum Command {
     /// Download and build the offline DBLP database
     UpdateDblp {
@@ -100,6 +105,19 @@ enum Command {
     UpdateAcl {
         /// Path to store the ACL SQLite database (default: ./acl.db)
         path: Option<PathBuf>,
+    },
+    /// Download and build the offline OpenAlex Tantivy index
+    UpdateOpenalex {
+        /// Path to store the OpenAlex index directory (default: ./openalex.idx)
+        path: Option<PathBuf>,
+
+        /// Only download S3 partitions newer than this date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Only index works published in this year or later (e.g. 2020)
+        #[arg(long)]
+        min_year: Option<u32>,
     },
 }
 
@@ -118,6 +136,14 @@ async fn main() -> anyhow::Result<()> {
             Command::UpdateAcl { path } => {
                 let db_path = path.unwrap_or_else(|| PathBuf::from("acl.db"));
                 update_acl(&db_path).await
+            }
+            Command::UpdateOpenalex {
+                path,
+                since,
+                min_year,
+            } => {
+                let db_path = path.unwrap_or_else(|| PathBuf::from("openalex.idx"));
+                update_openalex(&db_path, since.as_deref(), min_year).await
             }
         };
     }
@@ -159,6 +185,11 @@ async fn main() -> anyhow::Result<()> {
     {
         config_state.acl_offline_path = path;
     }
+    if let Ok(path) = std::env::var("OPENALEX_OFFLINE_PATH")
+        && !path.is_empty()
+    {
+        config_state.openalex_offline_path = path;
+    }
     if let Ok(v) = std::env::var("DB_TIMEOUT")
         && let Ok(secs) = v.parse::<u64>()
     {
@@ -182,6 +213,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(ref path) = cli.acl_offline {
         config_state.acl_offline_path = path.display().to_string();
+    }
+    if let Some(ref path) = cli.openalex_offline {
+        config_state.openalex_offline_path = path.display().to_string();
     }
     if let Some(ref theme) = cli.theme {
         config_state.theme_name = theme.clone();
@@ -241,6 +275,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Auto-detect default OpenAlex index if no explicit path configured
+    if config_state.openalex_offline_path.is_empty() {
+        let candidates = [
+            PathBuf::from("openalex.idx"),
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hallucinator")
+                .join("openalex.idx"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                config_state.openalex_offline_path = candidate.display().to_string();
+                break;
+            }
+        }
+    }
+
     // Resolve DBLP offline path from config state
     let dblp_offline_path: Option<PathBuf> = if config_state.dblp_offline_path.is_empty() {
         None
@@ -280,6 +331,30 @@ async fn main() -> anyhow::Result<()> {
             match backend::open_acl_db(path) {
                 Ok(db) => {
                     startup_info.push(format!("ACL offline DB loaded: {}", path.display()));
+                    Some(db)
+                }
+                Err(e) => {
+                    startup_warnings.push(format!("{e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    // Resolve OpenAlex offline path from config state
+    let openalex_offline_path: Option<PathBuf> = if config_state.openalex_offline_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&config_state.openalex_offline_path))
+    };
+
+    // Open OpenAlex index if configured (fall back to None if missing or corrupt)
+    let openalex_offline_db: Option<Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>> =
+        if let Some(ref path) = openalex_offline_path {
+            match backend::open_openalex_db(path) {
+                Ok(db) => {
+                    startup_info.push(format!("OpenAlex offline index loaded: {}", path.display()));
                     Some(db)
                 }
                 Err(e) => {
@@ -483,6 +558,8 @@ async fn main() -> anyhow::Result<()> {
     let mut cached_dblp_db = dblp_offline_db.clone();
     let mut cached_acl_path = acl_offline_path.clone();
     let mut cached_acl_db = acl_offline_db.clone();
+    let mut cached_openalex_path = openalex_offline_path.clone();
+    let mut cached_openalex_db = openalex_offline_db.clone();
     let check_openalex_authors = cli.check_openalex_authors;
     tokio::spawn(async move {
         // Per-batch cancel token — cancelled when user requests stop
@@ -518,10 +595,22 @@ async fn main() -> anyhow::Result<()> {
                         };
                     }
 
+                    // If user changed the OpenAlex path in config, try to open the new index
+                    if config.openalex_offline_path != cached_openalex_path {
+                        cached_openalex_path = config.openalex_offline_path.clone();
+                        cached_openalex_db = if let Some(ref path) = cached_openalex_path {
+                            backend::open_openalex_db(path).ok()
+                        } else {
+                            None
+                        };
+                    }
+
                     config.dblp_offline_path = cached_dblp_path.clone();
                     config.dblp_offline_db = cached_dblp_db.clone();
                     config.acl_offline_path = cached_acl_path.clone();
                     config.acl_offline_db = cached_acl_db.clone();
+                    config.openalex_offline_path = cached_openalex_path.clone();
+                    config.openalex_offline_db = cached_openalex_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
 
                     let tx = event_tx_for_backend.clone();
@@ -542,6 +631,8 @@ async fn main() -> anyhow::Result<()> {
                     config.dblp_offline_db = cached_dblp_db.clone();
                     config.acl_offline_path = cached_acl_path.clone();
                     config.acl_offline_db = cached_acl_db.clone();
+                    config.openalex_offline_path = cached_openalex_path.clone();
+                    config.openalex_offline_db = cached_openalex_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
 
                     let tx = event_tx_for_backend.clone();
@@ -604,6 +695,35 @@ async fn main() -> anyhow::Result<()> {
                             }
                             Err(e) => {
                                 let _ = tx.send(tui_event::BackendEvent::AclBuildComplete {
+                                    success: false,
+                                    error: Some(e.to_string()),
+                                    db_path,
+                                });
+                            }
+                        }
+                    });
+                }
+                tui_event::BackendCommand::BuildOpenalex { db_path } => {
+                    cached_openalex_db = None;
+                    cached_openalex_path = None;
+                    let tx = event_tx_for_backend.clone();
+                    tokio::spawn(async move {
+                        let result = hallucinator_openalex::build_database(&db_path, |evt| {
+                            let _ = tx.send(tui_event::BackendEvent::OpenAlexBuildProgress {
+                                event: evt,
+                            });
+                        })
+                        .await;
+                        match result {
+                            Ok(_) => {
+                                let _ = tx.send(tui_event::BackendEvent::OpenAlexBuildComplete {
+                                    success: true,
+                                    error: None,
+                                    db_path,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(tui_event::BackendEvent::OpenAlexBuildComplete {
                                     success: false,
                                     error: Some(e.to_string()),
                                     db_path,
@@ -1063,4 +1183,169 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn update_openalex(
+    db_path: &PathBuf,
+    since: Option<&str>,
+    min_year: Option<u32>,
+) -> anyhow::Result<()> {
+    use indicatif::{HumanCount, MultiProgress, ProgressBar, ProgressStyle};
+    use std::time::Instant;
+
+    // Ensure parent directory exists
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    println!("Building offline OpenAlex index at: {}", db_path.display());
+    if since.is_none() && min_year.is_none() {
+        println!("Note: A full build may use ~15-30 GB of disk space.");
+    }
+    if let Some(since) = since {
+        println!("Only downloading S3 partitions newer than {since}");
+    }
+    if let Some(min_year) = min_year {
+        println!("Only indexing works published in {min_year} or later");
+    }
+
+    let multi = MultiProgress::new();
+
+    let dl_bar_style = ProgressStyle::with_template(
+        "{spinner:.cyan} {msg} [{bar:40.cyan/dim}] {pos}/{len} partitions ({bytes_per_sec}, eta {eta})",
+    )
+    .unwrap()
+    .progress_chars("=> ");
+
+    let dl_spinner_style = ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap();
+
+    let index_style =
+        ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
+
+    let dl_bar = multi.add(ProgressBar::new(0));
+    dl_bar.set_style(dl_spinner_style.clone());
+    dl_bar.set_message("Listing S3 partitions...");
+    dl_bar.enable_steady_tick(Duration::from_millis(120));
+
+    let index_bar = multi.add(ProgressBar::new_spinner());
+    index_bar.set_style(index_style.clone());
+    index_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+
+    let finalize_bar = multi.add(ProgressBar::new_spinner());
+    finalize_bar.set_style(index_style.clone());
+    finalize_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+
+    let build_start = Instant::now();
+
+    let updated = hallucinator_openalex::build_database_filtered(
+        db_path,
+        since,
+        min_year,
+        |event| match event {
+            hallucinator_openalex::BuildProgress::ListingPartitions { message } => {
+                dl_bar.set_message(message);
+            }
+            hallucinator_openalex::BuildProgress::Downloading {
+                partitions_done,
+                partitions_total,
+                bytes_downloaded,
+                records_indexed,
+            } => {
+                if dl_bar.length() == Some(0) && partitions_total > 0 {
+                    dl_bar.set_length(partitions_total);
+                    dl_bar.set_style(dl_bar_style.clone());
+                    index_bar.reset_elapsed();
+                    index_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+                    index_bar.enable_steady_tick(Duration::from_millis(120));
+                }
+                dl_bar.set_position(partitions_done);
+                let elapsed = build_start.elapsed().as_secs_f64();
+                let speed = if elapsed > 0.5 {
+                    format!(" {}/s", format_bytes_fn(bytes_downloaded as f64 / elapsed))
+                } else {
+                    String::new()
+                };
+                dl_bar.set_message(format!(
+                    "Downloading... {}{}",
+                    format_bytes_fn(bytes_downloaded as f64),
+                    speed
+                ));
+                let rate = if elapsed > 0.5 {
+                    format!(
+                        " ({}/s)",
+                        HumanCount((records_indexed as f64 / elapsed) as u64)
+                    )
+                } else {
+                    String::new()
+                };
+                index_bar.set_message(format!(
+                    "{} records indexed{}",
+                    HumanCount(records_indexed),
+                    rate
+                ));
+            }
+            hallucinator_openalex::BuildProgress::Committing { records_indexed } => {
+                if !dl_bar.is_finished() {
+                    dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
+                }
+                index_bar.set_message(format!(
+                    "Committing... {} records",
+                    HumanCount(records_indexed)
+                ));
+            }
+            hallucinator_openalex::BuildProgress::Merging => {
+                if !dl_bar.is_finished() {
+                    dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
+                }
+                if !index_bar.is_finished() {
+                    index_bar
+                        .finish_with_message(format!("Indexed in {:.0?}", index_bar.elapsed()));
+                }
+                finalize_bar.reset_elapsed();
+                finalize_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+                finalize_bar.enable_steady_tick(Duration::from_millis(120));
+                finalize_bar.set_message("Merging index segments...");
+            }
+            hallucinator_openalex::BuildProgress::Complete {
+                publications,
+                skipped,
+            } => {
+                if !index_bar.is_finished() {
+                    index_bar.finish_and_clear();
+                }
+                if skipped {
+                    finalize_bar.finish_with_message("Index is already up to date");
+                } else {
+                    finalize_bar.finish_with_message(format!(
+                        "Indexed {} publications (total {:.0?})",
+                        HumanCount(publications),
+                        build_start.elapsed()
+                    ));
+                }
+            }
+        },
+    )
+    .await?;
+
+    let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
+    if !updated {
+        println!("Index is already up to date: {}", canonical.display());
+    } else {
+        println!("OpenAlex index saved to: {}", canonical.display());
+    }
+
+    Ok(())
+}
+
+/// Helper to format bytes as human-readable sizes for the progress bars.
+fn format_bytes_fn(bytes: f64) -> String {
+    if bytes < 1024.0 {
+        format!("{:.0} B", bytes)
+    } else if bytes < 1024.0 * 1024.0 {
+        format!("{:.1} KB", bytes / 1024.0)
+    } else if bytes < 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.1} MB", bytes / 1024.0 / 1024.0)
+    } else {
+        format!("{:.2} GB", bytes / 1024.0 / 1024.0 / 1024.0)
+    }
 }
