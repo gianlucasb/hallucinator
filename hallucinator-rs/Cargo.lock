@@ -1135,7 +1135,7 @@ name = "hallucinator-bbl"
 version = "0.1.1-alpha.2"
 dependencies = [
  "biblatex",
- "hallucinator-pdf",
+ "hallucinator-core",
  "once_cell",
  "regex",
  "thiserror",
@@ -1152,9 +1152,12 @@ dependencies = [
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
+ "hallucinator-ingest",
  "hallucinator-pdf",
+ "hallucinator-pdf-mupdf",
  "indicatif",
  "owo-colors",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing-subscriber",
@@ -1172,7 +1175,6 @@ dependencies = [
  "governor",
  "hallucinator-acl",
  "hallucinator-dblp",
- "hallucinator-pdf",
  "http",
  "once_cell",
  "quick-xml",
@@ -1212,6 +1214,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-ingest"
+version = "0.1.1-alpha.2"
+dependencies = [
+ "flate2",
+ "hallucinator-bbl",
+ "hallucinator-core",
+ "hallucinator-pdf",
+ "hallucinator-pdf-mupdf",
+ "tar",
+ "thiserror",
+ "tracing",
+ "zip",
+]
+
+[[package]]
 name = "hallucinator-pdf"
 version = "0.1.1-alpha.2"
 dependencies = [
@@ -1224,7 +1241,14 @@ dependencies = [
  "regex",
  "tar",
  "thiserror",
- "zip",
+]
+
+[[package]]
+name = "hallucinator-pdf-mupdf"
+version = "0.1.1-alpha.2"
+dependencies = [
+ "hallucinator-pdf",
+ "mupdf",
 ]
 
 [[package]]
@@ -1249,6 +1273,7 @@ dependencies = [
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
+ "hallucinator-ingest",
  "hallucinator-pdf",
  "hallucinator-reporting",
  "indicatif",

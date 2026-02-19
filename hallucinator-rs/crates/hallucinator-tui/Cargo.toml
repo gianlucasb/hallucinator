@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 hallucinator-core.workspace = true
+hallucinator-ingest.workspace = true
 hallucinator-pdf = { workspace = true, features = ["pdf"] }
 hallucinator-bbl.workspace = true
 hallucinator-dblp.workspace = true

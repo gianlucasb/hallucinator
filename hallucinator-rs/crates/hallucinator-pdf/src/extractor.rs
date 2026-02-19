@@ -1,10 +1,9 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-#[cfg(feature = "pdf")]
 use std::path::Path;
 
 use crate::config::PdfParsingConfig;
-use crate::{ExtractionResult, PdfError, Reference, SkipStats};
+use crate::{ExtractionResult, PdfBackend, PdfError, Reference, SkipStats};
 use crate::{authors, identifiers, section, text_processing, title};
 
 /// A configurable PDF reference extraction pipeline.
@@ -40,10 +39,14 @@ impl PdfExtractor {
         &self.config
     }
 
-    /// Extract raw text from a PDF file (step 1).
-    #[cfg(feature = "pdf")]
-    pub fn extract_text(&self, path: &Path) -> Result<String, PdfError> {
-        crate::extract::extract_text_from_pdf(path)
+    /// Run the full extraction pipeline on a PDF file using the provided backend.
+    pub fn extract_references_via_backend(
+        &self,
+        pdf_path: &Path,
+        backend: &dyn PdfBackend,
+    ) -> Result<ExtractionResult, PdfError> {
+        let text = backend.extract_text(pdf_path)?;
+        self.extract_references_from_text(&text)
     }
 
     /// Locate the references section in document text (step 2).
@@ -61,13 +64,6 @@ impl PdfExtractor {
     /// `prev_authors` is used for em-dash "same authors" handling.
     pub fn parse_reference(&self, ref_text: &str, prev_authors: &[String]) -> ParsedRef {
         parse_single_reference(ref_text, prev_authors, &self.config)
-    }
-
-    /// Run the full extraction pipeline on a PDF file.
-    #[cfg(feature = "pdf")]
-    pub fn extract_references(&self, pdf_path: &Path) -> Result<ExtractionResult, PdfError> {
-        let text = self.extract_text(pdf_path)?;
-        self.extract_references_from_text(&text)
     }
 
     /// Run the extraction pipeline on already-extracted text.

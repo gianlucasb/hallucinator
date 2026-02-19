@@ -9,7 +9,6 @@ description = "Validation engine and database query backends for hallucinated re
 dist = false
 
 [dependencies]
-hallucinator-pdf = { workspace = true, features = ["pdf"] }
 hallucinator-dblp.workspace = true
 hallucinator-acl.workspace = true
 tokio.workspace = true

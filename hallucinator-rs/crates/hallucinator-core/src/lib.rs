@@ -15,12 +15,44 @@ pub mod orchestrator;
 pub mod pool;
 pub mod rate_limit;
 pub mod retraction;
+pub mod text_utils;
 
 // Re-export for convenience
 pub use cache::{DEFAULT_NEGATIVE_TTL, DEFAULT_POSITIVE_TTL, QueryCache};
-pub use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
 pub use orchestrator::{DbSearchResult, query_all_databases};
 pub use rate_limit::{DbQueryError, RateLimitedResult, RateLimiters};
+pub use text_utils::{extract_arxiv_id, extract_doi, get_query_words};
+
+/// A parsed reference extracted from a document.
+#[derive(Debug, Clone)]
+pub struct Reference {
+    pub raw_citation: String,
+    pub title: Option<String>,
+    pub authors: Vec<String>,
+    pub doi: Option<String>,
+    pub arxiv_id: Option<String>,
+    /// 1-based position in the original reference list (before skip filtering).
+    pub original_number: usize,
+    /// If set, this reference was skipped during extraction (e.g. "url_only", "short_title").
+    pub skip_reason: Option<String>,
+}
+
+/// Statistics about references that were skipped during extraction.
+#[derive(Debug, Clone, Default)]
+pub struct SkipStats {
+    pub url_only: usize,
+    pub short_title: usize,
+    pub no_title: usize,
+    pub no_authors: usize,
+    pub total_raw: usize,
+}
+
+/// Result of extracting references from a document.
+#[derive(Debug, Clone)]
+pub struct ExtractionResult {
+    pub references: Vec<Reference>,
+    pub skip_stats: SkipStats,
+}
 
 /// Status of a single database query within an orchestrator run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,8 +78,6 @@ pub struct DbResult {
 
 #[derive(Error, Debug)]
 pub enum CoreError {
-    #[error("PDF extraction error: {0}")]
-    Pdf(#[from] hallucinator_pdf::PdfError),
     #[error("HTTP request error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("DBLP error: {0}")]

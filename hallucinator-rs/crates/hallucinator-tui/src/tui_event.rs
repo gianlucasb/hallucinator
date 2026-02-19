@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use hallucinator_core::{ProgressEvent, Reference};
-use hallucinator_pdf::SkipStats;
+use hallucinator_core::{ProgressEvent, Reference, SkipStats};
 
 /// Commands sent from the TUI to the backend.
 pub enum BackendCommand {

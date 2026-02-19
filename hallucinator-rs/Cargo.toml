@@ -2,10 +2,12 @@
 resolver = "2"
 members = [
     "crates/hallucinator-pdf",
+    "crates/hallucinator-pdf-mupdf",
     "crates/hallucinator-bbl",
     "crates/hallucinator-core",
     "crates/hallucinator-dblp",
     "crates/hallucinator-acl",
+    "crates/hallucinator-ingest",
     "crates/hallucinator-cli",
     "crates/hallucinator-tui",
     "crates/hallucinator-reporting",
@@ -28,11 +30,13 @@ repository = "https://github.com/gianlucasb/hallucinator"
 
 [workspace.dependencies]
 # Internal crates
-hallucinator-pdf = { path = "crates/hallucinator-pdf", default-features = false }
+hallucinator-pdf = { path = "crates/hallucinator-pdf" }
+hallucinator-pdf-mupdf = { path = "crates/hallucinator-pdf-mupdf" }
 hallucinator-bbl = { path = "crates/hallucinator-bbl" }
 hallucinator-core = { path = "crates/hallucinator-core" }
 hallucinator-dblp = { path = "crates/hallucinator-dblp" }
 hallucinator-acl = { path = "crates/hallucinator-acl" }
+hallucinator-ingest = { path = "crates/hallucinator-ingest" }
 hallucinator-reporting = { path = "crates/hallucinator-reporting" }
 
 # Async runtime

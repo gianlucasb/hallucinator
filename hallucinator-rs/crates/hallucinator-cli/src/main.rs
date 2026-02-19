@@ -452,46 +452,8 @@ async fn check(
         None
     };
 
-    // Extract references from input file
     if !file_path.exists() {
         anyhow::bail!("File not found: {}", file_path.display());
-    }
-
-    let is_bbl = file_path
-        .extension()
-        .map(|e| e.eq_ignore_ascii_case("bbl"))
-        .unwrap_or(false);
-    let is_bib = file_path
-        .extension()
-        .map(|e| e.eq_ignore_ascii_case("bib"))
-        .unwrap_or(false);
-
-    let extraction = if is_bbl {
-        hallucinator_bbl::extract_references_from_bbl(&file_path)
-            .map_err(|e| anyhow::anyhow!("BBL extraction failed: {}", e))?
-    } else if is_bib {
-        hallucinator_bbl::extract_references_from_bib(&file_path)
-            .map_err(|e| anyhow::anyhow!("BIB extraction failed: {}", e))?
-    } else {
-        hallucinator_pdf::extract_references(&file_path)?
-    };
-
-    let file_name = file_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| file_path.display().to_string());
-
-    output::print_extraction_summary(
-        &mut writer,
-        &file_name,
-        extraction.references.len(),
-        &extraction.skip_stats,
-        color,
-    )?;
-
-    if extraction.references.is_empty() {
-        writeln!(writer, "No references to check.")?;
-        return Ok(());
     }
 
     let crossref_mailto: Option<String> = std::env::var("CROSSREF_MAILTO")
@@ -577,6 +539,33 @@ async fn check(
         cache_negative_ttl_secs: negative_ttl,
     };
 
+    // Handle archives: extract each file and run check on each independently
+    if hallucinator_ingest::is_archive_path(&file_path) {
+        return run_archive_check(&file_path, config, output, color).await;
+    }
+
+    // Single file: extract then check
+    let extraction = hallucinator_ingest::extract_references(&file_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let file_name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.display().to_string());
+
+    output::print_extraction_summary(
+        &mut writer,
+        &file_name,
+        extraction.references.len(),
+        &extraction.skip_stats,
+        color,
+    )?;
+
+    if extraction.references.is_empty() {
+        writeln!(writer, "No references to check.")?;
+        return Ok(());
+    }
+
     // Set up progress callback
     let progress_writer: Arc<Mutex<Box<dyn Write + Send>>> = if output.is_some() {
         Arc::new(Mutex::new(Box::new(std::io::stderr())))
@@ -618,6 +607,140 @@ async fn check(
     output::print_doi_issues(&mut writer, &results, color)?;
     output::print_retraction_warnings(&mut writer, &results, color)?;
     output::print_summary(&mut writer, &results, &skip_stats, color)?;
+
+    Ok(())
+}
+
+/// Process all extractable files inside an archive, printing a per-file report for each.
+async fn run_archive_check(
+    archive_path: &std::path::Path,
+    config: hallucinator_core::Config,
+    output: Option<PathBuf>,
+    color: ColorMode,
+) -> anyhow::Result<()> {
+    use hallucinator_ingest::archive::{ArchiveItem, extract_archive_streaming};
+
+    let mut writer: Box<dyn Write> = if let Some(ref output_path) = output {
+        Box::new(std::fs::File::create(output_path)?)
+    } else {
+        Box::new(std::io::stdout())
+    };
+
+    let archive_name = archive_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| archive_path.display().to_string());
+
+    writeln!(writer, "Archive: {}", archive_name)?;
+    writeln!(writer)?;
+
+    let temp_dir = tempfile::tempdir()?;
+    let (tx, rx) = std::sync::mpsc::channel::<ArchiveItem>();
+
+    let archive_path = archive_path.to_path_buf();
+    let dir = temp_dir.path().to_path_buf();
+    let extract_handle = std::thread::spawn(move || {
+        extract_archive_streaming(&archive_path, &dir, 0, &tx)
+    });
+
+    let mut file_count = 0usize;
+    let config = Arc::new(config);
+
+    for item in rx {
+        match item {
+            ArchiveItem::Warning(msg) => {
+                writeln!(writer, "Warning: {}", msg)?;
+            }
+            ArchiveItem::Pdf(extracted) => {
+                file_count += 1;
+
+                // Print a header separator for each file
+                writeln!(writer, "─── {} ───", extracted.filename)?;
+                writeln!(writer)?;
+
+                let path = extracted.path.clone();
+                let extraction = match hallucinator_ingest::extract_references(&path) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        writeln!(writer, "  Error: {}", e)?;
+                        writeln!(writer)?;
+                        continue;
+                    }
+                };
+
+                output::print_extraction_summary(
+                    &mut writer,
+                    &extracted.filename,
+                    extraction.references.len(),
+                    &extraction.skip_stats,
+                    color,
+                )?;
+
+                if extraction.references.is_empty() {
+                    writeln!(writer, "No references to check.")?;
+                    writeln!(writer)?;
+                    continue;
+                }
+
+                let progress_writer: Arc<Mutex<Box<dyn Write + Send>>> = if output.is_some() {
+                    Arc::new(Mutex::new(Box::new(std::io::stderr())))
+                } else {
+                    Arc::new(Mutex::new(Box::new(std::io::stdout())))
+                };
+                let progress_color = color;
+                let progress_cb = {
+                    let pw = Arc::clone(&progress_writer);
+                    move |event: hallucinator_core::ProgressEvent| {
+                        if let Ok(mut w) = pw.lock() {
+                            let _ = output::print_progress(&mut *w, &event, progress_color);
+                            let _ = w.flush();
+                        }
+                    }
+                };
+
+                let cancel = CancellationToken::new();
+                let cancel_clone = cancel.clone();
+                tokio::spawn(async move {
+                    if tokio::signal::ctrl_c().await.is_ok() {
+                        cancel_clone.cancel();
+                    }
+                });
+
+                let skip_stats = extraction.skip_stats.clone();
+                let config_clone = Arc::clone(&config);
+                let refs = extraction.references;
+
+                let results = hallucinator_core::check_references(
+                    refs,
+                    (*config_clone).clone(),
+                    progress_cb,
+                    cancel,
+                )
+                .await;
+
+                writeln!(writer)?;
+                // Use the first openalex key for the report (openalex_key is in config)
+                let has_openalex = config_clone.openalex_key.is_some();
+                output::print_hallucination_report(&mut writer, &results, has_openalex, color)?;
+                output::print_doi_issues(&mut writer, &results, color)?;
+                output::print_retraction_warnings(&mut writer, &results, color)?;
+                output::print_summary(&mut writer, &results, &skip_stats, color)?;
+                writeln!(writer)?;
+            }
+            ArchiveItem::Done { total } => {
+                writeln!(writer, "Processed {} file(s) from archive.", total)?;
+            }
+        }
+    }
+
+    extract_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Archive extraction thread panicked"))?
+        .map_err(|e| anyhow::anyhow!("Archive extraction failed: {}", e))?;
+
+    if file_count == 0 {
+        writeln!(writer, "No processable files found in archive.")?;
+    }
 
     Ok(())
 }
@@ -668,7 +791,10 @@ fn dry_run_pdf(
 ) -> anyhow::Result<()> {
     use owo_colors::OwoColorize;
 
-    let text = hallucinator_pdf::extract::extract_text_from_pdf(file_path)?;
+    use hallucinator_pdf::PdfBackend as _;
+    let text = hallucinator_pdf_mupdf::MupdfBackend
+        .extract_text(file_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let ref_section = hallucinator_pdf::section::find_references_section(&text)
         .ok_or_else(|| anyhow::anyhow!("No references section found"))?;
     let raw_refs = hallucinator_pdf::section::segment_references(&ref_section);

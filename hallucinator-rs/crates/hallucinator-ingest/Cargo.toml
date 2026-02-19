@@ -1,0 +1,24 @@
+[package]
+name = "hallucinator-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unified document ingestion and archive extraction for hallucinated reference detection"
+
+[package.metadata.dist]
+dist = false
+
+[features]
+default = ["pdf"]
+pdf = ["dep:hallucinator-pdf-mupdf"]
+
+[dependencies]
+hallucinator-core.workspace = true
+hallucinator-pdf.workspace = true
+hallucinator-pdf-mupdf = { workspace = true, optional = true }
+hallucinator-bbl.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true

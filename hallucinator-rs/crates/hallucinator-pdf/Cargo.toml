@@ -9,21 +9,21 @@ description = "PDF extraction and reference parsing for hallucinated reference d
 dist = false
 
 [features]
-default = ["pdf"]
-pdf = ["dep:mupdf", "dep:zip", "dep:tar", "dep:flate2"]
+# Kept as an empty no-op for backward compatibility with consumers that
+# still specify features = ["pdf"]. mupdf is now in hallucinator-pdf-mupdf.
+default = []
+pdf = []
 
 [dependencies]
-mupdf = { workspace = true, optional = true }
+hallucinator-core.workspace = true
 regex.workspace = true
 once_cell.workspace = true
 thiserror.workspace = true
-zip = { workspace = true, optional = true }
-tar = { workspace = true, optional = true }
-flate2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 hallucinator-bbl = { workspace = true }
 hallucinator-core = { workspace = true }
+mupdf = { workspace = true }
 rapidfuzz = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }

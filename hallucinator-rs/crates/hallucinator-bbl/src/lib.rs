@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
 
-use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
+use hallucinator_core::{ExtractionResult, Reference, SkipStats};
 
 #[derive(Error, Debug)]
 pub enum BblError {
@@ -120,7 +120,7 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
 
         // Extract identifiers
         let doi = extract_doi_from_bbl(entry);
-        let arxiv_id = hallucinator_pdf::identifiers::extract_arxiv_id(entry);
+        let arxiv_id = hallucinator_core::extract_arxiv_id(entry);
 
         references.push(Reference {
             raw_citation,
@@ -291,7 +291,7 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
             .get("doi")
             .map(chunks_to_string)
             .filter(|d| !d.is_empty())
-            .and_then(|d| hallucinator_pdf::identifiers::extract_doi(&d));
+            .and_then(|d| hallucinator_core::extract_doi(&d));
 
         // Extract arXiv ID from eprint field or journal field
         let arxiv_id = extract_arxiv_from_bib_entry(entry);
@@ -380,7 +380,7 @@ fn extract_arxiv_from_bib_entry(entry: &biblatex::Entry) -> Option<String> {
                 .map(chunks_to_string)
                 .unwrap_or_default();
             if prefix.is_empty() || prefix.eq_ignore_ascii_case("arxiv") {
-                if let Some(id) = hallucinator_pdf::identifiers::extract_arxiv_id(&eprint) {
+                if let Some(id) = hallucinator_core::extract_arxiv_id(&eprint) {
                     return Some(id);
                 }
                 // Some .bib files have bare IDs like "2403.10573"
@@ -396,7 +396,7 @@ fn extract_arxiv_from_bib_entry(entry: &biblatex::Entry) -> Option<String> {
     // Check journal field for "arXiv preprint arXiv:XXXX.XXXXX"
     if let Some(journal_chunks) = entry.get("journal") {
         let journal = chunks_to_string(journal_chunks);
-        if let Some(id) = hallucinator_pdf::identifiers::extract_arxiv_id(&journal) {
+        if let Some(id) = hallucinator_core::extract_arxiv_id(&journal) {
             return Some(id);
         }
     }
@@ -491,11 +491,11 @@ fn extract_doi_from_bbl(entry: &str) -> Option<String> {
     // Try \showDOI{...} first
     if let Some(doi_text) = extract_braced_arg(entry, "\\showDOI") {
         // The content might be a URL like https://doi.org/10.xxx or just the DOI
-        return hallucinator_pdf::identifiers::extract_doi(&doi_text);
+        return hallucinator_core::extract_doi(&doi_text);
     }
 
     // Fall back to raw DOI pattern in the text
-    hallucinator_pdf::identifiers::extract_doi(entry)
+    hallucinator_core::extract_doi(entry)
 }
 
 /// Check if an entry is URL-only (has a URL but the "title" is just a URL or news headline).

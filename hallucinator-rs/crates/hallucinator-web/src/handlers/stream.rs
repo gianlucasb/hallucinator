@@ -7,8 +7,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
-use hallucinator_core::{Config, ProgressEvent, SkipStats, ValidationResult};
-use hallucinator_pdf::ExtractionResult;
+use hallucinator_core::{Config, ExtractionResult, ProgressEvent, SkipStats, ValidationResult};
 
 use crate::models::*;
 use crate::state::AppState;

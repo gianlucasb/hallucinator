@@ -7,7 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use tokio::sync::mpsc;
 
-use hallucinator_pdf::archive::ArchiveItem;
+use hallucinator_ingest::archive::ArchiveItem;
 
 use hallucinator_core::{DbStatus, ProgressEvent};
 
@@ -145,7 +145,7 @@ impl FilePickerState {
                     let is_pdf = ext.map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false);
                     let is_bbl = ext.map(|e| e.eq_ignore_ascii_case("bbl")).unwrap_or(false);
                     let is_bib = ext.map(|e| e.eq_ignore_ascii_case("bib")).unwrap_or(false);
-                    let is_archive = hallucinator_pdf::archive::is_archive_path(&path);
+                    let is_archive = hallucinator_ingest::is_archive_path(&path);
                     let is_json = ext.map(|e| e.eq_ignore_ascii_case("json")).unwrap_or(false);
                     let is_db = ext
                         .map(|e| e.eq_ignore_ascii_case("db") || e.eq_ignore_ascii_case("sqlite"))
@@ -707,7 +707,7 @@ impl App {
                             .log_warn(format!("Failed to load {}: {}", path.display(), e));
                     }
                 }
-            } else if hallucinator_pdf::archive::is_archive_path(&path) {
+            } else if hallucinator_ingest::is_archive_path(&path) {
                 // Set extracting indicator for the first archive so it shows immediately
                 if self.extracting_archive.is_none() {
                     let name = path
@@ -773,7 +773,7 @@ impl App {
         // Spawn blocking extraction in a background thread
         tokio::task::spawn_blocking(move || {
             if let Err(e) =
-                hallucinator_pdf::archive::extract_archive_streaming(&path, &dir, max_size, &tx)
+                hallucinator_ingest::extract_archive_streaming(&path, &dir, max_size, &tx)
             {
                 // Send the error as a warning so the UI can display it;
                 // Done{0} signals no PDFs were found.

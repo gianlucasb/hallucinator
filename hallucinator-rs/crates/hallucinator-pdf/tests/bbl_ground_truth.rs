@@ -16,7 +16,50 @@ use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use hallucinator_bbl::{extract_references_from_bbl_str, extract_references_from_bib_str};
 use hallucinator_core::matching::{normalize_title, titles_match};
-use hallucinator_pdf::{ExtractionResult, Reference};
+use hallucinator_pdf::{ExtractionResult, PdfBackend, PdfError, Reference};
+
+/// Local mupdf backend for use in this integration test.
+///
+/// Lives here (not in hallucinator-pdf-mupdf) to avoid a circular dependency:
+/// hallucinator-pdf-mupdf depends on hallucinator-pdf, so the latter cannot
+/// depend on the former even in dev-dependencies.
+struct LocalMupdfBackend;
+
+impl PdfBackend for LocalMupdfBackend {
+    fn extract_text(&self, path: &Path) -> Result<String, PdfError> {
+        use mupdf::{Document, TextPageFlags};
+        use hallucinator_pdf::text_processing::expand_ligatures;
+
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| PdfError::OpenError("invalid path encoding".into()))?;
+        let document =
+            Document::open(path_str).map_err(|e| PdfError::OpenError(e.to_string()))?;
+        let mut pages_text = Vec::new();
+        for page_result in document
+            .pages()
+            .map_err(|e| PdfError::ExtractionError(e.to_string()))?
+        {
+            let page = page_result.map_err(|e| PdfError::ExtractionError(e.to_string()))?;
+            let text_page = page
+                .to_text_page(TextPageFlags::empty())
+                .map_err(|e| PdfError::ExtractionError(e.to_string()))?;
+            let mut page_text = String::new();
+            for block in text_page.blocks() {
+                for line in block.lines() {
+                    let line_text: String = line
+                        .chars()
+                        .map(|c| c.char().unwrap_or('\u{FFFD}'))
+                        .collect();
+                    page_text.push_str(&line_text);
+                    page_text.push('\n');
+                }
+            }
+            pages_text.push(page_text);
+        }
+        Ok(expand_ligatures(&pages_text.join("\n")))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -574,7 +617,7 @@ fn bbl_ground_truth() {
 
         // Extract references from PDF
         let pdf_result: ExtractionResult =
-            match hallucinator_pdf::extract_references(&pair.pdf_path) {
+            match hallucinator_pdf::extract_references(&pair.pdf_path, &LocalMupdfBackend) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("PDF error: {e}");

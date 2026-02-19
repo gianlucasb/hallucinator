@@ -1,0 +1,13 @@
+[package]
+name = "hallucinator-pdf-mupdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MuPDF backend for hallucinator-pdf (AGPL-3.0 isolation layer)"
+
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+hallucinator-pdf.workspace = true
+mupdf.workspace = true
