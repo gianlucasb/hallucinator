@@ -1462,7 +1462,20 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         if word_before.len() >= 2
             && MID_SENTENCE_ABBREVIATIONS.contains(word_before.to_lowercase().as_str())
         {
-            continue;
+            // Special case: "et al." followed by title start IS a sentence boundary
+            // e.g., "... et al. Spatial transcriptomics reveals..."
+            let is_et_al_title = word_before.to_lowercase() == "al"
+                && word_start >= 3
+                && text[..word_start].to_lowercase().trim_end().ends_with("et")
+                && {
+                    let after = &text[m.end()..];
+                    // Title starts with capital letter that's NOT an author pattern
+                    after.chars().next().is_some_and(|c| c.is_uppercase())
+                        && !AUTHOR_AFTER.iter().any(|re| re.is_match(after))
+                };
+            if !is_et_al_title {
+                continue;
+            }
         }
 
         // FIX: Don't split within DOI patterns (handles line breaks in DOIs)
@@ -2683,3 +2696,15 @@ mod tests {
         );
     }
 }
+
+    #[test]
+    fn test_et_al_nature_communications() {
+        let ref_text = "Rohit Arora, Christian Cao, Mehul Kumar, Sarthak Sinha, Ayan Chanda, Reid McNeil, Divya Samuel, Rahul K Arora, T Wayne Matthews, Shamir Chandarana, et al. Spatial transcriptomics reveals distinct and conserved tumor core and edge architectures that predict survival and targeted therapy response. Nature communications, 14(1):5029, 2023.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        eprintln!("Extracted: {:?}", title);
+        assert!(
+            title.contains("Spatial transcriptomics"),
+            "Title should contain 'Spatial transcriptomics', got: {:?}",
+            title
+        );
+    }
