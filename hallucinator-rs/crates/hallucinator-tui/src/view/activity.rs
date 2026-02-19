@@ -312,15 +312,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         if cache.has_persistence() {
             lines.push(Line::from(vec![
                 Span::styled("   disk: ", Style::default().fg(theme.dim)),
-                Span::styled(
-                    format!("{}", l2_found),
-                    Style::default().fg(theme.verified),
-                ),
+                Span::styled(format!("{}", l2_found), Style::default().fg(theme.verified)),
                 Span::styled(" found  ", Style::default().fg(theme.dim)),
-                Span::styled(
-                    format!("{}", l2_nf),
-                    Style::default().fg(theme.not_found),
-                ),
+                Span::styled(format!("{}", l2_nf), Style::default().fg(theme.not_found)),
                 Span::styled(" not-found", Style::default().fg(theme.dim)),
             ]));
         }

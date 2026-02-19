@@ -32,8 +32,12 @@ indicatif.workspace = true
 tempfile.workspace = true
 base64.workspace = true
 async-channel.workspace = true
-mimalloc.workspace = true
+mimalloc = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 dirs.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[features]
+default = []
+mimalloc = ["dep:mimalloc"]

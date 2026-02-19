@@ -1993,10 +1993,14 @@ impl App {
     fn clear_not_found_cache(&mut self) {
         if let Some(ref cache) = self.current_query_cache {
             let removed = cache.clear_not_found();
-            self.config_state.cache_clear_status =
-                Some(format!("Cleared {} not-found entries (ref x db pairs)", removed));
-            self.activity
-                .log(format!("Cleared {} not-found cache entries (each ref checked against multiple DBs)", removed));
+            self.config_state.cache_clear_status = Some(format!(
+                "Cleared {} not-found entries (ref x db pairs)",
+                removed
+            ));
+            self.activity.log(format!(
+                "Cleared {} not-found cache entries (each ref checked against multiple DBs)",
+                removed
+            ));
             return;
         }
 

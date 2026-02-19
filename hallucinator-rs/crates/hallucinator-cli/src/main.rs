@@ -92,7 +92,6 @@ enum Command {
         /// Clear only not-found entries from the cache and exit
         #[arg(long)]
         clear_not_found: bool,
-
     },
 
     /// Download and build the offline DBLP database
@@ -131,15 +130,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Load config file (explicit --config path, or auto-detect)
     let (file_config, config_source) = match &cli.config {
-        Some(path) => {
-            match hallucinator_core::config_file::load_from_path(path) {
-                Some(cfg) => (cfg, Some(path.clone())),
-                None => {
-                    eprintln!("Warning: config file not found: {}", path.display());
-                    (hallucinator_core::config_file::ConfigFile::default(), None)
-                }
+        Some(path) => match hallucinator_core::config_file::load_from_path(path) {
+            Some(cfg) => (cfg, Some(path.clone())),
+            None => {
+                eprintln!("Warning: config file not found: {}", path.display());
+                (hallucinator_core::config_file::ConfigFile::default(), None)
             }
-        }
+        },
         None => {
             // Auto-detect: try platform config dir, then CWD overlay
             let cwd_path = PathBuf::from(".hallucinator.toml");
@@ -479,12 +476,7 @@ async fn check(
 
     // Build config: CLI flags > env vars > config file > defaults
     let num_workers = num_workers
-        .or_else(|| {
-            file_config
-                .concurrency
-                .as_ref()
-                .and_then(|c| c.num_workers)
-        })
+        .or_else(|| file_config.concurrency.as_ref().and_then(|c| c.num_workers))
         .unwrap_or(4);
     let max_rate_limit_retries = max_rate_limit_retries
         .or_else(|| {
@@ -639,9 +631,8 @@ async fn run_archive_check(
 
     let archive_path = archive_path.to_path_buf();
     let dir = temp_dir.path().to_path_buf();
-    let extract_handle = std::thread::spawn(move || {
-        extract_archive_streaming(&archive_path, &dir, 0, &tx)
-    });
+    let extract_handle =
+        std::thread::spawn(move || extract_archive_streaming(&archive_path, &dir, 0, &tx));
 
     let mut file_count = 0usize;
     let config = Arc::new(config);

@@ -61,7 +61,12 @@ pub fn print_progress(
             title,
         } => {
             let short = if title.len() > 50 {
-                format!("{}...", &title[..50])
+                let end = title
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .find(|&i| i >= 50)
+                    .unwrap_or(title.len());
+                format!("{}...", &title[..end])
             } else {
                 title.clone()
             };

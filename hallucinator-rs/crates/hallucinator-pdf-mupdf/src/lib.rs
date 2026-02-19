@@ -19,8 +19,7 @@ impl PdfBackend for MupdfBackend {
             .to_str()
             .ok_or_else(|| PdfError::OpenError("invalid path encoding".into()))?;
 
-        let document =
-            Document::open(path_str).map_err(|e| PdfError::OpenError(e.to_string()))?;
+        let document = Document::open(path_str).map_err(|e| PdfError::OpenError(e.to_string()))?;
 
         let mut pages_text = Vec::new();
 

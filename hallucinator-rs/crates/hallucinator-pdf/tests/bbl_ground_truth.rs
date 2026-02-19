@@ -27,14 +27,13 @@ struct LocalMupdfBackend;
 
 impl PdfBackend for LocalMupdfBackend {
     fn extract_text(&self, path: &Path) -> Result<String, PdfError> {
-        use mupdf::{Document, TextPageFlags};
         use hallucinator_pdf::text_processing::expand_ligatures;
+        use mupdf::{Document, TextPageFlags};
 
         let path_str = path
             .to_str()
             .ok_or_else(|| PdfError::OpenError("invalid path encoding".into()))?;
-        let document =
-            Document::open(path_str).map_err(|e| PdfError::OpenError(e.to_string()))?;
+        let document = Document::open(path_str).map_err(|e| PdfError::OpenError(e.to_string()))?;
         let mut pages_text = Vec::new();
         for page_result in document
             .pages()

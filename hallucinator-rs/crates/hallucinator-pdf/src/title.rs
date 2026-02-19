@@ -221,9 +221,8 @@ pub(crate) fn clean_title_with_config(
     }
 
     // Handle "? The American Economic Review" — full journal name starting with "The" after ?/!
-    static QMARK_THE_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"[?!]\s+The\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+").unwrap()
-    });
+    static QMARK_THE_JOURNAL_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[?!]\s+The\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+").unwrap());
     if let Some(m) = QMARK_THE_JOURNAL_RE.find(&title) {
         let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
         title = title[..=punct_pos].to_string();
@@ -1245,10 +1244,7 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             }
             let word_len = pos - word_start;
             // Short words (2-3 chars) starting with capital followed by surname
-            if word_len >= 2
-                && word_len <= 3
-                && text.as_bytes()[word_start].is_ascii_uppercase()
-            {
+            if word_len >= 2 && word_len <= 3 && text.as_bytes()[word_start].is_ascii_uppercase() {
                 let after_period = &text[m.end()..];
                 let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
                 if is_author {
