@@ -129,20 +129,20 @@ impl DatabaseBackend for Searxng {
                 Ok(r) => r,
                 Err(_) => {
                     // Connection refused, timeout, etc. - SearxNG not available
-                    return Ok((None, vec![], None));
+                    return Ok(DbQueryResult::not_found());
                 }
             };
 
             if !resp.status().is_success() {
                 // SearxNG returned an error - skip silently
-                return Ok((None, vec![], None));
+                return Ok(DbQueryResult::not_found());
             }
 
             let data: SearxngResponse = match resp.json().await {
                 Ok(d) => d,
                 Err(_) => {
                     // Failed to parse response - skip silently
-                    return Ok((None, vec![], None));
+                    return Ok(DbQueryResult::not_found());
                 }
             };
 
@@ -151,12 +151,12 @@ impl DatabaseBackend for Searxng {
                 // Verify the title matches (lenient matching for web search)
                 if titles_match_lenient(title, &result.title) {
                     // Return found result - no authors available from web search
-                    return Ok((Some(result.title), vec![], Some(result.url)));
+                    return Ok(DbQueryResult::found(result.title, vec![], Some(result.url)));
                 }
             }
 
             // No matching academic result found
-            Ok((None, vec![], None))
+            Ok(DbQueryResult::not_found())
         })
     }
 }

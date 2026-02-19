@@ -21,9 +21,40 @@ use std::pin::Pin;
 
 pub use crate::rate_limit::DbQueryError;
 
-/// Result of a database query: (found_title, authors, paper_url).
-/// `None` title means not found.
-pub type DbQueryResult = (Option<String>, Vec<String>, Option<String>);
+/// Result of a database query.
+///
+/// `found_title == None` means the paper was not found in this database.
+/// The optional `retraction` field is populated only by CrossRef (which has
+/// retraction metadata in its response); all other backends leave it `None`.
+#[derive(Debug, Clone, Default)]
+pub struct DbQueryResult {
+    pub found_title: Option<String>,
+    pub authors: Vec<String>,
+    pub paper_url: Option<String>,
+    pub retraction: Option<crate::retraction::RetractionResult>,
+}
+
+impl DbQueryResult {
+    /// Construct a "found" result (no retraction info).
+    pub fn found(title: impl Into<String>, authors: Vec<String>, url: Option<String>) -> Self {
+        Self {
+            found_title: Some(title.into()),
+            authors,
+            paper_url: url,
+            retraction: None,
+        }
+    }
+
+    /// Construct a "not found" result.
+    pub fn not_found() -> Self {
+        Self::default()
+    }
+
+    /// Whether this result represents a found paper.
+    pub fn is_found(&self) -> bool {
+        self.found_title.is_some()
+    }
+}
 
 /// Result type for `query_doi`: `None` means the backend doesn't handle DOI queries.
 pub type DoiQueryResult<'a> =

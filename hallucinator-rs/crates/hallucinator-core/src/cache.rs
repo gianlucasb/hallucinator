@@ -22,6 +22,7 @@ use rusqlite::{Connection, OpenFlags, params};
 
 use crate::db::DbQueryResult;
 use crate::matching::normalize_title;
+use crate::retraction::RetractionResult;
 
 /// Default time-to-live for positive (found) cache entries: 7 days.
 pub const DEFAULT_POSITIVE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -39,11 +40,12 @@ struct CacheKey {
 /// What we store: either a found result or a not-found marker.
 #[derive(Clone, Debug)]
 enum CachedResult {
-    /// Paper found: (title, authors, url).
+    /// Paper found: title, authors, url, and optional retraction info.
     Found {
         title: String,
         authors: Vec<String>,
         url: Option<String>,
+        retraction: Option<RetractionResult>,
     },
     /// Paper not found in this database.
     NotFound,
@@ -95,9 +97,14 @@ impl SqliteWriter {
                  authors          TEXT,
                  paper_url        TEXT,
                  inserted_at      INTEGER NOT NULL,
+                 retraction_json  TEXT,
                  PRIMARY KEY (normalized_title, db_name)
              );",
         )?;
+        // Migration: add retraction_json column to existing databases.
+        // ALTER TABLE ADD COLUMN is a no-op if the column already exists (SQLite
+        // returns "duplicate column name" error which we silently ignore).
+        let _ = conn.execute_batch("ALTER TABLE query_cache ADD COLUMN retraction_json TEXT");
         Ok(Self { conn })
     }
 
@@ -123,24 +130,28 @@ impl SqliteWriter {
             )
             .ok();
 
-        let (found, found_title, authors_json, paper_url) = match result {
+        let (found, found_title, authors_json, paper_url, retraction_json) = match result {
             CachedResult::Found {
                 title,
                 authors,
                 url,
+                retraction,
             } => (
                 1i32,
                 Some(title.as_str()),
                 Some(serde_json::to_string(authors).unwrap_or_default()),
                 url.as_deref(),
+                retraction
+                    .as_ref()
+                    .and_then(|r| serde_json::to_string(r).ok()),
             ),
-            CachedResult::NotFound => (0i32, None, None, None),
+            CachedResult::NotFound => (0i32, None, None, None, None),
         };
 
         let _ = self.conn.execute(
             "INSERT OR REPLACE INTO query_cache
-                 (normalized_title, db_name, found, found_title, authors, paper_url, inserted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (normalized_title, db_name, found, found_title, authors, paper_url, inserted_at, retraction_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 norm_title,
                 db_name,
@@ -148,7 +159,8 @@ impl SqliteWriter {
                 found_title,
                 authors_json,
                 paper_url,
-                epoch
+                epoch,
+                retraction_json
             ],
         );
 
@@ -264,7 +276,7 @@ impl ReadPool {
         let now = now_epoch();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT found, found_title, authors, paper_url, inserted_at
+                "SELECT found, found_title, authors, paper_url, inserted_at, retraction_json
                  FROM query_cache
                  WHERE normalized_title = ?1 AND db_name = ?2",
             )
@@ -277,11 +289,19 @@ impl ReadPool {
                 let authors_json: Option<String> = row.get(2)?;
                 let paper_url: Option<String> = row.get(3)?;
                 let inserted_at: u64 = row.get(4)?;
-                Ok((found, found_title, authors_json, paper_url, inserted_at))
+                let retraction_json: Option<String> = row.get(5)?;
+                Ok((
+                    found,
+                    found_title,
+                    authors_json,
+                    paper_url,
+                    inserted_at,
+                    retraction_json,
+                ))
             })
             .ok()?;
 
-        let (found, found_title, authors_json, paper_url, inserted_at) = row;
+        let (found, found_title, authors_json, paper_url, inserted_at, retraction_json) = row;
 
         let result = if found != 0 {
             CachedResult::Found {
@@ -290,6 +310,7 @@ impl ReadPool {
                     .and_then(|j| serde_json::from_str(&j).ok())
                     .unwrap_or_default(),
                 url: paper_url,
+                retraction: retraction_json.and_then(|j| serde_json::from_str(&j).ok()),
             }
         } else {
             CachedResult::NotFound
@@ -483,13 +504,8 @@ impl QueryCache {
     ///
     /// If `negative_ttl` is zero, not-found results are never cached.
     pub fn insert(&self, title: &str, db_name: &str, result: &DbQueryResult) {
-        let is_not_found = result.0.is_none();
-        tracing::trace!(
-            db = db_name,
-            title,
-            found = !is_not_found,
-            "cache insert"
-        );
+        let is_not_found = !result.is_found();
+        tracing::trace!(db = db_name, title, found = !is_not_found, "cache insert");
 
         // Skip not-found entries entirely when negative TTL is zero
         if is_not_found && self.negative_ttl.is_zero() {
@@ -502,13 +518,15 @@ impl QueryCache {
             db_name: db_name.to_string(),
         };
 
-        let cached = match result {
-            (Some(found_title), authors, url) => CachedResult::Found {
+        let cached = if let Some(ref found_title) = result.found_title {
+            CachedResult::Found {
                 title: found_title.clone(),
-                authors: authors.clone(),
-                url: url.clone(),
-            },
-            (None, _, _) => CachedResult::NotFound,
+                authors: result.authors.clone(),
+                url: result.paper_url.clone(),
+                retraction: result.retraction.clone(),
+            }
+        } else {
+            CachedResult::NotFound
         };
 
         let now_is_found = matches!(cached, CachedResult::Found { .. });
@@ -682,8 +700,14 @@ fn cached_to_query_result(cached: &CachedResult) -> DbQueryResult {
             title,
             authors,
             url,
-        } => (Some(title.clone()), authors.clone(), url.clone()),
-        CachedResult::NotFound => (None, vec![], None),
+            retraction,
+        } => DbQueryResult {
+            found_title: Some(title.clone()),
+            authors: authors.clone(),
+            paper_url: url.clone(),
+            retraction: retraction.clone(),
+        },
+        CachedResult::NotFound => DbQueryResult::not_found(),
     }
 }
 
@@ -727,38 +751,38 @@ mod tests {
     #[test]
     fn cache_hit_after_insert_found() {
         let cache = QueryCache::default();
-        let result: DbQueryResult = (
-            Some("Attention Is All You Need".into()),
+        let result = DbQueryResult::found(
+            "Attention Is All You Need",
             vec!["Vaswani".into()],
             Some("https://doi.org/10.1234".into()),
         );
         cache.insert("Attention Is All You Need", "CrossRef", &result);
         let cached = cache.get("Attention Is All You Need", "CrossRef");
         assert!(cached.is_some());
-        let (title, authors, url) = cached.unwrap();
-        assert_eq!(title.unwrap(), "Attention Is All You Need");
-        assert_eq!(authors, vec!["Vaswani"]);
-        assert_eq!(url.unwrap(), "https://doi.org/10.1234");
+        let r = cached.unwrap();
+        assert_eq!(r.found_title.unwrap(), "Attention Is All You Need");
+        assert_eq!(r.authors, vec!["Vaswani"]);
+        assert_eq!(r.paper_url.unwrap(), "https://doi.org/10.1234");
         assert_eq!(cache.hits(), 1);
     }
 
     #[test]
     fn cache_hit_after_insert_not_found() {
         let cache = QueryCache::default();
-        let result: DbQueryResult = (None, vec![], None);
+        let result = DbQueryResult::not_found();
         cache.insert("Nonexistent Paper", "arXiv", &result);
         let cached = cache.get("Nonexistent Paper", "arXiv");
         assert!(cached.is_some());
-        let (title, authors, url) = cached.unwrap();
-        assert!(title.is_none());
-        assert!(authors.is_empty());
-        assert!(url.is_none());
+        let r = cached.unwrap();
+        assert!(r.found_title.is_none());
+        assert!(r.authors.is_empty());
+        assert!(r.paper_url.is_none());
     }
 
     #[test]
     fn cache_miss_different_db() {
         let cache = QueryCache::default();
-        let result: DbQueryResult = (Some("A Paper".into()), vec![], None);
+        let result = DbQueryResult::found("A Paper", vec![], None);
         cache.insert("A Paper", "CrossRef", &result);
         assert!(cache.get("A Paper", "arXiv").is_none());
     }
@@ -766,7 +790,7 @@ mod tests {
     #[test]
     fn cache_normalized_key() {
         let cache = QueryCache::default();
-        let result: DbQueryResult = (Some("Résumé of Methods".into()), vec![], None);
+        let result = DbQueryResult::found("Résumé of Methods", vec![], None);
         // Insert with accented title
         cache.insert("Résumé of Methods", "CrossRef", &result);
         // Look up with ASCII equivalent (normalization strips accents)
@@ -777,7 +801,7 @@ mod tests {
     #[test]
     fn cache_expired_positive() {
         let cache = QueryCache::new(Duration::from_millis(1), Duration::from_secs(3600));
-        let result: DbQueryResult = (Some("Paper".into()), vec![], None);
+        let result = DbQueryResult::found("Paper", vec![], None);
         cache.insert("Paper", "CrossRef", &result);
         // Sleep briefly to let TTL expire
         std::thread::sleep(Duration::from_millis(10));
@@ -787,7 +811,7 @@ mod tests {
     #[test]
     fn cache_expired_negative() {
         let cache = QueryCache::new(Duration::from_secs(3600), Duration::from_millis(1));
-        let result: DbQueryResult = (None, vec![], None);
+        let result = DbQueryResult::not_found();
         cache.insert("Paper", "CrossRef", &result);
         std::thread::sleep(Duration::from_millis(10));
         assert!(cache.get("Paper", "CrossRef").is_none());
@@ -798,7 +822,7 @@ mod tests {
         let cache = QueryCache::default();
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         assert!(!cache.is_empty());
         assert_eq!(cache.len(), 1);
     }
@@ -806,7 +830,7 @@ mod tests {
     #[test]
     fn cache_clear() {
         let cache = QueryCache::default();
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         assert_eq!(cache.len(), 1);
         cache.clear();
         assert!(cache.is_empty());
@@ -835,8 +859,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        let result: DbQueryResult = (
-            Some("Deep Learning".into()),
+        let result = DbQueryResult::found(
+            "Deep Learning",
             vec!["LeCun".into(), "Bengio".into()],
             Some("https://doi.org/10.1234".into()),
         );
@@ -851,10 +875,10 @@ mod tests {
         // But get() should find it in L2
         let cached = cache2.get("Deep Learning", "CrossRef");
         assert!(cached.is_some());
-        let (title, authors, url) = cached.unwrap();
-        assert_eq!(title.unwrap(), "Deep Learning");
-        assert_eq!(authors, vec!["LeCun", "Bengio"]);
-        assert_eq!(url.unwrap(), "https://doi.org/10.1234");
+        let r = cached.unwrap();
+        assert_eq!(r.found_title.unwrap(), "Deep Learning");
+        assert_eq!(r.authors, vec!["LeCun", "Bengio"]);
+        assert_eq!(r.paper_url.unwrap(), "https://doi.org/10.1234");
         // Should have promoted to L1
         assert_eq!(cache2.len(), 1);
 
@@ -867,7 +891,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        let result: DbQueryResult = (None, vec![], None);
+        let result = DbQueryResult::not_found();
         cache.insert("Fake Paper", "arXiv", &result);
         assert!(cache.get("Fake Paper", "arXiv").is_some());
         assert_eq!(cache.disk_len(), 1);
@@ -876,8 +900,7 @@ mod tests {
         let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         let cached = cache2.get("Fake Paper", "arXiv");
         assert!(cached.is_some());
-        let (title, _, _) = cached.unwrap();
-        assert!(title.is_none());
+        assert!(cached.unwrap().found_title.is_none());
 
         let _ = std::fs::remove_file(&path);
     }
@@ -889,13 +912,17 @@ mod tests {
 
         // Zero negative TTL = don't cache not-found at all
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, Duration::ZERO).unwrap();
-        cache.insert("Fake Paper", "arXiv", &(None, vec![], None));
+        cache.insert("Fake Paper", "arXiv", &DbQueryResult::not_found());
         // Not in L1 or L2
         assert!(cache.get("Fake Paper", "arXiv").is_none());
         assert_eq!(cache.disk_len(), 0);
 
         // Found results still work
-        cache.insert("Real Paper", "arXiv", &(Some("Real Paper".into()), vec![], None));
+        cache.insert(
+            "Real Paper",
+            "arXiv",
+            &DbQueryResult::found("Real Paper", vec![], None),
+        );
         assert!(cache.get("Real Paper", "arXiv").is_some());
         assert_eq!(cache.disk_len(), 1);
 
@@ -908,7 +935,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         assert_eq!(cache.disk_len(), 1);
         cache.clear();
         assert_eq!(cache.disk_len(), 0);
@@ -926,8 +953,8 @@ mod tests {
         {
             let cache =
                 QueryCache::open(&path, Duration::from_secs(1), Duration::from_secs(1)).unwrap();
-            cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
-            cache.insert("Missing", "DB", &(None, vec![], None));
+            cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
+            cache.insert("Missing", "DB", &DbQueryResult::not_found());
         }
 
         std::thread::sleep(Duration::from_secs(2));
@@ -953,7 +980,7 @@ mod tests {
         let negative_ttl = DEFAULT_NEGATIVE_TTL;
         let cache = QueryCache::open(&path, positive_ttl, negative_ttl).unwrap();
 
-        let result: DbQueryResult = (Some("Persistent Paper".into()), vec!["Author".into()], None);
+        let result = DbQueryResult::found("Persistent Paper", vec!["Author".into()], None);
         cache.insert("Persistent Paper", "CrossRef", &result);
 
         // Manually expire L1 by removing the entry, simulating L1 eviction
@@ -968,9 +995,9 @@ mod tests {
         // get() should fall through to L2 and find it
         let cached = cache.get("Persistent Paper", "CrossRef");
         assert!(cached.is_some());
-        let (title, authors, _) = cached.unwrap();
-        assert_eq!(title.unwrap(), "Persistent Paper");
-        assert_eq!(authors, vec!["Author"]);
+        let r = cached.unwrap();
+        assert_eq!(r.found_title.unwrap(), "Persistent Paper");
+        assert_eq!(r.authors, vec!["Author"]);
 
         // Should be promoted back to L1
         assert_eq!(cache.len(), 1);
@@ -1001,8 +1028,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("Paper A", "DB1", &(Some("Paper A".into()), vec![], None));
-        cache.insert("Paper B", "DB2", &(None, vec![], None));
+        cache.insert(
+            "Paper A",
+            "DB1",
+            &DbQueryResult::found("Paper A", vec![], None),
+        );
+        cache.insert("Paper B", "DB2", &DbQueryResult::not_found());
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.disk_len(), 2);
 
@@ -1040,7 +1071,7 @@ mod tests {
                 c.insert(
                     &title,
                     &db,
-                    &(Some(title.clone()), vec!["Author".into()], None),
+                    &DbQueryResult::found(title.clone(), vec!["Author".into()], None),
                 );
                 // Read back
                 let result = c.get(&title, &db);
@@ -1072,7 +1103,7 @@ mod tests {
             cache.insert(
                 "Test Paper",
                 "DB",
-                &(Some("Test Paper".into()), vec!["Author".into()], None),
+                &DbQueryResult::found("Test Paper", vec!["Author".into()], None),
             );
         }
 
@@ -1090,9 +1121,9 @@ mod tests {
         let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         let cached = cache2.get("Test Paper", "DB");
         assert!(cached.is_some());
-        let (title, authors, _) = cached.unwrap();
-        assert_eq!(title.unwrap(), "Test Paper");
-        assert!(authors.is_empty()); // corrupted JSON → empty fallback
+        let r = cached.unwrap();
+        assert_eq!(r.found_title.unwrap(), "Test Paper");
+        assert!(r.authors.is_empty()); // corrupted JSON → empty fallback
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1100,11 +1131,11 @@ mod tests {
     #[test]
     fn zero_ttl_entries_expire_immediately() {
         let cache = QueryCache::new(Duration::ZERO, Duration::ZERO);
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         // With zero positive TTL, the entry is inserted but expires immediately
         // on get (elapsed > Duration::ZERO).
         // Zero negative TTL means not-found entries are never cached at all:
-        cache.insert("Missing", "DB", &(None, vec![], None));
+        cache.insert("Missing", "DB", &DbQueryResult::not_found());
         // Only the found entry is in L1 (not-found was skipped)
         assert_eq!(cache.len(), 1);
     }
@@ -1113,8 +1144,8 @@ mod tests {
     fn multiple_dbs_same_title() {
         // Same title cached across multiple databases should be independent.
         let cache = QueryCache::default();
-        let found: DbQueryResult = (Some("Paper X".into()), vec!["A".into()], None);
-        let not_found: DbQueryResult = (None, vec![], None);
+        let found = DbQueryResult::found("Paper X", vec!["A".into()], None);
+        let not_found = DbQueryResult::not_found();
 
         cache.insert("Paper X", "CrossRef", &found);
         cache.insert("Paper X", "arXiv", &not_found);
@@ -1123,31 +1154,31 @@ mod tests {
         assert_eq!(cache.len(), 3);
 
         let cr = cache.get("Paper X", "CrossRef").unwrap();
-        assert!(cr.0.is_some());
+        assert!(cr.is_found());
 
         let arxiv = cache.get("Paper X", "arXiv").unwrap();
-        assert!(arxiv.0.is_none());
+        assert!(!arxiv.is_found());
 
         let dblp = cache.get("Paper X", "DBLP").unwrap();
-        assert!(dblp.0.is_some());
+        assert!(dblp.is_found());
     }
 
     #[test]
     fn overwrite_existing_entry() {
         // Inserting the same key twice should overwrite the first entry.
         let cache = QueryCache::default();
-        cache.insert("Paper", "DB", &(None, vec![], None));
-        assert!(cache.get("Paper", "DB").unwrap().0.is_none());
+        cache.insert("Paper", "DB", &DbQueryResult::not_found());
+        assert!(!cache.get("Paper", "DB").unwrap().is_found());
 
         // Now overwrite with a found result
         cache.insert(
             "Paper",
             "DB",
-            &(Some("Paper".into()), vec!["Author".into()], None),
+            &DbQueryResult::found("Paper", vec!["Author".into()], None),
         );
         let cached = cache.get("Paper", "DB").unwrap();
-        assert_eq!(cached.0.unwrap(), "Paper");
-        assert_eq!(cached.1, vec!["Author"]);
+        assert_eq!(cached.found_title.unwrap(), "Paper");
+        assert_eq!(cached.authors, vec!["Author"]);
         assert_eq!(cache.len(), 1); // still one entry, not two
     }
 
@@ -1157,14 +1188,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("Paper", "DB", &(None, vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::not_found());
         assert_eq!(cache.disk_len(), 1);
 
         // Overwrite with found result
         cache.insert(
             "Paper",
             "DB",
-            &(Some("Paper".into()), vec!["Author".into()], None),
+            &DbQueryResult::found("Paper", vec!["Author".into()], None),
         );
         assert_eq!(cache.disk_len(), 1);
 
@@ -1172,8 +1203,8 @@ mod tests {
         drop(cache);
         let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         let cached = cache2.get("Paper", "DB").unwrap();
-        assert_eq!(cached.0.unwrap(), "Paper");
-        assert_eq!(cached.1, vec!["Author"]);
+        assert_eq!(cached.found_title.unwrap(), "Paper");
+        assert_eq!(cached.authors, vec!["Author"]);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1204,9 +1235,13 @@ mod tests {
     #[test]
     fn clear_not_found_l1_only() {
         let cache = QueryCache::default();
-        cache.insert("Found Paper", "DB", &(Some("Found Paper".into()), vec![], None));
-        cache.insert("Missing Paper", "DB", &(None, vec![], None));
-        cache.insert("Also Missing", "DB2", &(None, vec![], None));
+        cache.insert(
+            "Found Paper",
+            "DB",
+            &DbQueryResult::found("Found Paper", vec![], None),
+        );
+        cache.insert("Missing Paper", "DB", &DbQueryResult::not_found());
+        cache.insert("Also Missing", "DB2", &DbQueryResult::not_found());
         assert_eq!(cache.len(), 3);
 
         let removed = cache.clear_not_found();
@@ -1225,8 +1260,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("Found Paper", "DB", &(Some("Found Paper".into()), vec!["Author".into()], None));
-        cache.insert("Missing Paper", "DB", &(None, vec![], None));
+        cache.insert(
+            "Found Paper",
+            "DB",
+            &DbQueryResult::found("Found Paper", vec!["Author".into()], None),
+        );
+        cache.insert("Missing Paper", "DB", &DbQueryResult::not_found());
         assert_eq!(cache.len(), 2);
 
         let removed = cache.clear_not_found();
@@ -1247,13 +1286,13 @@ mod tests {
         let cache = QueryCache::default();
         assert_eq!(cache.l1_counts(), (0, 0));
 
-        cache.insert("A", "DB1", &(Some("A".into()), vec![], None));
+        cache.insert("A", "DB1", &DbQueryResult::found("A", vec![], None));
         assert_eq!(cache.l1_counts(), (1, 0));
 
-        cache.insert("B", "DB1", &(None, vec![], None));
+        cache.insert("B", "DB1", &DbQueryResult::not_found());
         assert_eq!(cache.l1_counts(), (1, 1));
 
-        cache.insert("C", "DB2", &(Some("C".into()), vec![], None));
+        cache.insert("C", "DB2", &DbQueryResult::found("C", vec![], None));
         assert_eq!(cache.l1_counts(), (2, 1));
     }
 
@@ -1265,10 +1304,10 @@ mod tests {
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         assert_eq!(cache.l2_counts(), (0, 0));
 
-        cache.insert("A", "DB1", &(Some("A".into()), vec![], None));
+        cache.insert("A", "DB1", &DbQueryResult::found("A", vec![], None));
         assert_eq!(cache.l2_counts(), (1, 0));
 
-        cache.insert("B", "DB1", &(None, vec![], None));
+        cache.insert("B", "DB1", &DbQueryResult::not_found());
         assert_eq!(cache.l2_counts(), (1, 1));
 
         assert_eq!(cache.disk_len(), 2);
@@ -1285,9 +1324,9 @@ mod tests {
         {
             let cache =
                 QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-            cache.insert("Found", "DB", &(Some("Found".into()), vec![], None));
-            cache.insert("Missing1", "DB", &(None, vec![], None));
-            cache.insert("Missing2", "DB2", &(None, vec![], None));
+            cache.insert("Found", "DB", &DbQueryResult::found("Found", vec![], None));
+            cache.insert("Missing1", "DB", &DbQueryResult::not_found());
+            cache.insert("Missing2", "DB2", &DbQueryResult::not_found());
         }
 
         let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
@@ -1305,12 +1344,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("Paper", "DB", &(None, vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::not_found());
         assert_eq!(cache.l1_counts(), (0, 1));
         assert_eq!(cache.l2_counts(), (0, 1));
 
         // Overwrite not-found → found
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         assert_eq!(cache.l1_counts(), (1, 0));
         assert_eq!(cache.l2_counts(), (1, 0));
         assert_eq!(cache.disk_len(), 1);
@@ -1321,27 +1360,35 @@ mod tests {
     #[test]
     fn overwrite_found_to_not_found_adjusts_counters() {
         let cache = QueryCache::default();
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         assert_eq!(cache.l1_counts(), (1, 0));
 
-        cache.insert("Paper", "DB", &(None, vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::not_found());
         assert_eq!(cache.l1_counts(), (0, 1));
     }
 
     #[test]
     fn overwrite_same_type_no_double_count() {
         let cache = QueryCache::default();
-        cache.insert("Paper", "DB", &(None, vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::not_found());
         assert_eq!(cache.l1_counts(), (0, 1));
 
         // Overwrite not-found → not-found: should still be (0, 1)
-        cache.insert("Paper", "DB", &(None, vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::not_found());
         assert_eq!(cache.l1_counts(), (0, 1));
 
         // Same for found → found
-        cache.insert("Paper2", "DB", &(Some("Paper2".into()), vec![], None));
+        cache.insert(
+            "Paper2",
+            "DB",
+            &DbQueryResult::found("Paper2", vec![], None),
+        );
         assert_eq!(cache.l1_counts(), (1, 1));
-        cache.insert("Paper2", "DB", &(Some("Paper2".into()), vec!["X".into()], None));
+        cache.insert(
+            "Paper2",
+            "DB",
+            &DbQueryResult::found("Paper2", vec!["X".into()], None),
+        );
         assert_eq!(cache.l1_counts(), (1, 1));
     }
 
@@ -1351,8 +1398,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("A", "DB", &(Some("A".into()), vec![], None));
-        cache.insert("B", "DB", &(None, vec![], None));
+        cache.insert("A", "DB", &DbQueryResult::found("A", vec![], None));
+        cache.insert("B", "DB", &DbQueryResult::not_found());
         assert_eq!(cache.l1_counts(), (1, 1));
         assert_eq!(cache.l2_counts(), (1, 1));
 
@@ -1370,9 +1417,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("Found", "DB", &(Some("Found".into()), vec![], None));
-        cache.insert("NF1", "DB", &(None, vec![], None));
-        cache.insert("NF2", "DB2", &(None, vec![], None));
+        cache.insert("Found", "DB", &DbQueryResult::found("Found", vec![], None));
+        cache.insert("NF1", "DB", &DbQueryResult::not_found());
+        cache.insert("NF2", "DB2", &DbQueryResult::not_found());
         assert_eq!(cache.l1_counts(), (1, 2));
         assert_eq!(cache.l2_counts(), (1, 2));
 
@@ -1387,7 +1434,7 @@ mod tests {
     #[test]
     fn l1_counter_adjusts_on_ttl_expiry() {
         let cache = QueryCache::new(Duration::from_millis(1), Duration::from_millis(1));
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         assert_eq!(cache.l1_counts(), (1, 0));
 
         std::thread::sleep(Duration::from_millis(10));
@@ -1403,7 +1450,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
         assert_eq!(cache.l1_counts(), (1, 0));
 
         // Remove from L1, simulating eviction
@@ -1441,9 +1488,13 @@ mod tests {
                 let title = format!("Paper {}", i);
                 let db = format!("DB{}", i % 4);
                 if i % 3 == 0 {
-                    c.insert(&title, &db, &(None, vec![], None));
+                    c.insert(&title, &db, &DbQueryResult::not_found());
                 } else {
-                    c.insert(&title, &db, &(Some(title.clone()), vec![], None));
+                    c.insert(
+                        &title,
+                        &db,
+                        &DbQueryResult::found(title.clone(), vec![], None),
+                    );
                 }
             }));
         }

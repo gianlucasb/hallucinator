@@ -122,8 +122,8 @@ impl DatabaseBackend for MockDb {
                     title,
                     authors,
                     url,
-                } => Ok((Some(title), authors, url)),
-                MockResponse::NotFound => Ok((None, vec![], None)),
+                } => Ok(DbQueryResult::found(title, authors, url)),
+                MockResponse::NotFound => Ok(DbQueryResult::not_found()),
                 MockResponse::RateLimited { retry_after } => {
                     Err(DbQueryError::RateLimited { retry_after })
                 }

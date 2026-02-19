@@ -1,6 +1,7 @@
 use super::{DatabaseBackend, DbQueryError, DbQueryResult};
 use crate::matching::titles_match;
 use crate::rate_limit::check_rate_limit_response;
+use crate::retraction::extract_retraction_from_item;
 use crate::text_utils::get_query_words;
 use std::future::Future;
 use std::pin::Pin;
@@ -82,11 +83,19 @@ impl DatabaseBackend for CrossRef {
                     let doi = item["DOI"].as_str();
                     let paper_url = doi.map(|d| format!("https://doi.org/{}", d));
 
-                    return Ok((Some(found_title.to_string()), authors, paper_url));
+                    // Extract retraction info inline from the same CrossRef response
+                    let retraction = extract_retraction_from_item(&item);
+
+                    return Ok(DbQueryResult {
+                        found_title: Some(found_title.to_string()),
+                        authors,
+                        paper_url,
+                        retraction: Some(retraction),
+                    });
                 }
             }
 
-            Ok((None, vec![], None))
+            Ok(DbQueryResult::not_found())
         })
     }
 }

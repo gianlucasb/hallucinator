@@ -1,9 +1,10 @@
 use crate::db::DatabaseBackend;
+use crate::db::DbQueryResult;
 use crate::db::searxng::Searxng;
 use crate::doi::{DoiMatchResult, DoiValidation, check_doi_match, validate_doi};
 use crate::orchestrator::query_all_databases;
 use crate::pool::{RefJob, ValidationPool};
-use crate::retraction::{check_retraction, check_retraction_by_title};
+use crate::retraction::check_retraction;
 use crate::{
     ArxivInfo, Config, DbResult, DbStatus, DoiInfo, ProgressEvent, Reference, RetractionInfo,
     Status, ValidationResult,
@@ -89,33 +90,30 @@ pub async fn check_single_reference(
             .and_then(|cache| cache.get(title, "DOI"));
 
         let (doi_result, match_result) = if let Some(ref cached_result) = cached {
-            match cached_result {
-                (Some(cached_title), cached_authors, _url) => {
-                    // Cache hit with Found — reconstruct DOI validation and match
-                    let doi_val = DoiValidation {
-                        valid: true,
-                        title: Some(cached_title.clone()),
-                        authors: cached_authors.clone(),
-                        error: None,
-                    };
-                    let match_res = check_doi_match(&doi_val, title, &reference.authors);
-                    (doi_val, match_res)
-                }
-                (None, _, _) => {
-                    // Cache hit with NotFound — skip DOI validation entirely,
-                    // fall through to DB search by jumping past DOI block
-                    (
-                        DoiValidation {
-                            valid: false,
-                            title: None,
-                            authors: vec![],
-                            error: Some("Cached as not found".into()),
-                        },
-                        DoiMatchResult::Invalid {
-                            error: "Cached as not found".into(),
-                        },
-                    )
-                }
+            if cached_result.is_found() {
+                // Cache hit with Found — reconstruct DOI validation and match
+                let doi_val = DoiValidation {
+                    valid: true,
+                    title: cached_result.found_title.clone(),
+                    authors: cached_result.authors.clone(),
+                    error: None,
+                };
+                let match_res = check_doi_match(&doi_val, title, &reference.authors);
+                (doi_val, match_res)
+            } else {
+                // Cache hit with NotFound — skip DOI validation entirely,
+                // fall through to DB search by jumping past DOI block
+                (
+                    DoiValidation {
+                        valid: false,
+                        title: None,
+                        authors: vec![],
+                        error: Some("Cached as not found".into()),
+                    },
+                    DoiMatchResult::Invalid {
+                        error: "Cached as not found".into(),
+                    },
+                )
             }
         } else {
             // Cache miss — call doi.org
@@ -124,7 +122,7 @@ pub async fn check_single_reference(
 
             // Cache the result
             if let Some(ref cache) = config.query_cache {
-                let cache_entry: (Option<String>, Vec<String>, Option<String>) = match &match_res {
+                let cache_entry = match &match_res {
                     DoiMatchResult::Verified {
                         doi_title,
                         doi_authors,
@@ -132,12 +130,12 @@ pub async fn check_single_reference(
                     | DoiMatchResult::AuthorMismatch {
                         doi_title,
                         doi_authors,
-                    } => (
-                        Some(doi_title.clone()),
+                    } => DbQueryResult::found(
+                        doi_title.clone(),
                         doi_authors.clone(),
                         Some(format!("https://doi.org/{}", doi)),
                     ),
-                    _ => (None, vec![], None),
+                    _ => DbQueryResult::not_found(),
                 };
                 cache.insert(title, "DOI", &cache_entry);
             }
@@ -246,7 +244,10 @@ pub async fn check_single_reference(
         let searxng_result = searxng.query(title, client, searxng_timeout).await;
         let elapsed = start.elapsed();
 
-        if let Ok((Some(_found_title), _, paper_url)) = searxng_result {
+        if let Ok(ref qr) = searxng_result
+            && qr.is_found()
+        {
+            let paper_url = qr.paper_url.clone();
             // Web search found the paper - update result
             let web_db_result = DbResult {
                 db_name: "Web Search".into(),
@@ -277,20 +278,21 @@ pub async fn check_single_reference(
         }
     }
 
-    // Step 3: Check retraction by title if verified
+    // Step 3: Check retraction using inline data from DB results.
+    // CrossRef populates retraction info in its DbQueryResult, which flows
+    // through the cache. No separate API call needed.
     let retraction_info = if db_result.status == Status::Verified {
-        let retraction =
-            check_retraction_by_title(title, client, timeout, config.crossref_mailto.as_deref())
-                .await;
-        if retraction.retracted {
-            Some(RetractionInfo {
-                is_retracted: true,
-                retraction_doi: retraction.retraction_doi,
-                retraction_source: retraction.retraction_type,
-            })
-        } else {
-            None
-        }
+        db_result.retraction.take().and_then(|r| {
+            if r.retracted {
+                Some(RetractionInfo {
+                    is_retracted: true,
+                    retraction_doi: r.retraction_doi,
+                    retraction_source: r.retraction_type,
+                })
+            } else {
+                None
+            }
+        })
     } else {
         None
     };

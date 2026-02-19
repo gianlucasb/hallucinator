@@ -28,7 +28,7 @@ impl super::DatabaseBackend for DoiResolver {
         _client: &'a reqwest::Client,
         _timeout: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, DbQueryError>> + Send + 'a>> {
-        Box::pin(async { Ok((None, vec![], None)) })
+        Box::pin(async { Ok(DbQueryResult::not_found()) })
     }
 
     fn query_doi<'a>(
@@ -46,8 +46,8 @@ impl super::DatabaseBackend for DoiResolver {
             match match_result {
                 DoiMatchResult::Verified { doi_authors, .. } => {
                     let url = format!("https://doi.org/{}", doi);
-                    Some(Ok((
-                        doi_result.title.or_else(|| Some(title.to_string())),
+                    Some(Ok(DbQueryResult::found(
+                        doi_result.title.unwrap_or_else(|| title.to_string()),
                         doi_authors,
                         Some(url),
                     )))
@@ -56,15 +56,15 @@ impl super::DatabaseBackend for DoiResolver {
                     // Return found title + authors — report_result will handle
                     // the author mismatch classification.
                     let url = format!("https://doi.org/{}", doi);
-                    Some(Ok((
-                        doi_result.title.or_else(|| Some(title.to_string())),
+                    Some(Ok(DbQueryResult::found(
+                        doi_result.title.unwrap_or_else(|| title.to_string()),
                         doi_authors,
                         Some(url),
                     )))
                 }
                 DoiMatchResult::TitleMismatch { .. } | DoiMatchResult::Invalid { .. } => {
                     // DOI didn't match or was invalid — return not-found
-                    Some(Ok((None, vec![], None)))
+                    Some(Ok(DbQueryResult::not_found()))
                 }
             }
         })

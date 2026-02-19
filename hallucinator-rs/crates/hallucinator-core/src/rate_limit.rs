@@ -326,7 +326,11 @@ pub async fn query_with_rate_limit(
             // The governor adaptation prevents cascading 429s for future requests.
             let wait = retry_after.unwrap_or(Duration::from_secs(2));
             let wait = wait.min(timeout);
-            tracing::info!(db = db.name(), wait_secs = wait.as_secs_f64(), "429 rate limited, retrying");
+            tracing::info!(
+                db = db.name(),
+                wait_secs = wait.as_secs_f64(),
+                "429 rate limited, retrying"
+            );
             tokio::time::sleep(wait).await;
 
             // Re-acquire governor token after sleeping
@@ -350,12 +354,15 @@ pub async fn query_with_rate_limit(
     }
 
     let elapsed = start.elapsed();
-    tracing::debug!(db = db.name(), title, elapsed_ms = elapsed.as_millis() as u64, ok = result.is_ok(), "query complete");
+    tracing::debug!(
+        db = db.name(),
+        title,
+        elapsed_ms = elapsed.as_millis() as u64,
+        ok = result.is_ok(),
+        "query complete"
+    );
 
-    RateLimitedResult {
-        result,
-        elapsed,
-    }
+    RateLimitedResult { result, elapsed }
 }
 
 /// Legacy wrapper: calls [`query_with_rate_limit`] (ignores `max_retries`).
@@ -565,8 +572,8 @@ mod tests {
         .await;
 
         assert!(rl_result.result.is_ok());
-        let (title, _, _) = rl_result.result.unwrap();
-        assert_eq!(title.unwrap(), "A Paper");
+        let qr = rl_result.result.unwrap();
+        assert_eq!(qr.found_title.unwrap(), "A Paper");
         assert_eq!(db.call_count(), 1);
     }
 
@@ -684,8 +691,8 @@ mod tests {
         )
         .await;
         assert!(rl_result.result.is_ok());
-        let (title, _, _) = rl_result.result.unwrap();
-        assert!(title.is_none());
+        let qr = rl_result.result.unwrap();
+        assert!(qr.found_title.is_none());
         assert_eq!(cache.len(), 1); // not-found cached
 
         // Second call should hit cache, not query DB

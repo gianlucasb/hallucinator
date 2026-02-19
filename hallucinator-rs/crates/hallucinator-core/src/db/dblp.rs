@@ -41,8 +41,12 @@ impl DatabaseBackend for DblpOffline {
             .map_err(|e| DbQueryError::Other(e.to_string()))??;
 
             match result {
-                Some(qr) => Ok((Some(qr.record.title), qr.record.authors, qr.record.url)),
-                None => Ok((None, vec![], None)),
+                Some(qr) => Ok(DbQueryResult::found(
+                    qr.record.title,
+                    qr.record.authors,
+                    qr.record.url,
+                )),
+                None => Ok(DbQueryResult::not_found()),
             }
         })
     }
@@ -117,11 +121,11 @@ impl DatabaseBackend for DblpOnline {
 
                     let paper_url = info["url"].as_str().map(String::from);
 
-                    return Ok((Some(found_title.to_string()), authors, paper_url));
+                    return Ok(DbQueryResult::found(found_title, authors, paper_url));
                 }
             }
 
-            Ok((None, vec![], None))
+            Ok(DbQueryResult::not_found())
         })
     }
 }

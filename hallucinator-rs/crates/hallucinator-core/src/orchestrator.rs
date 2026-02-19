@@ -15,6 +15,7 @@ pub struct DbSearchResult {
     pub paper_url: Option<String>,
     pub failed_dbs: Vec<String>,
     pub db_results: Vec<DbResult>,
+    pub retraction: Option<crate::retraction::RetractionResult>,
 }
 
 /// Query all databases for a single reference (local first, then remote).
@@ -158,6 +159,7 @@ pub async fn query_local_databases(
         paper_url: None,
         failed_dbs,
         db_results,
+        retraction: None,
     }
 }
 
@@ -225,6 +227,7 @@ pub async fn query_remote_databases(
             paper_url: None,
             failed_dbs,
             db_results,
+            retraction: None,
         };
     }
 
@@ -239,7 +242,7 @@ pub async fn query_remote_databases(
 
         if let Some(cached_result) = cached {
             completed_db_names.insert(name.clone());
-            match process_query_result(
+            if let Some(verified) = process_query_result(
                 name,
                 Ok(cached_result),
                 Duration::ZERO,
@@ -250,19 +253,16 @@ pub async fn query_remote_databases(
                 &mut failed_dbs,
                 &mut first_mismatch,
             ) {
-                Some(verified) => {
-                    emit_skipped(
-                        &all_db_names,
-                        &completed_db_names,
-                        on_db_complete,
-                        &mut db_results,
-                    );
-                    return DbSearchResult {
-                        db_results,
-                        ..verified
-                    };
-                }
-                None => {}
+                emit_skipped(
+                    &all_db_names,
+                    &completed_db_names,
+                    on_db_complete,
+                    &mut db_results,
+                );
+                return DbSearchResult {
+                    db_results,
+                    ..verified
+                };
             }
         } else {
             cache_miss_dbs.push(db);
@@ -344,6 +344,7 @@ pub async fn query_remote_databases(
         paper_url: None,
         failed_dbs,
         db_results,
+        retraction: None,
     }
 }
 
@@ -365,6 +366,7 @@ fn empty_result() -> DbSearchResult {
         paper_url: None,
         failed_dbs: vec![],
         db_results: vec![],
+        retraction: None,
     }
 }
 
@@ -383,7 +385,11 @@ fn process_query_result(
     first_mismatch: &mut Option<DbSearchResult>,
 ) -> Option<DbSearchResult> {
     match result {
-        Ok((Some(_found_title), found_authors, paper_url)) => {
+        Ok(ref qr) if qr.is_found() => {
+            let found_authors = qr.authors.clone();
+            let paper_url = qr.paper_url.clone();
+            let retraction = qr.retraction.clone();
+
             if ref_authors.is_empty() || validate_authors(ref_authors, &found_authors) {
                 let db_result = DbResult {
                     db_name: name.clone(),
@@ -405,6 +411,7 @@ fn process_query_result(
                     paper_url,
                     failed_dbs: vec![],
                     db_results: vec![], // caller fills this in
+                    retraction,
                 });
             } else {
                 let db_result = DbResult {
@@ -428,11 +435,12 @@ fn process_query_result(
                         paper_url,
                         failed_dbs: vec![],
                         db_results: vec![],
+                        retraction,
                     });
                 }
             }
         }
-        Ok((None, _, _)) => {
+        Ok(_) => {
             let db_result = DbResult {
                 db_name: name,
                 status: DbStatus::NoMatch,
@@ -724,6 +732,7 @@ mod tests {
             paper_url: None,
             failed_dbs,
             db_results,
+            retraction: None,
         }
     }
 

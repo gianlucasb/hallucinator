@@ -64,11 +64,11 @@ impl DatabaseBackend for NeurIPS {
                         _ => vec![],
                     };
 
-                    return Ok((Some(found_title), authors, Some(paper_url)));
+                    return Ok(DbQueryResult::found(found_title, authors, Some(paper_url)));
                 }
             }
 
-            Ok((None, vec![], None))
+            Ok(DbQueryResult::not_found())
         })
     }
 }

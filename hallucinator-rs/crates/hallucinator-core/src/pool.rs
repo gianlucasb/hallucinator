@@ -173,6 +173,8 @@ struct AggState {
     first_mismatch: Option<MismatchInfo>,
     failed_dbs: Vec<String>,
     db_results: Vec<DbResult>,
+    /// Retraction info extracted inline from CrossRef response (if any).
+    retraction: Option<crate::retraction::RetractionResult>,
 }
 
 struct VerifiedInfo {
@@ -294,9 +296,11 @@ async fn report_result(
     let check_openalex_authors = collector.config.check_openalex_authors;
 
     match rl_result.result {
-        Ok((Some(_found_title), found_authors, paper_url)) => {
+        Ok(ref qr) if qr.is_found() => {
+            let found_authors = &qr.authors;
+            let paper_url = &qr.paper_url;
             let ref_authors = &collector.reference.authors;
-            if ref_authors.is_empty() || validate_authors(ref_authors, &found_authors) {
+            if ref_authors.is_empty() || validate_authors(ref_authors, found_authors) {
                 // Verified — set flag so other drainers can skip
                 collector.verified.store(true, Ordering::Release);
 
@@ -320,9 +324,16 @@ async fn report_result(
                 if state.verified_info.is_none() {
                     state.verified_info = Some(VerifiedInfo {
                         source: db_name.to_string(),
-                        found_authors,
-                        paper_url,
+                        found_authors: found_authors.clone(),
+                        paper_url: paper_url.clone(),
                     });
+                }
+                // Capture inline retraction info (populated by CrossRef)
+                if let Some(ref retraction) = qr.retraction
+                    && retraction.retracted
+                    && state.retraction.is_none()
+                {
+                    state.retraction = Some(retraction.clone());
                 }
             } else {
                 // Author mismatch
@@ -348,13 +359,13 @@ async fn report_result(
                 {
                     state.first_mismatch = Some(MismatchInfo {
                         source: db_name.to_string(),
-                        found_authors,
-                        paper_url,
+                        found_authors: found_authors.clone(),
+                        paper_url: paper_url.clone(),
                     });
                 }
             }
         }
-        Ok((None, _, _)) => {
+        Ok(_) => {
             (collector.progress)(ProgressEvent::DatabaseQueryComplete {
                 paper_index: 0,
                 ref_index: collector.ref_index,
@@ -405,7 +416,15 @@ async fn report_result(
 ///
 /// Called exactly once, by whichever drainer decrements `remaining` to 0.
 async fn finalize_collector(collector: &RefCollector) {
-    let (status, source, found_authors, paper_url, remote_failed_dbs, remote_db_results) = {
+    let (
+        status,
+        source,
+        found_authors,
+        paper_url,
+        remote_failed_dbs,
+        remote_db_results,
+        inline_retraction,
+    ) = {
         let state = collector.state.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(ref v) = state.verified_info {
@@ -416,6 +435,7 @@ async fn finalize_collector(collector: &RefCollector) {
                 v.paper_url.clone(),
                 state.failed_dbs.clone(),
                 state.db_results.clone(),
+                state.retraction.clone(),
             )
         } else if let Some(ref m) = state.first_mismatch {
             (
@@ -425,6 +445,7 @@ async fn finalize_collector(collector: &RefCollector) {
                 m.paper_url.clone(),
                 state.failed_dbs.clone(),
                 state.db_results.clone(),
+                None,
             )
         } else {
             (
@@ -434,6 +455,7 @@ async fn finalize_collector(collector: &RefCollector) {
                 None,
                 state.failed_dbs.clone(),
                 state.db_results.clone(),
+                None,
             )
         }
     };
@@ -451,7 +473,10 @@ async fn finalize_collector(collector: &RefCollector) {
                     .await;
                 let elapsed = start.elapsed();
 
-                if let Ok((Some(_found_title), _, url)) = searxng_result {
+                if let Ok(ref qr) = searxng_result
+                    && qr.is_found()
+                {
+                    let url = qr.paper_url.clone();
                     (collector.progress)(ProgressEvent::DatabaseQueryComplete {
                         paper_index: 0,
                         ref_index: collector.ref_index,
@@ -512,26 +537,19 @@ async fn finalize_collector(collector: &RefCollector) {
         }
     });
 
-    // Retraction check if verified
+    // Retraction info: use inline data from CrossRef response (no extra API call)
     let retraction_info = if status == Status::Verified {
-        // Prefer DOI-based retraction check when available
-        if let Some(ref doi) = collector.reference.doi {
-            check_retraction_for_doi(
-                doi,
-                &collector.client,
-                Duration::from_secs(collector.config.db_timeout_secs),
-                collector.config.crossref_mailto.as_deref(),
-            )
-            .await
-        } else {
-            check_retraction_for_title(
-                &collector.title,
-                &collector.client,
-                Duration::from_secs(collector.config.db_timeout_secs),
-                collector.config.crossref_mailto.as_deref(),
-            )
-            .await
-        }
+        inline_retraction.and_then(|r| {
+            if r.retracted {
+                Some(crate::RetractionInfo {
+                    is_retracted: true,
+                    retraction_doi: r.retraction_doi,
+                    retraction_source: r.retraction_type,
+                })
+            } else {
+                None
+            }
+        })
     } else {
         None
     };
@@ -585,6 +603,8 @@ struct CachePreCheck {
     first_mismatch: Option<MismatchInfo>,
     /// Indices into drainer_txs for DBs that had cache misses.
     miss_indices: Vec<usize>,
+    /// Retraction info from cached CrossRef response (if any).
+    retraction: Option<crate::retraction::RetractionResult>,
 }
 
 /// Check cache for all remote DBs before dispatching to drainers.
@@ -613,6 +633,7 @@ fn pre_check_remote_cache(
                 miss_indices: (0..drainer_txs.len())
                     .filter(|&i| has_doi || !drainer_txs[i].1)
                     .collect(),
+                retraction: None,
             };
         }
     };
@@ -621,6 +642,7 @@ fn pre_check_remote_cache(
     let mut verified_info: Option<VerifiedInfo> = None;
     let mut first_mismatch: Option<MismatchInfo> = None;
     let mut miss_indices = Vec::new();
+    let mut retraction: Option<crate::retraction::RetractionResult> = None;
 
     for (i, (db_name, requires_doi, _)) in drainer_txs.iter().enumerate() {
         // Skip DOI-requiring backends for refs without a DOI
@@ -628,21 +650,29 @@ fn pre_check_remote_cache(
             continue;
         }
         match cache.get(title, db_name) {
-            Some((Some(_), found_authors, paper_url)) => {
-                if ref_authors.is_empty() || validate_authors(ref_authors, &found_authors) {
+            Some(qr) if qr.is_found() => {
+                // Capture retraction info from cached CrossRef result
+                if let Some(ref r) = qr.retraction
+                    && r.retracted
+                    && retraction.is_none()
+                {
+                    retraction = Some(r.clone());
+                }
+
+                if ref_authors.is_empty() || validate_authors(ref_authors, &qr.authors) {
                     db_results.push(DbResult {
                         db_name: db_name.clone(),
                         status: DbStatus::Match,
                         elapsed: Some(Duration::ZERO),
-                        found_authors: found_authors.clone(),
-                        paper_url: paper_url.clone(),
+                        found_authors: qr.authors.clone(),
+                        paper_url: qr.paper_url.clone(),
                         error_message: None,
                     });
                     if verified_info.is_none() {
                         verified_info = Some(VerifiedInfo {
                             source: db_name.clone(),
-                            found_authors,
-                            paper_url,
+                            found_authors: qr.authors,
+                            paper_url: qr.paper_url,
                         });
                     }
                 } else {
@@ -650,22 +680,21 @@ fn pre_check_remote_cache(
                         db_name: db_name.clone(),
                         status: DbStatus::AuthorMismatch,
                         elapsed: Some(Duration::ZERO),
-                        found_authors: found_authors.clone(),
-                        paper_url: paper_url.clone(),
+                        found_authors: qr.authors.clone(),
+                        paper_url: qr.paper_url.clone(),
                         error_message: None,
                     });
-                    if first_mismatch.is_none()
-                        && (db_name != "OpenAlex" || check_openalex_authors)
+                    if first_mismatch.is_none() && (db_name != "OpenAlex" || check_openalex_authors)
                     {
                         first_mismatch = Some(MismatchInfo {
                             source: db_name.clone(),
-                            found_authors,
-                            paper_url,
+                            found_authors: qr.authors,
+                            paper_url: qr.paper_url,
                         });
                     }
                 }
             }
-            Some((None, _, _)) => {
+            Some(_) => {
                 db_results.push(DbResult {
                     db_name: db_name.clone(),
                     status: DbStatus::NoMatch,
@@ -684,19 +713,14 @@ fn pre_check_remote_cache(
     let hits = db_results.len();
     let misses = miss_indices.len();
     let verified = verified_info.is_some();
-    tracing::debug!(
-        title,
-        hits,
-        misses,
-        verified,
-        "cache pre-check complete"
-    );
+    tracing::debug!(title, hits, misses, verified, "cache pre-check complete");
 
     CachePreCheck {
         db_results,
         verified_info,
         first_mismatch,
         miss_indices,
+        retraction,
     }
 }
 
@@ -767,7 +791,10 @@ async fn coordinator_loop(
                     let searxng_result = searxng.query(&title, &client, timeout).await;
                     let elapsed = start.elapsed();
 
-                    if let Ok((Some(_), _, url)) = searxng_result {
+                    if let Ok(ref qr) = searxng_result
+                        && qr.is_found()
+                    {
+                        let url = qr.paper_url.clone();
                         progress(ProgressEvent::DatabaseQueryComplete {
                             paper_index: 0,
                             ref_index,
@@ -880,23 +907,18 @@ async fn coordinator_loop(
                 });
             }
 
-            let retraction_info = if let Some(ref doi) = reference.doi {
-                check_retraction_for_doi(
-                    doi,
-                    &client,
-                    Duration::from_secs(config.db_timeout_secs),
-                    config.crossref_mailto.as_deref(),
-                )
-                .await
-            } else {
-                check_retraction_for_title(
-                    &title,
-                    &client,
-                    Duration::from_secs(config.db_timeout_secs),
-                    config.crossref_mailto.as_deref(),
-                )
-                .await
-            };
+            // Use inline retraction from cached CrossRef response (no extra API call)
+            let retraction_info = pre.retraction.and_then(|r| {
+                if r.retracted {
+                    Some(crate::RetractionInfo {
+                        is_retracted: true,
+                        retraction_doi: r.retraction_doi,
+                        retraction_source: r.retraction_type,
+                    })
+                } else {
+                    None
+                }
+            });
 
             let doi_info = reference.doi.as_ref().map(|doi| {
                 let valid = all_db_results.iter().any(|r| {
@@ -1018,6 +1040,7 @@ async fn coordinator_loop(
                 first_mismatch,
                 failed_dbs: vec![],
                 db_results: pre.db_results,
+                retraction: pre.retraction,
             }),
             result_tx: Mutex::new(Some(result_tx)),
             local_result,
@@ -1122,44 +1145,5 @@ fn build_validation_result(
             title: None,
         }),
         retraction_info,
-    }
-}
-
-/// Check retraction by DOI, returning info if retracted.
-async fn check_retraction_for_doi(
-    doi: &str,
-    client: &reqwest::Client,
-    timeout: std::time::Duration,
-    mailto: Option<&str>,
-) -> Option<crate::RetractionInfo> {
-    let retraction = crate::retraction::check_retraction(doi, client, timeout, mailto).await;
-    if retraction.retracted {
-        Some(crate::RetractionInfo {
-            is_retracted: true,
-            retraction_doi: retraction.retraction_doi,
-            retraction_source: retraction.retraction_type,
-        })
-    } else {
-        None
-    }
-}
-
-/// Check retraction by title, returning info if retracted.
-async fn check_retraction_for_title(
-    title: &str,
-    client: &reqwest::Client,
-    timeout: std::time::Duration,
-    mailto: Option<&str>,
-) -> Option<crate::RetractionInfo> {
-    let retraction =
-        crate::retraction::check_retraction_by_title(title, client, timeout, mailto).await;
-    if retraction.retracted {
-        Some(crate::RetractionInfo {
-            is_retracted: true,
-            retraction_doi: retraction.retraction_doi,
-            retraction_source: retraction.retraction_type,
-        })
-    } else {
-        None
     }
 }
