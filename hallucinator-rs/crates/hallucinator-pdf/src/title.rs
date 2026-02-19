@@ -85,7 +85,13 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
-    // === Format 3b: ACM - "Authors. Year. Title. In Venue" ===
+    // === Format 3b: arXiv preprint - "Authors. Title. Year. arXiv: ID" ===
+    // Title comes BEFORE the year in this format (must run before try_acm_year)
+    if let Some(result) = try_arxiv_preprint(ref_text) {
+        return result;
+    }
+
+    // === Format 3c: ACM - "Authors. Year. Title. In Venue" ===
     if let Some(result) = try_acm_year(ref_text) {
         return result;
     }
@@ -144,6 +150,14 @@ pub(crate) fn clean_title_with_config(
     }
 
     let mut title = fix_hyphenation(title);
+
+    // Strip leading year from ACM-style titles ("2017. Title" -> "Title")
+    // Must run BEFORE truncate_at_sentence_end to avoid truncating at year period
+    static LEADING_YEAR: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^(?:19|20)\d{2}[a-z]?\.\s+").unwrap());
+    if LEADING_YEAR.is_match(&title) {
+        title = LEADING_YEAR.replace(&title, "").to_string();
+    }
 
     // For non-quoted titles, truncate at first sentence-ending period
     if !from_quotes {
@@ -292,6 +306,52 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
+    // FIX 4b: Reject code snippets (assembly, inline code)
+    static CODE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            // Assembly: "rep; movsb;" or "mov eax, ebx;"
+            Regex::new(r"(?i)^(?:rep|mov|push|pop|call|ret|jmp|asm)\s*;").unwrap(),
+            Regex::new(r"(?i)\basm\s+volatile\s*\(").unwrap(),
+            // GCC inline asm output/input constraints: "=S", "=D", etc.
+            Regex::new(r#""=[A-Z]"\s*\("#).unwrap(),
+            // Multiple semicolons with short tokens (code-like)
+            Regex::new(r";\s*[a-z]{2,6}\s*;").unwrap(),
+            // Assembly instructions: "mov eax, ebx" or "push ecx" patterns
+            Regex::new(r"(?i)\b(?:mov|push|pop|call|ret|jmp|lea|add|sub|xor|and|or)\s+[a-z]{2,3}[,;]").unwrap(),
+        ]
+    });
+    if CODE_PATTERNS.iter().any(|re| re.is_match(&title)) {
+        return String::new();
+    }
+
+    // FIX 4c: Reject "arXiv preprint" as a title (extraction failed)
+    static ARXIV_ONLY: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^arXiv\s+preprint\b").unwrap());
+    if ARXIV_ONLY.is_match(&title) {
+        return String::new();
+    }
+
+    // FIX 4d: Reject arXiv IDs as titles (e.g., "arXiv: 2304.06341 [cs.CR]")
+    static ARXIV_ID_ONLY: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^arXiv[:\s]+\d+\.\d+").unwrap());
+    if ARXIV_ID_ONLY.is_match(&title) {
+        return String::new();
+    }
+
+    // FIX 4e: Reject DOI URLs as titles
+    static DOI_URL_ONLY: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^https?://(?:dx\.)?doi\.org/").unwrap());
+    if DOI_URL_ONLY.is_match(&title) {
+        return String::new();
+    }
+
+    // FIX 4f: Reject ACM "[n. d.]" / "[n.d.]" marker extracted as title
+    static NO_DATE_MARKER: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\[n\.?\s*d\.?\]").unwrap());
+    if NO_DATE_MARKER.is_match(&title) {
+        return String::new();
+    }
+
     // FIX 5 (NeurIPS): Reject titles exceeding maximum reasonable length
     const MAX_TITLE_LENGTH: usize = 300;
     if title.len() > MAX_TITLE_LENGTH {
@@ -413,8 +473,10 @@ fn find_subtitle_end(text: &str) -> usize {
 fn try_lncs(ref_text: &str) -> Option<(String, bool)> {
     // Enhanced Springer/LNCS format: "Author, I., Author, I.: Title. In: Venue"
     // Also handles multi-initial patterns like "B.S.:", "C.P.:", "L.:"
-    static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?:,\s*)?[A-Z](?:\.[A-Z])*\.\s*:\s*(.+)").unwrap());
+    // Also handles "et al.:" pattern (case-insensitive)
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?:(?:,\s*)?[A-Z](?:\.[A-Z])*\.\s*:\s*|(?i)\bet\s+al\.\s*:\s*)(.+)").unwrap()
+    });
 
     let caps = RE.captures(ref_text)?;
     let after_colon = caps.get(1).unwrap().as_str().trim();
@@ -484,11 +546,11 @@ fn is_journal_metadata(text: &str) -> bool {
 
     static PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
-            // "In:" or "In " venue markers
-            Regex::new(r"(?i)^In[:\s]").unwrap(),
-            // "In: Proceedings..." or "In: 2019 IEEE..."
-            Regex::new(r"(?i)^In[:\s]+(?:Proceedings|Proc\.)").unwrap(),
-            Regex::new(r"(?i)^In[:\s]+\d{4}\s+(?:IEEE|ACM|USENIX)").unwrap(),
+            // "In: " followed by venue markers (not just any "In ")
+            Regex::new(r"(?i)^In:\s").unwrap(),
+            // "In Proceedings..." or "In 2019 IEEE..." (venue patterns, not titles like "In numeris veritas")
+            Regex::new(r"(?i)^In\s+(?:Proceedings|Proc\.)").unwrap(),
+            Regex::new(r"(?i)^In\s+\d{4}\s+(?:IEEE|ACM|USENIX)").unwrap(),
             // Journal Vol(Issue), Pages (Year): "Educational Researcher 13(6), 4–16 (1984)"
             Regex::new(
                 r"^[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]\s*\d+[\u{2013}\-]\d+\s*\(\d{4}\)",
@@ -658,7 +720,10 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
 fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     // ". YYYY[a-z]. Title" — require \s+ after year to avoid matching DOIs
     // Optional letter suffix for disambiguated years (e.g. "2022b")
-    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*((?:19|20)\d{2}[a-z]?)\.\s+").unwrap());
+    // Also handles ACM "[n. d.]" or "[n.d.]" (no date) marker
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\.\s*(?:(?:19|20)\d{2}[a-z]?|\[n\.?\s*d\.?\])\.\s+").unwrap()
+    });
 
     let caps = RE.captures(ref_text)?;
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
@@ -716,6 +781,46 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
         None
     } else {
         Some((title.to_string(), false))
+    }
+}
+
+/// Handle arXiv preprint format: "Authors. Title. Year. arXiv: ID"
+/// In this format, the title comes BEFORE the year, followed by arXiv.
+fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
+    // Match pattern: ". YEAR. arXiv:" or ". YEAR. arXiv "
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\.\s*(?:19|20)\d{2}\.\s*arXiv[:\s]").unwrap());
+
+    let m = RE.find(ref_text)?;
+    let before_year = &ref_text[..m.start()];
+
+    // Find the title: look for the last ". X" pattern (sentence boundary) before the year
+    // where X is an uppercase letter or digit that starts the title
+    // This handles: "Author Name. Title Here. YEAR."
+    static TITLE_START: Lazy<Regex> = Lazy::new(|| {
+        // Match ". " followed by uppercase letter (title start)
+        // We'll find ALL such matches and pick the LAST one closest to the year
+        Regex::new(r#"\.\s+([A-Z0-9"\u{201c}])"#).unwrap()
+    });
+
+    // Find all potential title starts and pick the last one (closest to the year)
+    let mut title_start_pos = None;
+    for caps in TITLE_START.captures_iter(before_year) {
+        if let Some(m) = caps.get(1) {
+            title_start_pos = Some(m.start());
+        }
+    }
+
+    let title_start = title_start_pos?;
+    let title = before_year[title_start..].trim();
+
+    // Remove trailing period
+    let title = title.strip_suffix('.').unwrap_or(title).trim();
+
+    if title.split_whitespace().count() >= 2 {
+        Some((title.to_string(), false))
+    } else {
+        None
     }
 }
 
@@ -994,13 +1099,15 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     static AND_AUTHOR_TITLE_RE: Lazy<Regex> = Lazy::new(|| {
         // Initial pattern: single letter "A." or multi-letter "Yu." (Russian/Chinese patronymics)
         // Also handles compound initials like "A.-B." or "A. B."
-        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*";
+        // Use lazy quantifier (*?) to avoid matching too many initials
+        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*?";
         let particle =
             r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
         let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
         // Require at least 2 chars in surname to avoid matching single-letter initials like "G."
+        // Use lazy quantifier (*?) to avoid consuming title words as part of surname
         let surname = format!(
-            r"{}{}{{2,}}(?:\s+{}+)*",
+            r"{}{}{{2,}}(?:\s+{}+)*?",
             particle, surname_chars, surname_chars
         );
         let pattern = format!(
@@ -2269,4 +2376,245 @@ mod tests {
             cleaned2
         );
     }
+
+    // =========================================================================
+    // Tests for arxiv ground-truth comparison issues (2025-02-19)
+    // =========================================================================
+
+    #[test]
+    fn test_venue_bleeding_after_quoted_title() {
+        // Issue: Title includes venue after closing quote
+        // Raw: R. Abu-Salma, J. Choy, A. Frik, and J. Bernd, ""They didn't buy their smart TV...devices," ACM Transactions...
+        let ref_text = r#"R. Abu-Salma, J. Choy, A. Frik, and J. Bernd, ""They didn't buy their smart TV to watch me with the kids": Comparing nannies' and parents' privacy threat models for smart home devices," ACM Transactions on Computer-Human Interaction, vol. 31, no. 2, pp. 1-42, 2024."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "Should detect quoted title");
+        assert!(
+            !title.contains("ACM Transactions"),
+            "Venue should not bleed into title: {}",
+            title
+        );
+        assert!(
+            title.contains("smart home devices"),
+            "Title should contain the actual content: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_venue_bleeding_with_inner_colon() {
+        // Titles with inner colons followed by venue
+        let ref_text = r#"J. Smith and A. Jones, "Understanding AI: A comprehensive guide to machine learning," IEEE Transactions on Neural Networks, vol. 35, 2024."#;
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            !title.contains("IEEE Transactions"),
+            "Venue should not bleed into title: {}",
+            title
+        );
+        assert!(
+            title.contains("machine learning"),
+            "Full title should be extracted: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_arxiv_preprint_not_title() {
+        // Issue: Title extraction fails and "arXiv preprint" becomes the title
+        // Raw: Bowe, S., Maller, M., et al.: Halo: Recursive proof composition without a trusted setup. arXiv preprint arXiv:2019.xxxxx, 2019.
+        let ref_text = "Bowe, S., Maller, M., et al.: Halo: Recursive proof composition without a trusted setup. arXiv preprint arXiv:2019.07497, 2019.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.to_lowercase() != "arxiv preprint",
+            "Title should not be just 'arXiv preprint': {}",
+            title
+        );
+        assert!(
+            title.contains("Halo") || title.contains("Recursive proof"),
+            "Should extract actual title: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_arxiv_preprint_suffix_stripped() {
+        // arXiv preprint suffix should be stripped from titles
+        let ref_text = "Yi, J., Xie, Y., Zhu, B.: Benchmarking large language models for security analysis. arXiv preprint arXiv:2305.12345, 2023.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            !title.to_lowercase().contains("arxiv preprint"),
+            "arXiv preprint should be stripped: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_title_not_in_proceedings() {
+        // Issue: "In Proceedings..." becomes the title instead of the actual title
+        // Raw: J. Ngiam, A. Khosla, M. Kim, J. Nam, H. Lee, and A. Y. Ng. Multimodal deep learning. In Proceedings of the 28th International Conference on Machine Learning, 2011.
+        let ref_text = "J. Ngiam, A. Khosla, M. Kim, J. Nam, H. Lee, and A. Y. Ng. Multimodal deep learning. In Proceedings of the 28th International Conference on Machine Learning, 2011.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            !title.starts_with("In Proc"),
+            "Title should not start with 'In Proceedings': {}",
+            title
+        );
+        assert!(
+            title.contains("Multimodal") || title.contains("deep learning"),
+            "Should extract actual title: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_title_not_in_proceedings_variant() {
+        // Another variant where venue becomes title
+        let ref_text = "A. Brown, A. Tuor, B. Hutchinson, and N. Mez. Recurrent neural network attention mechanisms for interpretable system log anomaly detection. In Proceedings of the First Workshop on Machine Learning for Computing Systems, 2018.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            !title.starts_with("In Proc"),
+            "Title should not start with 'In Proceedings': {}",
+            title
+        );
+        assert!(
+            title.contains("Recurrent") || title.contains("anomaly detection"),
+            "Should extract actual title: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_code_snippet_rejected_as_title() {
+        // Issue: Assembly code extracted as title
+        // Raw: asm volatile("rep; movsb;" : "=S"(junk_a), "=D"(junk_b) : "c"(nbytes)...
+        let code_title = r#"rep; movsb;: "=S"(junk_a), "=D"(junk_b) : "c"(nbytes), "S"(src), "D"(dst)"#;
+        let cleaned = clean_title(code_title, false);
+        assert_eq!(
+            cleaned, "",
+            "Code snippets should be rejected as titles: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_code_snippet_with_asm() {
+        // More code patterns that should be rejected
+        let code1 = r#"asm volatile("rep; movsb;" : "=S"(junk_a))"#;
+        let cleaned1 = clean_title(code1, false);
+        assert_eq!(cleaned1, "", "ASM code should be rejected");
+
+        let code2 = "mov eax, ebx; push ecx; call func";
+        let cleaned2 = clean_title(code2, false);
+        assert_eq!(cleaned2, "", "Assembly instructions should be rejected");
+    }
+
+    #[test]
+    fn test_springer_nature_with_arxiv_suffix() {
+        // Springer/Nature format with arXiv suffix that shouldn't bleed
+        let ref_text = "Kampourakis, V., Smiliotopoulos, C., Gkioulos, V., Katsikas, S.: In numeris veritas: An empirical study of security vulnerabilities. arXiv preprint arXiv:2301.12345, 2023.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            !title.to_lowercase().contains("arxiv"),
+            "arXiv should not be in title: {}",
+            title
+        );
+        assert!(
+            title.contains("numeris") || title.contains("empirical"),
+            "Should extract actual title: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_acm_no_date_marker() {
+        // ACM format with [n. d.] (no date) marker
+        let ref_text = "Abhiram Kothapalli, Srinath T. V. Setty, and Ioanna Tzialla. [n. d.]. Nova: Recursive Zero-Knowledge Arguments from Folding Schemes. In Advances in Cryptology.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Nova") || title.contains("Recursive"),
+            "Should extract title after [n. d.] marker: {}",
+            title
+        );
+        assert!(
+            !title.contains("[n"),
+            "Title should not start with [n: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_acm_year_first_format() {
+        // ACM year-first format: Authors. Year. Title. Venue.
+        // extract_title_from_reference returns raw title, clean_title strips the year
+        let ref_text = "Y. Zhang, D. Genkin, J. Katz, D. Papadopoulos, and C. Papamanthou. 2017. vSQL: Verifying Arbitrary SQL Queries over Dynamic Outsourced Databases. In 2017 IEEE Symposium.";
+        let (raw_title, from_quotes) = extract_title_from_reference(ref_text);
+        // Raw extraction may include the year
+        assert!(
+            raw_title.contains("vSQL"),
+            "Raw title should contain the actual title: {}",
+            raw_title
+        );
+        // After cleaning, the year should be stripped
+        let cleaned = clean_title(&raw_title, from_quotes);
+        assert!(
+            !cleaned.starts_with("2017"),
+            "Cleaned title should not start with year: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("vSQL"),
+            "Cleaned title should preserve content: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_arxiv_preprint_format() {
+        // arXiv preprint format: Authors. Title. Year. arXiv: ID
+        let ref_text = "Michael Rodler, David Paaßen, Wenting Li, and Lucas Davi. EF/CF: High Performance Smart Contract Fuzzing for Exploit Generation. 2023. arXiv: 2304.06341 [cs.CR].";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            !title.to_lowercase().contains("arxiv"),
+            "Title should not contain arXiv: {}",
+            title
+        );
+        assert!(
+            title.contains("EF/CF") || title.contains("High Performance"),
+            "Should extract actual title: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_clean_title_strips_leading_year() {
+        // Leading year should be stripped from ACM-style titles
+        let title = "2017. vSQL: Verifying Arbitrary SQL Queries";
+        let cleaned = clean_title(title, false);
+        assert!(
+            !cleaned.starts_with("2017"),
+            "Leading year should be stripped: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("vSQL"),
+            "Title content should be preserved: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_clean_title_rejects_arxiv_id() {
+        // arXiv IDs should be rejected as titles
+        let title = "arXiv: 2304.06341 [cs.CR]";
+        let cleaned = clean_title(title, false);
+        assert_eq!(cleaned, "", "arXiv ID should be rejected as title");
+    }
+
+    #[test]
+    fn test_clean_title_rejects_doi_url() {
+        // DOI URLs should be rejected as titles
+        let title = "https://doi.org/10.1109/SP.2017.123";
+        let cleaned = clean_title(title, false);
+        assert_eq!(cleaned, "", "DOI URL should be rejected as title");
+    }
+
 }

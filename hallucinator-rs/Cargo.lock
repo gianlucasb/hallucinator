@@ -1214,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-ingest"
-version = "0.1.1-alpha.2"
+version = "0.1.1-alpha.3"
 dependencies = [
  "flate2",
  "hallucinator-bbl",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-pdf-mupdf"
-version = "0.1.1-alpha.2"
+version = "0.1.1-alpha.3"
 dependencies = [
  "hallucinator-pdf",
  "mupdf",
