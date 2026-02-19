@@ -399,12 +399,15 @@ fn try_quoted_title_with_config(
         // - ACM: ". YYYY. " (with optional parenthetical like "(to appear)")
         // - LNCS: ": "
         // - Harvard/APA: "(YYYY) " or "(YYYY), "
+        // - Author list ending: "et al. " (the quote IS the title)
         static TITLE_START: Lazy<Regex> = Lazy::new(|| {
             Regex::new(concat!(
                 r"(?:",
                 r"\.\s*(?:19|20)\d{2}[a-z]?(?:\s*\([^)]+\))?\.\s+", // ACM: ". 2022. "
                 r"|:\s+",                                           // LNCS: ": "
                 r"|\((?:19|20)\d{2}\)[,.]?\s+",                     // Harvard: "(2022) "
+                r"|(?i)\bet\s+al\.\s+",                             // Author end: "et al. "
+                r"|(?i)\band\s+\w+(?:\s+\w+)?\.\s+",                // Author end: "and Surname. "
                 r")"
             ))
             .unwrap()
@@ -1129,13 +1132,16 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     static AND_AUTHOR_TITLE_RE: Lazy<Regex> = Lazy::new(|| {
         // Initial pattern: single letter "A." or multi-letter "Yu." (Russian/Chinese patronymics)
         // Also handles compound initials like "A.-B." or "A. B."
-        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*";
+        // Use lazy quantifier (*?) to prefer fewer initials, so "S. J. H." matches as initials
+        // and "Oh" as surname, rather than matching "S. J. H. Oh." all as initials
+        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*?";
         let particle =
             r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
         let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
         // Require at least 2 chars in surname to avoid matching single-letter initials like "G."
+        // Use lazy quantifier (*?) to prevent consuming title text as additional surname words
         let surname = format!(
-            r"{}{}{{2,}}(?:\s+{}+)*",
+            r"{}{}{{2,}}(?:\s+{}+)*?",
             particle, surname_chars, surname_chars
         );
         let pattern = format!(
@@ -2707,4 +2713,134 @@ mod tests {
             "Title should contain 'Spatial transcriptomics', got: {:?}",
             title
         );
+    }
+
+    #[test]
+    fn test_quoted_title_with_in_venue() {
+        // Quoted title followed by ". In:" venue marker
+        let ref_text = r#"Jonathan Ho, Ajay Jain, and Pieter Abbeel. "Denoising Diffusion Probabilistic Models". In: Advances in Neural Information Processing Systems (NeurIPS). 2020."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        eprintln!("Extracted: {:?}, from_quotes: {}", title, from_quotes);
+        assert!(
+            title.contains("Denoising Diffusion"),
+            "Title should contain 'Denoising Diffusion', got: {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_et_al_quoted_title_in_venue() {
+        // "et al." followed by quoted title with ". In:" venue marker
+        let ref_text = r#"Qing Li et al. "Medical image classification with convolutional neural network". In: 2014 13th international conference on control automation robotics & vision (ICARCV). IEEE. 2014, pp. 844–848."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        eprintln!("Extracted: {:?}, from_quotes: {}", title, from_quotes);
+        assert!(
+            title.contains("Medical image classification"),
+            "Title should contain 'Medical image classification', got: {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_author_initials_title_in_venue() {
+        // Format: "I. Surname, I. Surname. Title. In Venue"
+        let ref_text = "H. Bahng, S. Chun, Y. Yoo, J. Choo, and S. J. H. Oh. Learning de-biased representations with biased representations. In ICML, 2020.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        eprintln!("Extracted: {:?}", title);
+        assert!(
+            title.contains("Learning de-biased"),
+            "Title should contain 'Learning de-biased', got: {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_debug_author_pattern() {
+        use regex::Regex;
+        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*";
+        let particle = r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
+        let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
+        let surname = format!(r"{}{}{{2,}}(?:\s+{}+)*", particle, surname_chars, surname_chars);
+        let pattern = format!(
+            r#",?\s+and\s+{}\s*{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
+            initial, surname,
+        );
+        eprintln!("Pattern: {}", pattern);
+        let re = Regex::new(&pattern).unwrap();
+        let text = "H. Bahng, S. Chun, Y. Yoo, J. Choo, and S. J. H. Oh. Learning de-biased representations";
+        eprintln!("Text: {}", text);
+        if let Some(caps) = re.captures(text) {
+            eprintln!("Match: {:?}", caps.get(0).unwrap().as_str());
+            eprintln!("Capture 1: {:?}", caps.get(1).map(|m| m.as_str()));
+        } else {
+            eprintln!("NO MATCH");
+        }
+    }
+
+    #[test]
+    fn test_trace_extraction() {
+        use regex::Regex;
+        use once_cell::sync::Lazy;
+        
+        let ref_text = "H. Bahng, S. Chun, Y. Yoo, J. Choo, and S. J. H. Oh. Learning de-biased representations with biased representations. In ICML, 2020.";
+        
+        // Check try_lncs pattern
+        static LNCS_RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"(?:,\s*)?[A-Z](?:\.[A-Z])*\.\s*:\s*(.+)").unwrap()
+        });
+        eprintln!("try_lncs matches: {}", LNCS_RE.is_match(ref_text));
+        
+        // Check try_author_particles pattern
+        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*";
+        let particle = r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
+        let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
+        let surname = format!(r"{}{}{{2,}}(?:\s+{}+)*", particle, surname_chars, surname_chars);
+        let pattern = format!(
+            r#",?\s+and\s+{}\s*{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
+            initial, surname,
+        );
+        let author_re = Regex::new(&pattern).unwrap();
+        if let Some(caps) = author_re.captures(ref_text) {
+            let title_start = caps.get(1).unwrap().start();
+            let title_text = &ref_text[title_start..];
+            eprintln!("try_author_particles matches, title_text: {:?}", title_text);
+            
+            // Check title end patterns
+            let end_re = Regex::new(r"\.\s+In\s+").unwrap();
+            if let Some(m) = end_re.find(title_text) {
+                eprintln!("'. In ' found at position {}", m.start());
+                let title = &title_text[..m.start()];
+                eprintln!("Extracted title: {:?}", title);
+            }
+        } else {
+            eprintln!("try_author_particles: NO MATCH");
+        }
+        
+        // Now run actual extraction
+        let (title, _) = extract_title_from_reference(ref_text);
+        eprintln!("Final extracted title: {:?}", title);
+    }
+
+    #[test]
+    fn test_trace_full_match() {
+        use regex::Regex;
+        
+        let ref_text = "H. Bahng, S. Chun, Y. Yoo, J. Choo, and S. J. H. Oh. Learning de-biased representations with biased representations. In ICML, 2020.";
+        
+        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*";
+        let particle = r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
+        let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
+        let surname = format!(r"{}{}{{2,}}(?:\s+{}+)*", particle, surname_chars, surname_chars);
+        let pattern = format!(
+            r#",?\s+and\s+{}\s*{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
+            initial, surname,
+        );
+        let author_re = Regex::new(&pattern).unwrap();
+        
+        // Find ALL matches
+        for caps in author_re.captures_iter(ref_text) {
+            eprintln!("Full match: {:?}", caps.get(0).unwrap().as_str());
+            eprintln!("Capture 1: {:?}", caps.get(1).map(|m| m.as_str()));
+            eprintln!("---");
+        }
     }
