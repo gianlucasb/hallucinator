@@ -17,7 +17,7 @@ use crate::authors::validate_authors;
 use crate::db::DatabaseBackend;
 use crate::db::searxng::Searxng;
 use crate::orchestrator::{build_database_list, query_local_databases};
-use crate::rate_limit::{self, DoiContext};
+use crate::rate_limit::{self, DbQueryError, DoiContext};
 use crate::{
     ArxivInfo, Config, DbResult, DbStatus, DoiInfo, ProgressEvent, Reference, Status,
     ValidationResult,
@@ -384,19 +384,24 @@ async fn report_result(
                 error_message: None,
             });
         }
-        Err(err) => {
+        Err(ref err) => {
+            let status = if matches!(err, DbQueryError::RateLimited { .. }) {
+                DbStatus::RateLimited
+            } else {
+                DbStatus::Error
+            };
             (collector.progress)(ProgressEvent::DatabaseQueryComplete {
                 paper_index: 0,
                 ref_index: collector.ref_index,
                 db_name: db_name.to_string(),
-                status: DbStatus::Error,
+                status: status.clone(),
                 elapsed,
             });
 
             let mut state = collector.state.lock().unwrap_or_else(|e| e.into_inner());
             state.db_results.push(DbResult {
                 db_name: db_name.to_string(),
-                status: DbStatus::Error,
+                status,
                 elapsed: Some(elapsed),
                 found_authors: vec![],
                 paper_url: None,

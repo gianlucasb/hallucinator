@@ -304,6 +304,7 @@ pub fn export_json(papers: &[ReportPaper<'_>], ref_states: &[&[ReportRef]]) -> S
                     DbStatus::NoMatch => "no_match",
                     DbStatus::AuthorMismatch => "author_mismatch",
                     DbStatus::Timeout => "timeout",
+                    DbStatus::RateLimited => "rate_limited",
                     DbStatus::Error => "error",
                     DbStatus::Skipped => "skipped",
                 };

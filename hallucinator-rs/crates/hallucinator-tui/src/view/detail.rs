@@ -215,6 +215,10 @@ pub fn render_in(
                         ("\u{26A0} mismatch".to_string(), theme.author_mismatch)
                     }
                     DbStatus::Timeout => ("timeout".to_string(), theme.not_found),
+                    DbStatus::RateLimited => (
+                        "\u{2717} 429 rate limited".to_string(),
+                        theme.author_mismatch,
+                    ),
                     DbStatus::Error => {
                         let msg = db_result.error_message.as_deref().unwrap_or("error");
                         (format!("\u{2717} {}", msg), theme.not_found)

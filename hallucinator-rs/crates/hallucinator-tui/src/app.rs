@@ -553,7 +553,9 @@ impl App {
     }
 
     /// Return the existing query cache if the path hasn't changed, or build a new one.
-    fn get_or_build_query_cache(&mut self) -> std::sync::Arc<hallucinator_core::QueryCache> {
+    pub(crate) fn get_or_build_query_cache(
+        &mut self,
+    ) -> std::sync::Arc<hallucinator_core::QueryCache> {
         let current_path = if self.config_state.cache_path.is_empty() {
             None
         } else {
@@ -565,7 +567,7 @@ impl App {
             let prev_path = self
                 .current_query_cache_path
                 .as_ref()
-                .map(|p| std::path::PathBuf::from(p));
+                .map(std::path::PathBuf::from);
             if prev_path == current_path {
                 return existing.clone();
             }
@@ -2311,7 +2313,10 @@ impl App {
                 self.activity.total_completed += 1;
                 self.throughput_since_last += 1;
             }
-            ProgressEvent::Warning { .. } => {}
+            ProgressEvent::Warning { .. } => {
+                // Per-reference warnings are too spammy for the activity log.
+                // Aggregate DB-level warnings are emitted below in DatabaseQueryComplete.
+            }
             ProgressEvent::Retrying {
                 title, failed_dbs, ..
             } => {
@@ -2348,26 +2353,27 @@ impl App {
                         status,
                         DbStatus::Match | DbStatus::NoMatch | DbStatus::AuthorMismatch
                     );
+                    let is_rate_limited = status == DbStatus::RateLimited;
                     let is_match = status == DbStatus::Match;
                     self.activity.record_db_complete(
                         &db_name,
                         success,
+                        is_rate_limited,
                         is_match,
                         elapsed.as_secs_f64() * 1000.0,
                     );
 
-                    // Warn when DBLP online is repeatedly timing out and no offline DB is configured
-                    if db_name == "DBLP"
-                        && !success
-                        && !self.activity.dblp_timeout_warned
-                        && self.config_state.dblp_offline_path.is_empty()
-                        && let Some(health) = self.activity.db_health.get("DBLP")
+                    // Emit a one-time warning when a DB hits 3+ failures
+                    if !success
+                        && !self.activity.warned_dbs.contains(&db_name)
+                        && let Some(health) = self.activity.db_health.get(db_name.as_str())
                         && health.failed >= 3
                     {
-                        self.activity.log_warn(
-                                    "DBLP online timing out repeatedly. Build an offline database: hallucinator-tui update-dblp".to_string()
-                                );
-                        self.activity.dblp_timeout_warned = true;
+                        let has_dblp_offline = !self.config_state.dblp_offline_path.is_empty();
+                        let msg =
+                            db_failure_warning(&db_name, health.rate_limited, has_dblp_offline);
+                        self.activity.log_warn(msg);
+                        self.activity.warned_dbs.insert(db_name.clone());
                     }
                 }
             }
@@ -3007,6 +3013,31 @@ fn verdict_sort_key(rs: &RefState) -> u8 {
             }
         }
         None => 4,
+    }
+}
+
+/// Build a one-time warning message for a DB that is repeatedly failing.
+fn db_failure_warning(db_name: &str, rate_limited_count: usize, has_dblp_offline: bool) -> String {
+    let kind = if rate_limited_count > 0 {
+        "rate-limited (429)"
+    } else {
+        "failing"
+    };
+
+    match db_name {
+        "OpenAlex" => {
+            format!("OpenAlex {kind} repeatedly — check API key and credit balance at openalex.org")
+        }
+        "Semantic Scholar" => {
+            format!("Semantic Scholar {kind} repeatedly — check API key at semanticscholar.org")
+        }
+        "CrossRef" => format!(
+            "CrossRef {kind} repeatedly — set crossref_mailto in config for higher rate limits"
+        ),
+        "DBLP" if !has_dblp_offline => format!(
+            "DBLP online {kind} repeatedly — build an offline database: hallucinator-tui update-dblp"
+        ),
+        _ => format!("{db_name} {kind} repeatedly"),
     }
 }
 

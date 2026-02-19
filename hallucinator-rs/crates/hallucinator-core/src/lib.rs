@@ -61,6 +61,8 @@ pub enum DbStatus {
     NoMatch,
     AuthorMismatch,
     Timeout,
+    /// Server returned 429 (rate limited / out of credits).
+    RateLimited,
     Error,
     Skipped,
 }

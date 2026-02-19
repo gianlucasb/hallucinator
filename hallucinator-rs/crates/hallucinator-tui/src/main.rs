@@ -425,6 +425,11 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Eagerly open the query cache so the user sees it in the activity log at startup
+    if !app.config_state.cache_path.is_empty() {
+        app.get_or_build_query_cache();
+    }
+
     // Initialize results persistence directory
     let run_dir = persistence::run_dir();
 

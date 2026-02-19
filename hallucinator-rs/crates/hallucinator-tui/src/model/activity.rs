@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Health status of a database backend.
 #[derive(Debug, Clone)]
@@ -6,6 +6,8 @@ pub struct DbHealth {
     pub total_queries: usize,
     pub successful: usize,
     pub failed: usize,
+    /// Subset of `failed` that were specifically 429 rate-limit errors.
+    pub rate_limited: usize,
     pub hits: usize,
     pub avg_response_ms: f64,
     /// Number of queries currently in flight for this DB.
@@ -18,19 +20,29 @@ impl DbHealth {
             total_queries: 0,
             successful: 0,
             failed: 0,
+            rate_limited: 0,
             hits: 0,
             avg_response_ms: 0.0,
             in_flight: 0,
         }
     }
 
-    pub fn record(&mut self, success: bool, is_match: bool, elapsed_ms: f64) {
+    pub fn record(
+        &mut self,
+        success: bool,
+        is_rate_limited: bool,
+        is_match: bool,
+        elapsed_ms: f64,
+    ) {
         self.total_queries += 1;
         self.in_flight = self.in_flight.saturating_sub(1);
         if success {
             self.successful += 1;
         } else {
             self.failed += 1;
+            if is_rate_limited {
+                self.rate_limited += 1;
+            }
         }
         if is_match {
             self.hits += 1;
@@ -76,8 +88,8 @@ pub struct ActivityState {
     pub total_completed: usize,
     /// Recent log messages: (text, is_warning).
     pub messages: VecDeque<(String, bool)>,
-    /// Whether the DBLP timeout warning has already been shown.
-    pub dblp_timeout_warned: bool,
+    /// DBs that have already triggered a failure warning (to avoid spam).
+    pub warned_dbs: HashSet<String>,
 }
 
 impl Default for ActivityState {
@@ -88,7 +100,7 @@ impl Default for ActivityState {
             active_queries: Vec::new(),
             total_completed: 0,
             messages: VecDeque::new(),
-            dblp_timeout_warned: false,
+            warned_dbs: HashSet::new(),
         }
     }
 }
@@ -130,6 +142,7 @@ impl ActivityState {
         &mut self,
         db_name: &str,
         success: bool,
+        is_rate_limited: bool,
         is_match: bool,
         elapsed_ms: f64,
     ) {
@@ -137,7 +150,7 @@ impl ActivityState {
             .db_health
             .entry(db_name.to_string())
             .or_insert_with(DbHealth::new);
-        health.record(success, is_match, elapsed_ms);
+        health.record(success, is_rate_limited, is_match, elapsed_ms);
     }
 
     pub fn push_throughput(&mut self, count: u16) {
