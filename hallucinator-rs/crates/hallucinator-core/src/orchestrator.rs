@@ -459,7 +459,7 @@ fn process_query_result(
                 cb(db_result.clone());
             }
             db_results.push(db_result);
-            log::debug!("{}: {}", name, err);
+            tracing::debug!(db = name, error = %err, "query error");
             failed_dbs.push(name);
         }
     }

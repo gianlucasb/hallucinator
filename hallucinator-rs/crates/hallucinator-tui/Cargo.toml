@@ -32,5 +32,7 @@ tempfile.workspace = true
 base64.workspace = true
 async-channel.workspace = true
 mimalloc.workspace = true
-dirs = "6"
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+dirs.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

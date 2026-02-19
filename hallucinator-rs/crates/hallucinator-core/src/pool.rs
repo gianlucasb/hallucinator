@@ -214,18 +214,21 @@ async fn drainer_loop(
 
         // Skip remaining jobs after cancellation
         if cancel.is_cancelled() {
+            tracing::debug!(db = db.name(), title = %collector.title, "skipping: cancelled");
             skip_and_decrement(collector, db.name()).await;
             continue;
         }
 
         // Skip if already verified by another drainer
         if collector.verified.load(Ordering::Acquire) {
+            tracing::debug!(db = db.name(), title = %collector.title, "skipping: already verified");
             skip_and_decrement(collector, db.name()).await;
             continue;
         }
 
         // DOI-requiring backends skip refs without a DOI
         if requires_doi && collector.reference.doi.is_none() {
+            tracing::debug!(db = db.name(), title = %collector.title, "skipping: no DOI");
             skip_and_decrement(collector, db.name()).await;
             continue;
         }
@@ -388,7 +391,7 @@ async fn report_result(
                 paper_url: None,
                 error_message: Some(err.to_string()),
             });
-            log::debug!("{}: {}", db_name, err);
+            tracing::debug!(db = db_name, error = %err, "query error");
             state.failed_dbs.push(db_name.to_string());
         }
     }
@@ -677,6 +680,17 @@ fn pre_check_remote_cache(
             }
         }
     }
+
+    let hits = db_results.len();
+    let misses = miss_indices.len();
+    let verified = verified_info.is_some();
+    tracing::debug!(
+        title,
+        hits,
+        misses,
+        verified,
+        "cache pre-check complete"
+    );
 
     CachePreCheck {
         db_results,
@@ -1035,7 +1049,7 @@ fn make_db_callback(
     }
 }
 
-/// Emit Warning + Result progress events.
+/// Emit Warning + Result progress events and log the final outcome.
 fn emit_final_events(
     progress: &(dyn Fn(ProgressEvent) + Send + Sync),
     result: &ValidationResult,
@@ -1043,6 +1057,19 @@ fn emit_final_events(
     total: usize,
     title: &str,
 ) {
+    let status_str = match result.status {
+        Status::Verified => "Verified",
+        Status::NotFound => "NotFound",
+        Status::AuthorMismatch => "AuthorMismatch",
+    };
+    tracing::info!(
+        ref_index,
+        title,
+        status = status_str,
+        source = result.source.as_deref().unwrap_or("-"),
+        "reference result"
+    );
+
     if !result.failed_dbs.is_empty() {
         let context = match result.status {
             Status::NotFound => "not found in other DBs".to_string(),

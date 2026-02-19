@@ -13,6 +13,10 @@ use output::ColorMode;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// Path to config file (default: auto-detect platform config dir)
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -84,6 +88,7 @@ enum Command {
         /// Clear only not-found entries from the cache and exit
         #[arg(long)]
         clear_not_found: bool,
+
     },
 
     /// Download and build the offline DBLP database
@@ -103,6 +108,38 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
+    tracing_subscriber::fmt::init();
+
+    // Load config file (explicit --config path, or auto-detect)
+    let (file_config, config_source) = match &cli.config {
+        Some(path) => {
+            match hallucinator_core::config_file::load_from_path(path) {
+                Some(cfg) => (cfg, Some(path.clone())),
+                None => {
+                    eprintln!("Warning: config file not found: {}", path.display());
+                    (hallucinator_core::config_file::ConfigFile::default(), None)
+                }
+            }
+        }
+        None => {
+            // Auto-detect: try platform config dir, then CWD overlay
+            let cwd_path = PathBuf::from(".hallucinator.toml");
+            let platform_path = hallucinator_core::config_file::config_path();
+
+            let has_cwd = cwd_path.exists();
+            let has_platform = platform_path.as_ref().is_some_and(|p| p.exists());
+
+            let cfg = hallucinator_core::config_file::load_config();
+            let source = if has_cwd {
+                Some(cwd_path)
+            } else if has_platform {
+                platform_path
+            } else {
+                None
+            };
+            (cfg, source)
+        }
+    };
 
     match cli.command {
         Command::UpdateDblp { path } => update_dblp(&path).await,
@@ -126,11 +163,19 @@ async fn main() -> anyhow::Result<()> {
             clear_not_found,
         } => {
             if clear_cache || clear_not_found {
-                let path = cache_path.or_else(|| {
-                    std::env::var("HALLUCINATOR_CACHE_PATH")
-                        .ok()
-                        .map(PathBuf::from)
-                });
+                let path = cache_path
+                    .or_else(|| {
+                        std::env::var("HALLUCINATOR_CACHE_PATH")
+                            .ok()
+                            .map(PathBuf::from)
+                    })
+                    .or_else(|| {
+                        file_config
+                            .databases
+                            .as_ref()
+                            .and_then(|d| d.cache_path.as_ref())
+                            .map(PathBuf::from)
+                    });
                 return match path {
                     Some(p) if p.exists() => {
                         let cache = hallucinator_core::QueryCache::open(
@@ -180,6 +225,8 @@ async fn main() -> anyhow::Result<()> {
                     max_rate_limit_retries,
                     searxng,
                     cache_path,
+                    file_config,
+                    config_source,
                 )
                 .await
             }
@@ -202,28 +249,82 @@ async fn check(
     max_rate_limit_retries: Option<u32>,
     searxng: bool,
     cache_path: Option<PathBuf>,
+    file_config: hallucinator_core::config_file::ConfigFile,
+    config_source: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    // Resolve configuration: CLI flags > env vars > defaults
-    let openalex_key = openalex_key.or_else(|| std::env::var("OPENALEX_KEY").ok());
-    let s2_api_key = s2_api_key.or_else(|| std::env::var("S2_API_KEY").ok());
-    let dblp_offline_path =
-        dblp_offline.or_else(|| std::env::var("DBLP_OFFLINE_PATH").ok().map(PathBuf::from));
-    let acl_offline_path =
-        acl_offline.or_else(|| std::env::var("ACL_OFFLINE_PATH").ok().map(PathBuf::from));
+    // Print config file source
+    match &config_source {
+        Some(path) => eprintln!("Config file: {}", path.display()),
+        None => eprintln!("Config file: none (use --config <path> or create .hallucinator.toml)"),
+    }
+
+    // Resolve configuration: CLI flags > env vars > config file > defaults
+    let openalex_key = openalex_key
+        .or_else(|| std::env::var("OPENALEX_KEY").ok())
+        .or_else(|| {
+            file_config
+                .api_keys
+                .as_ref()
+                .and_then(|a| a.openalex_key.clone())
+        });
+    let s2_api_key = s2_api_key
+        .or_else(|| std::env::var("S2_API_KEY").ok())
+        .or_else(|| {
+            file_config
+                .api_keys
+                .as_ref()
+                .and_then(|a| a.s2_api_key.clone())
+        });
+    let dblp_offline_path = dblp_offline
+        .or_else(|| std::env::var("DBLP_OFFLINE_PATH").ok().map(PathBuf::from))
+        .or_else(|| {
+            file_config
+                .databases
+                .as_ref()
+                .and_then(|d| d.dblp_offline_path.as_ref())
+                .map(PathBuf::from)
+        });
+    let acl_offline_path = acl_offline
+        .or_else(|| std::env::var("ACL_OFFLINE_PATH").ok().map(PathBuf::from))
+        .or_else(|| {
+            file_config
+                .databases
+                .as_ref()
+                .and_then(|d| d.acl_offline_path.as_ref())
+                .map(PathBuf::from)
+        });
     let db_timeout_secs: u64 = std::env::var("DB_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
+        .or_else(|| {
+            file_config
+                .concurrency
+                .as_ref()
+                .and_then(|c| c.db_timeout_secs)
+        })
         .unwrap_or(10);
     let db_timeout_short_secs: u64 = std::env::var("DB_TIMEOUT_SHORT")
         .ok()
         .and_then(|v| v.parse().ok())
+        .or_else(|| {
+            file_config
+                .concurrency
+                .as_ref()
+                .and_then(|c| c.db_timeout_short_secs)
+        })
         .unwrap_or(5);
 
-    // SearxNG URL: only enabled if --searxng flag is set
+    // SearxNG URL: --searxng flag > env var > config file
     let searxng_url = if searxng {
         let url = std::env::var("SEARXNG_URL")
             .ok()
             .filter(|s| !s.is_empty())
+            .or_else(|| {
+                file_config
+                    .databases
+                    .as_ref()
+                    .and_then(|d| d.searxng_url.clone())
+            })
             .unwrap_or_else(|| "http://localhost:8080".to_string());
 
         // Check connectivity and warn if not reachable
@@ -234,7 +335,11 @@ async fn check(
 
         Some(url)
     } else {
-        None
+        // Even without --searxng flag, config file can enable it
+        file_config
+            .databases
+            .as_ref()
+            .and_then(|d| d.searxng_url.clone())
     };
 
     // Determine color mode and output writer
@@ -372,21 +477,60 @@ async fn check(
 
     let crossref_mailto: Option<String> = std::env::var("CROSSREF_MAILTO")
         .ok()
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            file_config
+                .api_keys
+                .as_ref()
+                .and_then(|a| a.crossref_mailto.clone())
+        });
 
-    // Build config
-    let num_workers = num_workers.unwrap_or(4);
-    let max_rate_limit_retries = max_rate_limit_retries.unwrap_or(3);
+    // Merge disable_dbs: CLI flags + config file disabled list
+    let disable_dbs = if disable_dbs.is_empty() {
+        file_config
+            .databases
+            .as_ref()
+            .and_then(|d| d.disabled.clone())
+            .unwrap_or_default()
+    } else {
+        disable_dbs
+    };
+
+    // Build config: CLI flags > env vars > config file > defaults
+    let num_workers = num_workers
+        .or_else(|| {
+            file_config
+                .concurrency
+                .as_ref()
+                .and_then(|c| c.num_workers)
+        })
+        .unwrap_or(4);
+    let max_rate_limit_retries = max_rate_limit_retries
+        .or_else(|| {
+            file_config
+                .concurrency
+                .as_ref()
+                .and_then(|c| c.max_rate_limit_retries)
+        })
+        .unwrap_or(3);
     let rate_limiters = std::sync::Arc::new(hallucinator_core::RateLimiters::new(
         crossref_mailto.is_some(),
         s2_api_key.is_some(),
     ));
 
-    let cache_path = cache_path.or_else(|| {
-        std::env::var("HALLUCINATOR_CACHE_PATH")
-            .ok()
-            .map(PathBuf::from)
-    });
+    let cache_path = cache_path
+        .or_else(|| {
+            std::env::var("HALLUCINATOR_CACHE_PATH")
+                .ok()
+                .map(PathBuf::from)
+        })
+        .or_else(|| {
+            file_config
+                .databases
+                .as_ref()
+                .and_then(|d| d.cache_path.as_ref())
+                .map(PathBuf::from)
+        });
     let positive_ttl = hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs();
     let negative_ttl = hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs();
     let query_cache =

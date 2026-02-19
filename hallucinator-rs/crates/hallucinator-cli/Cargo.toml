@@ -19,3 +19,4 @@ owo-colors.workspace = true
 anyhow.workspace = true
 dotenvy.workspace = true
 indicatif.workspace = true
+tracing-subscriber.workspace = true

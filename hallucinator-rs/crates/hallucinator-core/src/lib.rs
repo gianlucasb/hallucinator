@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 pub mod authors;
 pub mod cache;
 pub mod checker;
+pub mod config_file;
 pub mod db;
 pub mod doi;
 pub mod matching;
@@ -278,15 +279,11 @@ pub fn build_query_cache(
         }
         match QueryCache::open(path, positive_ttl, negative_ttl) {
             Ok(cache) => {
-                log::info!("Opened persistent cache at {}", path.display());
+                tracing::info!(path = %path.display(), "opened persistent cache");
                 return Arc::new(cache);
             }
             Err(e) => {
-                log::warn!(
-                    "Failed to open cache at {}: {}; falling back to in-memory",
-                    path.display(),
-                    e
-                );
+                tracing::warn!(path = %path.display(), error = %e, "failed to open cache, falling back to in-memory");
             }
         }
     }

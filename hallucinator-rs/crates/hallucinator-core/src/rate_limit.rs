@@ -290,7 +290,7 @@ pub async fn query_with_rate_limit(
         && let Some(c) = cache
         && let Some(cached_result) = c.get(title, db.name())
     {
-        log::debug!("{}: cache hit for {:?}", db.name(), title);
+        tracing::debug!(db = db.name(), title, "cache hit");
         return RateLimitedResult {
             result: Ok(cached_result),
             elapsed: Duration::ZERO,
@@ -310,6 +310,7 @@ pub async fn query_with_rate_limit(
     }
 
     // Timer starts AFTER governor — measures actual HTTP time only
+    tracing::debug!(db = db.name(), title, "query start");
     let start = Instant::now();
 
     let result = match execute_query(db, title, client, timeout, doi_context).await {
@@ -325,11 +326,7 @@ pub async fn query_with_rate_limit(
             // The governor adaptation prevents cascading 429s for future requests.
             let wait = retry_after.unwrap_or(Duration::from_secs(2));
             let wait = wait.min(timeout);
-            log::info!(
-                "{}: 429 rate limited, waiting {:.1}s then retrying",
-                db.name(),
-                wait.as_secs_f64()
-            );
+            tracing::info!(db = db.name(), wait_secs = wait.as_secs_f64(), "429 rate limited, retrying");
             tokio::time::sleep(wait).await;
 
             // Re-acquire governor token after sleeping
@@ -352,9 +349,12 @@ pub async fn query_with_rate_limit(
         c.insert(title, db.name(), query_result);
     }
 
+    let elapsed = start.elapsed();
+    tracing::debug!(db = db.name(), title, elapsed_ms = elapsed.as_millis() as u64, ok = result.is_ok(), "query complete");
+
     RateLimitedResult {
         result,
-        elapsed: start.elapsed(),
+        elapsed,
     }
 }
 

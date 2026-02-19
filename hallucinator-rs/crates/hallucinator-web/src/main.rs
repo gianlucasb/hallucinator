@@ -12,6 +12,7 @@ use state::AppState;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+    tracing_subscriber::fmt::init();
 
     // Load DBLP offline database if configured
     let dblp_offline_path = std::env::var("DBLP_OFFLINE_PATH").ok();

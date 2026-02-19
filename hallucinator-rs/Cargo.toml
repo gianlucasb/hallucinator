@@ -80,6 +80,7 @@ flate2 = "1"
 
 # Environment
 dotenvy = "0.15"
+dirs = "6"
 
 # Streaming
 tokio-stream = "0.1"
@@ -110,6 +111,11 @@ base64 = "0.22"
 
 # BibTeX parsing
 biblatex = "0.11"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 
 # Error handling
 thiserror = "2"

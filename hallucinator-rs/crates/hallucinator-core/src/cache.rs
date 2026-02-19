@@ -430,6 +430,7 @@ impl QueryCache {
             } else {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 self.record_lookup(start);
+                tracing::trace!(db = db_name, title, "cache L1 hit");
                 return Some(cached_to_query_result(&entry.result));
             }
         }
@@ -440,6 +441,7 @@ impl QueryCache {
                 pool.get(&norm, db_name, self.positive_ttl, self.negative_ttl)
         {
             // Promote to L1
+            tracing::trace!(db = db_name, title, "cache L2 hit, promoting to L1");
             let query_result = cached_to_query_result(&result);
             match &result {
                 CachedResult::Found { .. } => {
@@ -464,6 +466,7 @@ impl QueryCache {
 
         self.misses.fetch_add(1, Ordering::Relaxed);
         self.record_lookup(start);
+        tracing::trace!(db = db_name, title, "cache miss");
         None
     }
 
@@ -481,6 +484,12 @@ impl QueryCache {
     /// If `negative_ttl` is zero, not-found results are never cached.
     pub fn insert(&self, title: &str, db_name: &str, result: &DbQueryResult) {
         let is_not_found = result.0.is_none();
+        tracing::trace!(
+            db = db_name,
+            title,
+            found = !is_not_found,
+            "cache insert"
+        );
 
         // Skip not-found entries entirely when negative TTL is zero
         if is_not_found && self.negative_ttl.is_zero() {
@@ -1227,6 +1236,230 @@ mod tests {
         // Found paper should survive in both tiers
         assert!(cache.get("Found Paper", "DB").is_some());
         assert!(cache.disk_len() >= 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Atomic counter tests ────────────────────────────────────────
+
+    #[test]
+    fn l1_counts_after_inserts() {
+        let cache = QueryCache::default();
+        assert_eq!(cache.l1_counts(), (0, 0));
+
+        cache.insert("A", "DB1", &(Some("A".into()), vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 0));
+
+        cache.insert("B", "DB1", &(None, vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 1));
+
+        cache.insert("C", "DB2", &(Some("C".into()), vec![], None));
+        assert_eq!(cache.l1_counts(), (2, 1));
+    }
+
+    #[test]
+    fn l2_counts_after_inserts() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        assert_eq!(cache.l2_counts(), (0, 0));
+
+        cache.insert("A", "DB1", &(Some("A".into()), vec![], None));
+        assert_eq!(cache.l2_counts(), (1, 0));
+
+        cache.insert("B", "DB1", &(None, vec![], None));
+        assert_eq!(cache.l2_counts(), (1, 1));
+
+        assert_eq!(cache.disk_len(), 2);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn l2_counts_initialized_on_open() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        // Populate cache, close, reopen — counters should reflect disk contents.
+        {
+            let cache =
+                QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+            cache.insert("Found", "DB", &(Some("Found".into()), vec![], None));
+            cache.insert("Missing1", "DB", &(None, vec![], None));
+            cache.insert("Missing2", "DB2", &(None, vec![], None));
+        }
+
+        let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        assert_eq!(cache2.l2_counts(), (1, 2));
+        assert_eq!(cache2.disk_len(), 3);
+        // L1 starts empty after restart
+        assert_eq!(cache2.l1_counts(), (0, 0));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn overwrite_not_found_to_found_adjusts_counters() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.insert("Paper", "DB", &(None, vec![], None));
+        assert_eq!(cache.l1_counts(), (0, 1));
+        assert_eq!(cache.l2_counts(), (0, 1));
+
+        // Overwrite not-found → found
+        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 0));
+        assert_eq!(cache.l2_counts(), (1, 0));
+        assert_eq!(cache.disk_len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn overwrite_found_to_not_found_adjusts_counters() {
+        let cache = QueryCache::default();
+        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 0));
+
+        cache.insert("Paper", "DB", &(None, vec![], None));
+        assert_eq!(cache.l1_counts(), (0, 1));
+    }
+
+    #[test]
+    fn overwrite_same_type_no_double_count() {
+        let cache = QueryCache::default();
+        cache.insert("Paper", "DB", &(None, vec![], None));
+        assert_eq!(cache.l1_counts(), (0, 1));
+
+        // Overwrite not-found → not-found: should still be (0, 1)
+        cache.insert("Paper", "DB", &(None, vec![], None));
+        assert_eq!(cache.l1_counts(), (0, 1));
+
+        // Same for found → found
+        cache.insert("Paper2", "DB", &(Some("Paper2".into()), vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 1));
+        cache.insert("Paper2", "DB", &(Some("Paper2".into()), vec!["X".into()], None));
+        assert_eq!(cache.l1_counts(), (1, 1));
+    }
+
+    #[test]
+    fn clear_resets_all_counters() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.insert("A", "DB", &(Some("A".into()), vec![], None));
+        cache.insert("B", "DB", &(None, vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 1));
+        assert_eq!(cache.l2_counts(), (1, 1));
+
+        cache.clear();
+        assert_eq!(cache.l1_counts(), (0, 0));
+        assert_eq!(cache.l2_counts(), (0, 0));
+        assert_eq!(cache.disk_len(), 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn clear_not_found_adjusts_counters() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.insert("Found", "DB", &(Some("Found".into()), vec![], None));
+        cache.insert("NF1", "DB", &(None, vec![], None));
+        cache.insert("NF2", "DB2", &(None, vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 2));
+        assert_eq!(cache.l2_counts(), (1, 2));
+
+        cache.clear_not_found();
+        assert_eq!(cache.l1_counts(), (1, 0));
+        assert_eq!(cache.l2_counts(), (1, 0));
+        assert_eq!(cache.disk_len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn l1_counter_adjusts_on_ttl_expiry() {
+        let cache = QueryCache::new(Duration::from_millis(1), Duration::from_millis(1));
+        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 0));
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        // get() should evict the expired entry and adjust counter
+        assert!(cache.get("Paper", "DB").is_none());
+        assert_eq!(cache.l1_counts(), (0, 0));
+    }
+
+    #[test]
+    fn l1_counter_adjusts_on_l2_promotion() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.insert("Paper", "DB", &(Some("Paper".into()), vec![], None));
+        assert_eq!(cache.l1_counts(), (1, 0));
+
+        // Remove from L1, simulating eviction
+        let norm = normalize_title("Paper");
+        let key = CacheKey {
+            normalized_title: norm,
+            db_name: "DB".to_string(),
+        };
+        cache.entries.remove(&key);
+        // Manually adjust L1 counter since we bypassed the normal path
+        cache.l1_found_count.fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(cache.l1_counts(), (0, 0));
+
+        // get() should promote from L2 and increment L1 counter
+        let result = cache.get("Paper", "DB");
+        assert!(result.is_some());
+        assert_eq!(cache.l1_counts(), (1, 0));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn concurrent_inserts_counters_consistent() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = std::sync::Arc::new(
+            QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap(),
+        );
+
+        let mut handles = vec![];
+        for i in 0..20 {
+            let c = cache.clone();
+            handles.push(std::thread::spawn(move || {
+                let title = format!("Paper {}", i);
+                let db = format!("DB{}", i % 4);
+                if i % 3 == 0 {
+                    c.insert(&title, &db, &(None, vec![], None));
+                } else {
+                    c.insert(&title, &db, &(Some(title.clone()), vec![], None));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let (l1_f, l1_nf) = cache.l1_counts();
+        let (l2_f, l2_nf) = cache.l2_counts();
+        // Total L1 entries should match DashMap len
+        assert_eq!(l1_f + l1_nf, cache.len());
+        // Total L2 entries should match disk_len
+        assert_eq!(l2_f + l2_nf, cache.disk_len());
+        // L1 and L2 should agree (all entries are in both tiers)
+        assert_eq!(l1_f, l2_f);
+        assert_eq!(l1_nf, l2_nf);
 
         let _ = std::fs::remove_file(&path);
     }
