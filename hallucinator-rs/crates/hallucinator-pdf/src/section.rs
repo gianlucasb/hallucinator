@@ -96,11 +96,9 @@ pub(crate) fn segment_references_with_config(
         let neurips_refs = try_neurips(ref_text);
 
         let mut best: Option<Vec<String>> = None;
-        for candidate in [ml_refs, aaai_refs, neurips_refs] {
-            if let Some(refs) = candidate {
-                if best.as_ref().map_or(true, |b| refs.len() > b.len()) {
-                    best = Some(refs);
-                }
+        for refs in [ml_refs, aaai_refs, neurips_refs].into_iter().flatten() {
+            if best.as_ref().is_none_or(|b| refs.len() > b.len()) {
+                best = Some(refs);
             }
         }
         if let Some(refs) = best {

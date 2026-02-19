@@ -1244,7 +1244,7 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             }
             let word_len = pos - word_start;
             // Short words (2-3 chars) starting with capital followed by surname
-            if word_len >= 2 && word_len <= 3 && text.as_bytes()[word_start].is_ascii_uppercase() {
+            if (2..=3).contains(&word_len) && text.as_bytes()[word_start].is_ascii_uppercase() {
                 let after_period = &text[m.end()..];
                 let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
                 if is_author {
