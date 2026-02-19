@@ -391,10 +391,47 @@ fn try_quoted_title_with_config(
 
     let resolved = config.quote_patterns.resolve(&DEFAULT_QUOTE_PATTERNS);
 
+    // Helper to detect if a quote is embedded within a title (not the full title)
+    // Returns true if there's significant title-like text before the opening quote
+    fn is_embedded_quote(ref_text: &str, match_start: usize) -> bool {
+        let before_match = &ref_text[..match_start];
+        // Find the last title start marker:
+        // - ACM: ". YYYY. " (with optional parenthetical like "(to appear)")
+        // - LNCS: ": "
+        // - Harvard/APA: "(YYYY) " or "(YYYY), "
+        static TITLE_START: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(concat!(
+                r"(?:",
+                r"\.\s*(?:19|20)\d{2}[a-z]?(?:\s*\([^)]+\))?\.\s+", // ACM: ". 2022. "
+                r"|:\s+",                                           // LNCS: ": "
+                r"|\((?:19|20)\d{2}\)[,.]?\s+",                     // Harvard: "(2022) "
+                r")"
+            ))
+            .unwrap()
+        });
+        let title_context_start = if let Some(m) = TITLE_START.find_iter(before_match).last() {
+            m.end()
+        } else {
+            0
+        };
+        // Text between title start and quote
+        let between = before_match[title_context_start..].trim();
+        // If there are 2+ words of title-like text before the quote, it's embedded
+        between.split_whitespace().count() >= 2
+    }
+
     for re in resolved.iter() {
         if let Some(caps) = re.captures(ref_text) {
             let quoted_part = caps.get(1).unwrap().as_str().trim();
+            let match_start = caps.get(0).unwrap().start();
             let after_quote = ref_text[caps.get(0).unwrap().end()..].trim();
+
+            // Skip if quote is embedded in a larger title
+            // e.g., "Keeping Authorities 'Honest or Bust' with..." - don't extract just the quoted part
+            // This applies to all quote patterns, not just single quotes
+            if is_embedded_quote(ref_text, match_start) {
+                continue;
+            }
 
             // IEEE: comma inside quotes means title is complete
             // Accept 2+ words for quoted titles (quotes are a strong indicator)
@@ -723,9 +760,12 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
 }
 
 fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
-    // ". YYYY[a-z]. Title" — require \s+ after year to avoid matching DOIs
+    // ". YYYY[a-z][(parenthetical)]. Title" — require \s+ after year to avoid matching DOIs
     // Optional letter suffix for disambiguated years (e.g. "2022b")
-    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*((?:19|20)\d{2}[a-z]?)\.\s+").unwrap());
+    // Optional parenthetical like "(to appear)" between year and period
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\.\s*((?:19|20)\d{2}[a-z]?)(?:\s*\([^)]+\))?\.\s+").unwrap()
+    });
 
     let caps = RE.captures(ref_text)?;
 
@@ -774,8 +814,8 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
                 r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
             )
             .unwrap(),
-            // ". https://" — URL after period
-            Regex::new(r"\.\s*https?://").unwrap(),
+            // ". https://" — URL after period (allow space in "https: //" from PDF line breaks)
+            Regex::new(r"\.\s*https?:\s*//").unwrap(),
         ]
     });
 
@@ -833,12 +873,14 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 let title = parts[1].trim();
                 static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
                 let title = TRAIL.replace(title, "");
+                // Strip leading ACM-style year: "2004. Title" → "Title"
+                let title = strip_leading_year(&title);
                 if !title.is_empty() {
                     // Verify it doesn't look like authors
                     static AUTHOR_CHECK: Lazy<Regex> =
                         Lazy::new(|| Regex::new(r"^[A-Z][a-z]+\s+[A-Z][a-z]+,").unwrap());
                     if !AUTHOR_CHECK.is_match(&title) {
-                        return Some((title.to_string(), false));
+                        return Some((title, false));
                     }
                 }
             }
@@ -890,8 +932,10 @@ fn try_journal(ref_text: &str) -> Option<(String, bool)> {
     let parts = split_sentences_skip_initials(before_journal);
     if parts.len() >= 2 {
         let title = parts[1].trim();
+        // Strip leading ACM-style year: "2004. Title" → "Title"
+        let title = strip_leading_year(title);
         if !title.is_empty() {
-            return Some((title.to_string(), false));
+            return Some((title, false));
         }
     }
     None
@@ -909,8 +953,10 @@ fn try_elsevier_journal(ref_text: &str) -> Option<(String, bool)> {
         let title = parts.last().unwrap().trim();
         static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
         let title = TRAIL.replace(title, "");
+        // Strip leading ACM-style year: "2004. Title" → "Title"
+        let title = strip_leading_year(&title);
         if !title.is_empty() {
-            return Some((title.to_string(), false));
+            return Some((title, false));
         }
     }
     None
@@ -1135,11 +1181,13 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     let title = title_text[..title_end].trim();
     static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
     let title = TRAIL.replace(title, "");
+    // Strip leading ACM-style year: "2004. Title" → "Title"
+    let title = strip_leading_year(&title);
 
     if title.is_empty() {
         None
     } else {
-        Some((title.to_string(), false))
+        Some((title, false))
     }
 }
 
@@ -1274,6 +1322,8 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     }
 
     let mut potential_title = sentences[1].trim().to_string();
+    // Strip leading ACM-style year: "2004. Title" → "Title"
+    potential_title = strip_leading_year(&potential_title);
 
     // Check if it looks like authors (high ratio of capitalized words + "and")
     // Strip trailing punctuation when checking words (e.g., "Shen," should match)
@@ -1287,7 +1337,7 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
         if (cap_words as f64 / words.len() as f64) > 0.7 && and_count > 0 {
             // Try third sentence
             if sentences.len() >= 3 {
-                potential_title = sentences[2].trim().to_string();
+                potential_title = strip_leading_year(sentences[2].trim());
             }
         }
     }
@@ -1496,6 +1546,30 @@ fn truncate_at_sentence_end(title: &str) -> String {
     title.to_string()
 }
 
+/// Strip leading ACM-style year from title: "2004. Order Preserving..." → "Order Preserving..."
+/// Also handles variants like "2022 (to appear). Title" and "2022a. Title"
+/// If the entire string is just a year (e.g., "2022 (to appear)"), returns empty string.
+fn strip_leading_year(title: &str) -> String {
+    // First, try stripping year prefix with trailing ". "
+    static LEADING_YEAR: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^(?:19|20)\d{2}[a-z]?(?:\s*\([^)]+\))?\.\s+").unwrap()
+    });
+    let result = LEADING_YEAR.replace(title, "").to_string();
+    if result != title {
+        return result;
+    }
+
+    // If no match, check if the ENTIRE string is just a year pattern (no title content)
+    static YEAR_ONLY: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^(?:19|20)\d{2}[a-z]?(?:\s*\([^)]+\))?\.?$").unwrap()
+    });
+    if YEAR_ONLY.is_match(title) {
+        return String::new(); // Reject year-only "titles"
+    }
+
+    result
+}
+
 /// The built-in default cutoff patterns. Exposed as `pub(crate)` so config resolution can use them.
 pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     let j = r"[a-zA-Z&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars (no \s)
@@ -1516,7 +1590,7 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i),\s*volume\s+\d+.*$").unwrap(),
         Regex::new(r",\s*\d+\s*\(\d+\).*$").unwrap(),
         Regex::new(r",\s*\d+\s*$").unwrap(),
-        Regex::new(r"\.\s*\d+\s*$").unwrap(),
+        Regex::new(r"\.\s*\d{2,}\s*$").unwrap(), // Require 2+ digits to avoid matching version numbers like ".2" in "v0.2.2"
         Regex::new(r"\.\s*https?://.*$").unwrap(),
         Regex::new(r"\.\s*ht\s*tps?://.*$").unwrap(),
         Regex::new(r"(?i),\s*(?:vol\.|pp\.|pages).*$").unwrap(),
@@ -1569,6 +1643,79 @@ mod tests {
         let (title, from_quotes) = extract_title_from_reference(ref_text);
         assert!(!from_quotes);
         assert!(title.contains("Novel Approach"));
+    }
+
+    #[test]
+    fn test_acm_year_title_with_initials() {
+        // ACM format with initials: "R. Author, J. Author, ... 2004. Title. In Venue"
+        let ref_text = "R. Agrawal, J. Kiernan, R. Srikant, and Y. Xu. 2004. Order Preserving Encryption for Numeric Data. In Proceedings of the 2004 ACM SIGMOD.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        eprintln!("Extracted: {:?}, Cleaned: {:?}", title, cleaned);
+        assert!(
+            cleaned.contains("Order Preserving"),
+            "Title should be 'Order Preserving...', got: {:?}",
+            cleaned
+        );
+        assert!(
+            !cleaned.starts_with("2004"),
+            "Title should not start with year: {:?}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_strip_leading_year() {
+        assert_eq!(
+            strip_leading_year("2004. Order Preserving"),
+            "Order Preserving"
+        );
+        assert_eq!(
+            strip_leading_year("2022 (to appear). Unit-length"),
+            "Unit-length"
+        );
+        assert_eq!(
+            strip_leading_year("2022a. Some Title"),
+            "Some Title"
+        );
+        // Should not change if no leading year
+        assert_eq!(
+            strip_leading_year("Order Preserving"),
+            "Order Preserving"
+        );
+        // Year-only strings should return empty (these are not titles)
+        assert_eq!(strip_leading_year("2022 (to appear)"), "");
+        assert_eq!(strip_leading_year("2004"), "");
+        assert_eq!(strip_leading_year("2022."), "");
+    }
+
+    #[test]
+    fn test_acm_year_to_appear() {
+        // ACM format with "(to appear)" variant
+        let ref_text = "Carlos Alegría, Giordano Da Lozzo, Giuseppe Di Battista, Fabrizio Frati, Fabrizio Grosso, and Maurizio Patrignani. 2022 (to appear). Unit-length Rectangular Drawings of Graphs. Proc. Symposium on Graph Drawing and Network Visualization (2022 (to appear)).";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        eprintln!("Extracted: {:?}, Cleaned: {:?}", title, cleaned);
+        assert!(
+            cleaned.contains("Unit-length"),
+            "Title should contain 'Unit-length', got: {:?}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_zenodo_version_number_preserved() {
+        // Version numbers like "v0.2.2" should not be truncated
+        let ref_text = "Matteo Botticci. 2022. ZigRazor/CXXGraph: Release v0.2.2. https: //doi.org/10.5281/zenodo.5878832";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        eprintln!("Extracted: {:?}", title);
+        let cleaned = clean_title(&title, from_quotes);
+        eprintln!("Cleaned: {:?}", cleaned);
+        assert!(
+            cleaned.contains("v0.2.2"),
+            "Version number v0.2.2 should be preserved, got: {:?}",
+            cleaned
+        );
     }
 
     #[test]
