@@ -1249,16 +1249,20 @@ impl App {
                     self.file_picker.cursor = self.file_picker.entries.len().saturating_sub(1);
                 }
                 Action::ToggleSafe => {
-                    if matches!(
-                        self.file_picker_context,
-                        FilePickerContext::SelectDatabase { .. }
-                    ) {
-                        // In db mode: single-select, only .db files
-                        if let Some(entry) = self.file_picker.entries.get(self.file_picker.cursor)
-                            && entry.is_db
-                        {
-                            self.file_picker.selected.clear();
-                            self.file_picker.selected.push(entry.path.clone());
+                    if let FilePickerContext::SelectDatabase { config_item } =
+                        self.file_picker_context
+                    {
+                        // Single-select: .db files for DBLP/ACL, directories for OpenAlex
+                        if let Some(entry) = self.file_picker.entries.get(self.file_picker.cursor) {
+                            let selectable = if config_item == 2 {
+                                entry.is_dir // OpenAlex index is a directory
+                            } else {
+                                entry.is_db
+                            };
+                            if selectable {
+                                self.file_picker.selected.clear();
+                                self.file_picker.selected.push(entry.path.clone());
+                            }
                         }
                     } else {
                         // Normal mode: toggle selection of current entry
@@ -2306,10 +2310,11 @@ impl App {
                 }
             }
             BackendEvent::OpenAlexBuildProgress { event } => {
-                self.config_state.openalex_build_status = Some(format_openalex_progress(
-                    &event,
-                    self.config_state.openalex_build_started,
-                ));
+                if let Some(s) =
+                    format_openalex_progress(&event, self.config_state.openalex_build_started)
+                {
+                    self.config_state.openalex_build_status = Some(s);
+                }
             }
             BackendEvent::OpenAlexBuildComplete {
                 success,
@@ -3017,15 +3022,19 @@ fn format_acl_progress(
 }
 
 /// Format OpenAlex build progress for display in the config panel.
+/// Returns `None` for transient file-level events (keep previous status).
 fn format_openalex_progress(
     event: &hallucinator_openalex::BuildProgress,
     build_started: Option<Instant>,
-) -> String {
-    match event {
+) -> Option<String> {
+    Some(match event {
         hallucinator_openalex::BuildProgress::ListingPartitions { message } => message.clone(),
+        hallucinator_openalex::BuildProgress::FileStarted { .. }
+        | hallucinator_openalex::BuildProgress::FileComplete { .. }
+        | hallucinator_openalex::BuildProgress::FileProgress { .. } => return None,
         hallucinator_openalex::BuildProgress::Downloading {
-            partitions_done,
-            partitions_total,
+            files_done,
+            files_total,
             bytes_downloaded,
             records_indexed,
         } => {
@@ -3055,11 +3064,11 @@ fn format_openalex_progress(
                     }
                 })
                 .unwrap_or_default();
-            let eta = format_eta(*partitions_done, *partitions_total, build_started);
+            let eta = format_eta(*files_done, *files_total, build_started);
             format!(
-                "Downloading... {}/{} partitions, {} indexed, {}{}{}",
-                partitions_done,
-                partitions_total,
+                "Downloading... {}/{} files, {} indexed, {}{}{}",
+                files_done,
+                files_total,
                 format_number(*records_indexed),
                 format_bytes(*bytes_downloaded),
                 speed,
@@ -3077,9 +3086,11 @@ fn format_openalex_progress(
             )
         }
         hallucinator_openalex::BuildProgress::Merging => "Merging index segments...".to_string(),
+        hallucinator_openalex::BuildProgress::FileSkipped { .. } => return None,
         hallucinator_openalex::BuildProgress::Complete {
             publications,
             skipped,
+            ..
         } => {
             if *skipped {
                 "Already up to date".to_string()
@@ -3090,7 +3101,7 @@ fn format_openalex_progress(
                 )
             }
         }
-    }
+    })
 }
 
 /// Format an ETA string from progress and elapsed time.

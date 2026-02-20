@@ -317,7 +317,10 @@ pub(crate) fn clean_title_with_config(
             // Multiple semicolons with short tokens (code-like)
             Regex::new(r";\s*[a-z]{2,6}\s*;").unwrap(),
             // Assembly instructions: "mov eax, ebx" or "push ecx" patterns
-            Regex::new(r"(?i)\b(?:mov|push|pop|call|ret|jmp|lea|add|sub|xor|and|or)\s+[a-z]{2,3}[,;]").unwrap(),
+            Regex::new(
+                r"(?i)\b(?:mov|push|pop|call|ret|jmp|lea|add|sub|xor|and|or)\s+[a-z]{2,3}[,;]",
+            )
+            .unwrap(),
         ]
     });
     if CODE_PATTERNS.iter().any(|re| re.is_match(&title)) {
@@ -325,8 +328,7 @@ pub(crate) fn clean_title_with_config(
     }
 
     // FIX 4c: Reject "arXiv preprint" as a title (extraction failed)
-    static ARXIV_ONLY: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)^arXiv\s+preprint\b").unwrap());
+    static ARXIV_ONLY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^arXiv\s+preprint\b").unwrap());
     if ARXIV_ONLY.is_match(&title) {
         return String::new();
     }
@@ -346,8 +348,7 @@ pub(crate) fn clean_title_with_config(
     }
 
     // FIX 4f: Reject ACM "[n. d.]" / "[n.d.]" marker extracted as title
-    static NO_DATE_MARKER: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)^\[n\.?\s*d\.?\]").unwrap());
+    static NO_DATE_MARKER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\[n\.?\s*d\.?\]").unwrap());
     if NO_DATE_MARKER.is_match(&title) {
         return String::new();
     }
@@ -721,9 +722,8 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     // ". YYYY[a-z]. Title" — require \s+ after year to avoid matching DOIs
     // Optional letter suffix for disambiguated years (e.g. "2022b")
     // Also handles ACM "[n. d.]" or "[n.d.]" (no date) marker
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\.\s*(?:(?:19|20)\d{2}[a-z]?|\[n\.?\s*d\.?\])\.\s+").unwrap()
-    });
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\.\s*(?:(?:19|20)\d{2}[a-z]?|\[n\.?\s*d\.?\])\.\s+").unwrap());
 
     let caps = RE.captures(ref_text)?;
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
@@ -2486,7 +2486,8 @@ mod tests {
     fn test_code_snippet_rejected_as_title() {
         // Issue: Assembly code extracted as title
         // Raw: asm volatile("rep; movsb;" : "=S"(junk_a), "=D"(junk_b) : "c"(nbytes)...
-        let code_title = r#"rep; movsb;: "=S"(junk_a), "=D"(junk_b) : "c"(nbytes), "S"(src), "D"(dst)"#;
+        let code_title =
+            r#"rep; movsb;: "=S"(junk_a), "=D"(junk_b) : "c"(nbytes), "S"(src), "D"(dst)"#;
         let cleaned = clean_title(code_title, false);
         assert_eq!(
             cleaned, "",
@@ -2616,5 +2617,4 @@ mod tests {
         let cleaned = clean_title(title, false);
         assert_eq!(cleaned, "", "DOI URL should be rejected as title");
     }
-
 }

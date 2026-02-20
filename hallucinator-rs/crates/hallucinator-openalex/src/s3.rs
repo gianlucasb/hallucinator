@@ -7,7 +7,7 @@ use quick_xml::events::Event;
 
 use crate::OpenAlexError;
 
-const BUCKET_URL: &str = "https://openalex.s3.us-east-1.amazonaws.com";
+pub(crate) const BUCKET_URL: &str = "https://openalex.s3.us-east-1.amazonaws.com";
 
 /// A date partition in the OpenAlex S3 bucket (e.g., `data/works/updated_date=2025-01-15/`).
 #[derive(Debug, Clone)]
@@ -118,30 +118,6 @@ pub async fn list_partition_files(
     }
 
     Ok(files)
-}
-
-/// Download a gzipped file and return the raw bytes.
-pub async fn download_gz(client: &reqwest::Client, key: &str) -> Result<Vec<u8>, OpenAlexError> {
-    let url = format!("{}/{}", BUCKET_URL, key);
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| OpenAlexError::Download(e.to_string()))?;
-
-    if !resp.status().is_success() {
-        return Err(OpenAlexError::Download(format!(
-            "S3 download failed for {}: HTTP {}",
-            key,
-            resp.status()
-        )));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| OpenAlexError::Download(e.to_string()))?;
-    Ok(bytes.to_vec())
 }
 
 /// URL-encode a continuation token for S3 queries.

@@ -1,9 +1,16 @@
 //! S3 download + JSON parsing + Tantivy indexing for OpenAlex works.
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
+use futures_util::StreamExt;
 use tantivy::doc;
 use tantivy::schema::*;
 use tantivy::{Index, IndexWriter};
@@ -21,11 +28,35 @@ const ALLOWED_TYPES: &[&str] = &[
     "dissertation",
 ];
 
+/// Number of files to download and parse concurrently.
+const DOWNLOAD_CONCURRENCY: usize = 8;
+
+/// Number of retry attempts per file before skipping.
+const MAX_RETRIES: u32 = 3;
+
+/// Result from downloading and parsing a single gz file.
+enum FileResult {
+    Ok {
+        partition_date: String,
+        filename: String,
+        records: Vec<(u64, String, Vec<String>)>,
+    },
+    /// All retries exhausted — skip this file.
+    Failed { filename: String, error: String },
+}
+
+/// Extract a short display name from an S3 key.
+/// `"data/works/updated_date=2026-01-15/part_003.gz"` → `"2026-01-15/part_003.gz"`
+fn short_filename(key: &str) -> String {
+    key.strip_prefix("data/works/updated_date=")
+        .unwrap_or(key)
+        .to_string()
+}
+
 /// Build or incrementally update the OpenAlex Tantivy index.
 ///
-/// - `since_override`: if set, only download S3 partitions newer than this date (YYYY-MM-DD).
-///   Overrides the metadata `last_sync_date`.
-/// - `min_year`: if set, skip works with `publication_year` before this year during indexing.
+/// Downloads are parallelised (up to [`DOWNLOAD_CONCURRENCY`] files at a time)
+/// so the network is saturated while the indexer writes to Tantivy.
 ///
 /// Returns `true` if new data was indexed, `false` if already up to date.
 pub async fn build(
@@ -73,13 +104,55 @@ pub async fn build(
         progress(BuildProgress::Complete {
             publications: 0,
             skipped: true,
+            failed_files: Vec::new(),
         });
         return Ok(false);
     }
 
-    let partitions_total = partitions.len() as u64;
+    // Step 2: List all files across all partitions (concurrently)
+    progress(BuildProgress::ListingPartitions {
+        message: format!("Listing files across {} partitions...", partitions.len()),
+    });
 
-    // Step 2: Open or create Tantivy index
+    let listing_futures: Vec<_> = partitions
+        .iter()
+        .map(|partition| {
+            let client = client.clone();
+            let prefix = partition.prefix.clone();
+            let date = partition.date.clone();
+            async move {
+                let files = s3::list_partition_files(&client, &prefix).await?;
+                Ok::<_, OpenAlexError>((date, files))
+            }
+        })
+        .collect();
+
+    let listing_results: Vec<Result<_, OpenAlexError>> =
+        futures_util::stream::iter(listing_futures)
+            .buffer_unordered(16)
+            .collect()
+            .await;
+
+    let mut all_files: Vec<(String, s3::PartitionFile)> = Vec::new();
+    for result in listing_results {
+        let (date, files) = result?;
+        for file in files {
+            all_files.push((date.clone(), file));
+        }
+    }
+
+    if all_files.is_empty() {
+        progress(BuildProgress::Complete {
+            publications: 0,
+            skipped: true,
+            failed_files: Vec::new(),
+        });
+        return Ok(false);
+    }
+
+    let files_total = all_files.len() as u64;
+
+    // Step 3: Open or create Tantivy index
     std::fs::create_dir_all(db_path)?;
 
     let (index, schema) = open_or_create_index(db_path)?;
@@ -93,107 +166,186 @@ pub async fn build(
         .get_field("openalex_id")
         .map_err(|e| OpenAlexError::Index(e.to_string()))?;
 
-    let mut writer: IndexWriter = index
+    let writer: IndexWriter = index
         .writer(256_000_000) // 256MB heap
         .map_err(|e| OpenAlexError::Index(e.to_string()))?;
 
-    let mut total_records: u64 = 0;
-    let mut total_bytes: u64 = 0;
     let mut newest_date = last_sync_date.clone().unwrap_or_default();
-    let mut uncommitted_count: u64 = 0;
 
-    // Step 3: Process each partition
-    for (part_idx, partition) in partitions.iter().enumerate() {
-        progress(BuildProgress::Downloading {
-            partitions_done: part_idx as u64,
-            partitions_total,
-            bytes_downloaded: total_bytes,
-            records_indexed: total_records,
-        });
+    // Shared counters for live progress
+    let live_bytes = Arc::new(AtomicU64::new(0));
+    let records_indexed = Arc::new(AtomicU64::new(0));
+    let mut file_counters: HashMap<String, Arc<AtomicU64>> = HashMap::new();
 
-        // List files in this partition
-        let files = s3::list_partition_files(&client, &partition.prefix).await?;
-
-        for file in &files {
-            // Download the gzipped file
-            let gz_bytes: Vec<u8> = s3::download_gz(&client, &file.key).await?;
-            total_bytes += gz_bytes.len() as u64;
-
-            // Decompress and parse JSON lines
-            let decoder = GzDecoder::new(gz_bytes.as_slice());
-            let buf_reader = BufReader::new(decoder);
-
-            for line_result in buf_reader.lines() {
-                let line: String = match line_result {
-                    Ok(l) => l,
-                    Err(_) => continue,
-                };
-
-                if line.trim().is_empty() {
-                    continue;
-                }
-
-                if let Some((openalex_id, title, authors)) = parse_work_json(&line, min_year) {
-                    // Upsert: delete existing, then add
-                    let id_term = tantivy::Term::from_field_u64(id_field, openalex_id);
-                    writer.delete_term(id_term);
-
-                    let authors_str = authors.join("|");
+    // Spawn dedicated indexer task so Tantivy writes don't stall the
+    // download futures (FuturesUnordered only polls children when the
+    // main select! loop is free).
+    let (index_tx, index_rx) =
+        tokio::sync::mpsc::channel::<Vec<(u64, String, Vec<String>)>>(DOWNLOAD_CONCURRENCY * 2);
+    let indexer_records = records_indexed.clone();
+    let index_handle = tokio::task::spawn_blocking(move || -> Result<(), OpenAlexError> {
+        let mut index_rx = index_rx;
+        let mut writer = writer;
+        let mut uncommitted: u64 = 0;
+        while let Some(batch) = index_rx.blocking_recv() {
+            for (openalex_id, title, authors) in batch {
+                let id_term = tantivy::Term::from_field_u64(id_field, openalex_id);
+                writer.delete_term(id_term);
+                let authors_str = authors.join("|");
+                writer
+                    .add_document(doc!(
+                        title_field => title,
+                        authors_field => authors_str,
+                        id_field => openalex_id,
+                    ))
+                    .map_err(|e| OpenAlexError::Index(e.to_string()))?;
+                uncommitted += 1;
+                indexer_records.fetch_add(1, Ordering::Relaxed);
+                if uncommitted >= 100_000 {
                     writer
-                        .add_document(doc!(
-                            title_field => title,
-                            authors_field => authors_str,
-                            id_field => openalex_id,
-                        ))
+                        .commit()
                         .map_err(|e| OpenAlexError::Index(e.to_string()))?;
-
-                    total_records += 1;
-                    uncommitted_count += 1;
-
-                    // Commit periodically
-                    if uncommitted_count >= 100_000 {
-                        progress(BuildProgress::Committing {
-                            records_indexed: total_records,
-                        });
-                        writer
-                            .commit()
-                            .map_err(|e| OpenAlexError::Index(e.to_string()))?;
-                        uncommitted_count = 0;
-                    }
+                    uncommitted = 0;
                 }
             }
-
-            // Update progress after each file
-            progress(BuildProgress::Downloading {
-                partitions_done: part_idx as u64,
-                partitions_total,
-                bytes_downloaded: total_bytes,
-                records_indexed: total_records,
-            });
         }
-
-        if partition.date > newest_date {
-            newest_date = partition.date.clone();
+        if uncommitted > 0 {
+            writer
+                .commit()
+                .map_err(|e| OpenAlexError::Index(e.to_string()))?;
         }
-    }
-
-    // Step 4: Final commit
-    if uncommitted_count > 0 {
-        progress(BuildProgress::Committing {
-            records_indexed: total_records,
-        });
         writer
-            .commit()
+            .wait_merging_threads()
             .map_err(|e| OpenAlexError::Index(e.to_string()))?;
+        Ok(())
+    });
+
+    // Step 4: Concurrent download + parse, index as results arrive.
+    // Each download is tokio::spawn'd so they run on independent runtime
+    // threads — gzip decompression in one task can't stall another's HTTP stream.
+    let mut in_flight = tokio::task::JoinSet::new();
+    let mut file_iter = all_files.into_iter();
+
+    // Seed the initial batch of concurrent downloads
+    for _ in 0..DOWNLOAD_CONCURRENCY {
+        if let Some((partition_date, file)) = file_iter.next() {
+            let filename = short_filename(&file.key);
+            let file_bytes = Arc::new(AtomicU64::new(0));
+            file_counters.insert(filename.clone(), file_bytes.clone());
+            progress(BuildProgress::FileStarted {
+                filename: filename.clone(),
+            });
+            in_flight.spawn(make_download_future(
+                client.clone(),
+                file.key,
+                partition_date,
+                min_year,
+                live_bytes.clone(),
+                file_bytes,
+            ));
+        }
     }
 
-    // Step 5: Wait for merge threads
-    progress(BuildProgress::Merging);
-    writer
-        .wait_merging_threads()
-        .map_err(|e| OpenAlexError::Index(e.to_string()))?;
+    let mut files_done: u64 = 0;
+    let mut failed_files: Vec<String> = Vec::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Step 6: Write updated metadata
+    loop {
+        tokio::select! {
+            result = in_flight.join_next() => {
+                let file_result = match result {
+                    Some(Ok(r)) => r,
+                    Some(Err(e)) => {
+                        return Err(OpenAlexError::Index(
+                            format!("download task panicked: {e}")
+                        ));
+                    }
+                    None => break,
+                };
+                match file_result {
+                    FileResult::Ok { partition_date, filename, records } => {
+                        file_counters.remove(&filename);
+                        progress(BuildProgress::FileComplete { filename });
+
+                        if !records.is_empty() {
+                            index_tx.send(records).await
+                                .map_err(|_| OpenAlexError::Index("indexer task failed".into()))?;
+                        }
+
+                        files_done += 1;
+                        if partition_date > newest_date {
+                            newest_date = partition_date;
+                        }
+                    }
+                    FileResult::Failed { filename, error } => {
+                        file_counters.remove(&filename);
+                        progress(BuildProgress::FileSkipped {
+                            filename: filename.clone(),
+                            error,
+                        });
+                        failed_files.push(filename);
+                        files_done += 1;
+                    }
+                }
+
+                // Replenish: start the next download
+                if let Some((partition_date, file)) = file_iter.next() {
+                    let filename = short_filename(&file.key);
+                    let file_bytes = Arc::new(AtomicU64::new(0));
+                    file_counters.insert(filename.clone(), file_bytes.clone());
+                    progress(BuildProgress::FileStarted {
+                        filename: filename.clone(),
+                    });
+                    in_flight.spawn(make_download_future(
+                        client.clone(),
+                        file.key,
+                        partition_date,
+                        min_year,
+                        live_bytes.clone(),
+                        file_bytes,
+                    ));
+                }
+
+                // Emit progress after file completion
+                progress(BuildProgress::Downloading {
+                    files_done,
+                    files_total,
+                    bytes_downloaded: live_bytes.load(Ordering::Relaxed),
+                    records_indexed: records_indexed.load(Ordering::Relaxed),
+                });
+            }
+            _ = tick.tick() => {
+                // Live progress: main bar + per-file spinners
+                progress(BuildProgress::Downloading {
+                    files_done,
+                    files_total,
+                    bytes_downloaded: live_bytes.load(Ordering::Relaxed),
+                    records_indexed: records_indexed.load(Ordering::Relaxed),
+                });
+                for (filename, counter) in &file_counters {
+                    progress(BuildProgress::FileProgress {
+                        filename: filename.clone(),
+                        bytes_downloaded: counter.load(Ordering::Relaxed),
+                    });
+                }
+            }
+        }
+    }
+
+    // Step 6: Signal indexer to finish, then wait for commit + merge
+    drop(index_tx);
+    progress(BuildProgress::Committing {
+        records_indexed: records_indexed.load(Ordering::Relaxed),
+    });
+    progress(BuildProgress::Merging);
+    index_handle
+        .await
+        .map_err(|e| OpenAlexError::Index(e.to_string()))??;
+
+    let total_records = records_indexed.load(Ordering::Relaxed);
+
+    // Step 7: Write updated metadata
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -215,9 +367,112 @@ pub async fn build(
     progress(BuildProgress::Complete {
         publications: total_records,
         skipped: false,
+        failed_files,
     });
 
     Ok(true)
+}
+
+/// Create a boxed future that downloads and parses one S3 file.
+///
+/// Retries up to [`MAX_RETRIES`] times with exponential backoff. If all
+/// attempts fail, returns [`FileResult::Failed`] instead of an error so
+/// the build continues with the remaining files.
+fn make_download_future(
+    client: reqwest::Client,
+    key: String,
+    partition_date: String,
+    min_year: Option<u32>,
+    total_bytes: Arc<AtomicU64>,
+    file_bytes: Arc<AtomicU64>,
+) -> Pin<Box<dyn Future<Output = FileResult> + Send>> {
+    let filename = short_filename(&key);
+    Box::pin(async move {
+        let mut last_err = String::new();
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                // Reset per-file counter for the retry
+                file_bytes.store(0, Ordering::Relaxed);
+                let backoff = Duration::from_secs(2u64.pow(attempt));
+                tokio::time::sleep(backoff).await;
+            }
+            match download_and_parse(&client, &key, min_year, &total_bytes, &file_bytes).await {
+                Ok(records) => {
+                    return FileResult::Ok {
+                        partition_date,
+                        filename,
+                        records,
+                    };
+                }
+                Err(e) => {
+                    // Undo the bytes this failed attempt added to the global counter
+                    let file_so_far = file_bytes.load(Ordering::Relaxed);
+                    total_bytes.fetch_sub(file_so_far, Ordering::Relaxed);
+                    last_err = e.to_string();
+                }
+            }
+        }
+        FileResult::Failed {
+            filename,
+            error: last_err,
+        }
+    })
+}
+
+/// Stream-download a gzipped S3 file, updating byte counters as chunks
+/// arrive, then decompress and parse the JSON lines.
+async fn download_and_parse(
+    client: &reqwest::Client,
+    key: &str,
+    min_year: Option<u32>,
+    total_bytes: &AtomicU64,
+    file_bytes: &AtomicU64,
+) -> Result<Vec<(u64, String, Vec<String>)>, OpenAlexError> {
+    let url = format!("{}/{}", s3::BUCKET_URL, key);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| OpenAlexError::Download(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        return Err(OpenAlexError::Download(format!(
+            "S3 download failed for {}: HTTP {}",
+            key,
+            resp.status()
+        )));
+    }
+
+    // Stream chunks so the byte counters update in real-time
+    let mut gz_bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| OpenAlexError::Download(e.to_string()))?;
+        let len = chunk.len() as u64;
+        total_bytes.fetch_add(len, Ordering::Relaxed);
+        file_bytes.fetch_add(len, Ordering::Relaxed);
+        gz_bytes.extend_from_slice(&chunk);
+    }
+
+    // Decompress and parse JSON lines
+    let decoder = GzDecoder::new(gz_bytes.as_slice());
+    let buf_reader = BufReader::new(decoder);
+    let mut records = Vec::new();
+
+    for line_result in buf_reader.lines() {
+        let line = match line_result {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(record) = parse_work_json(&line, min_year) {
+            records.push(record);
+        }
+    }
+
+    Ok(records)
 }
 
 /// Open an existing Tantivy index or create a new one with our schema.

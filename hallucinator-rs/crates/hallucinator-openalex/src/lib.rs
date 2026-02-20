@@ -66,19 +66,38 @@ pub enum BuildProgress {
     ListingPartitions {
         message: String,
     },
+    /// A file download has started.
+    FileStarted {
+        filename: String,
+    },
+    /// A file has been downloaded and parsed (about to be indexed).
+    FileComplete {
+        filename: String,
+    },
+    /// Live per-file download progress (emitted on a timer).
+    FileProgress {
+        filename: String,
+        bytes_downloaded: u64,
+    },
     Downloading {
-        partitions_done: u64,
-        partitions_total: u64,
+        files_done: u64,
+        files_total: u64,
         bytes_downloaded: u64,
         records_indexed: u64,
     },
     Committing {
         records_indexed: u64,
     },
+    /// A file failed after all retries and was skipped.
+    FileSkipped {
+        filename: String,
+        error: String,
+    },
     Merging,
     Complete {
         publications: u64,
         skipped: bool,
+        failed_files: Vec<String>,
     },
 }
 

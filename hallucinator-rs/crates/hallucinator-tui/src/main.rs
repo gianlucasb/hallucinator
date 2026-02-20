@@ -1212,12 +1212,13 @@ async fn update_openalex(
     let multi = MultiProgress::new();
 
     let dl_bar_style = ProgressStyle::with_template(
-        "{spinner:.cyan} {msg} [{bar:40.cyan/dim}] {pos}/{len} partitions ({bytes_per_sec}, eta {eta})",
+        "{spinner:.cyan} {msg} [{bar:40.cyan/dim}] {pos}/{len} files ({bytes_per_sec}, eta {eta})",
     )
     .unwrap()
     .progress_chars("=> ");
 
     let dl_spinner_style = ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap();
+    let file_spinner_style = ProgressStyle::with_template("  {spinner:.dim} {msg:.dim}").unwrap();
 
     let index_style =
         ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
@@ -1235,6 +1236,9 @@ async fn update_openalex(
     finalize_bar.set_style(index_style.clone());
     finalize_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
 
+    let mut file_spinners: std::collections::HashMap<String, ProgressBar> =
+        std::collections::HashMap::new();
+
     let build_start = Instant::now();
 
     let updated = hallucinator_openalex::build_database_filtered(
@@ -1245,20 +1249,44 @@ async fn update_openalex(
             hallucinator_openalex::BuildProgress::ListingPartitions { message } => {
                 dl_bar.set_message(message);
             }
+            hallucinator_openalex::BuildProgress::FileStarted { filename } => {
+                let s = multi.add(ProgressBar::new_spinner());
+                s.set_style(file_spinner_style.clone());
+                s.set_message(filename.clone());
+                s.enable_steady_tick(Duration::from_millis(120));
+                file_spinners.insert(filename, s);
+            }
+            hallucinator_openalex::BuildProgress::FileComplete { filename } => {
+                if let Some(s) = file_spinners.remove(&filename) {
+                    s.finish_and_clear();
+                }
+            }
+            hallucinator_openalex::BuildProgress::FileProgress {
+                filename,
+                bytes_downloaded,
+            } => {
+                if let Some(s) = file_spinners.get(&filename) {
+                    s.set_message(format!(
+                        "{} ({})",
+                        filename,
+                        format_bytes_fn(bytes_downloaded as f64)
+                    ));
+                }
+            }
             hallucinator_openalex::BuildProgress::Downloading {
-                partitions_done,
-                partitions_total,
+                files_done,
+                files_total,
                 bytes_downloaded,
                 records_indexed,
             } => {
-                if dl_bar.length() == Some(0) && partitions_total > 0 {
-                    dl_bar.set_length(partitions_total);
+                if dl_bar.length() == Some(0) && files_total > 0 {
+                    dl_bar.set_length(files_total);
                     dl_bar.set_style(dl_bar_style.clone());
                     index_bar.reset_elapsed();
                     index_bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
                     index_bar.enable_steady_tick(Duration::from_millis(120));
                 }
-                dl_bar.set_position(partitions_done);
+                dl_bar.set_position(files_done);
                 let elapsed = build_start.elapsed().as_secs_f64();
                 let speed = if elapsed > 0.5 {
                     format!(" {}/s", format_bytes_fn(bytes_downloaded as f64 / elapsed))
@@ -1293,7 +1321,18 @@ async fn update_openalex(
                     HumanCount(records_indexed)
                 ));
             }
+            hallucinator_openalex::BuildProgress::FileSkipped { filename, error } => {
+                if let Some(s) = file_spinners.remove(&filename) {
+                    s.finish_and_clear();
+                }
+                dl_bar.suspend(|| {
+                    eprintln!("Warning: skipped {} ({error})", filename);
+                });
+            }
             hallucinator_openalex::BuildProgress::Merging => {
+                for (_, s) in file_spinners.drain() {
+                    s.finish_and_clear();
+                }
                 if !dl_bar.is_finished() {
                     dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
                 }
@@ -1309,6 +1348,7 @@ async fn update_openalex(
             hallucinator_openalex::BuildProgress::Complete {
                 publications,
                 skipped,
+                ..
             } => {
                 if !index_bar.is_finished() {
                     index_bar.finish_and_clear();

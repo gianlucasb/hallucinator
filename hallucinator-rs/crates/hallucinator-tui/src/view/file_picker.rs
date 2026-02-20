@@ -11,10 +11,14 @@ use crate::view::spinner_char;
 pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let picker = &app.file_picker;
-    let is_db_mode = matches!(
-        app.file_picker_context,
-        FilePickerContext::SelectDatabase { .. }
-    );
+    let db_config_item =
+        if let FilePickerContext::SelectDatabase { config_item } = app.file_picker_context {
+            Some(config_item)
+        } else {
+            None
+        };
+    let is_db_mode = db_config_item.is_some();
+    let is_dir_mode = db_config_item == Some(2); // OpenAlex: select directory
 
     let has_extracting = app.extracting_archive.is_some() && !is_db_mode;
 
@@ -34,8 +38,12 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     // Header — context-aware
     let header_text =
         if let FilePickerContext::SelectDatabase { config_item } = &app.file_picker_context {
-            let db_name = if *config_item == 0 { "DBLP" } else { "ACL" };
-            format!(" > Select {} Database (.db / .sqlite)", db_name)
+            if *config_item == 2 {
+                " > Select OpenAlex Index Directory".to_string()
+            } else {
+                let db_name = if *config_item == 0 { "DBLP" } else { "ACL" };
+                format!(" > Select {} Database (.db / .sqlite)", db_name)
+            }
         } else {
             " > Select PDFs / .bbl / .bib / Archives / Results (.json)".to_string()
         };
@@ -70,10 +78,23 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         .skip(scroll_offset)
         .take(visible_height)
         .map(|entry| {
-            let (icon, style) = if entry.is_dir {
+            let (icon, style) = if entry.is_dir && is_dir_mode {
+                // OpenAlex: directories are selectable
+                let selected = picker.is_selected(&entry.path);
+                if selected {
+                    (
+                        "\u{2713} ",
+                        Style::default()
+                            .fg(theme.verified)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    ("\u{1F4C1} ", Style::default().fg(theme.active))
+                }
+            } else if entry.is_dir {
                 ("\u{1F4C1} ", Style::default().fg(theme.active))
-            } else if is_db_mode {
-                // In database selection mode: only .db files are selectable
+            } else if is_db_mode && !is_dir_mode {
+                // DBLP/ACL: only .db files are selectable
                 if entry.is_db {
                     let selected = picker.is_selected(&entry.path);
                     if selected {
@@ -139,15 +160,17 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let selected_count = picker.selected.len();
     let summary_lines = if is_db_mode {
         if selected_count == 0 {
+            let hint = if is_dir_mode {
+                "  Navigate to the index directory and press Space to select"
+            } else {
+                "  Navigate to a .db or .sqlite file and press Enter to select"
+            };
             vec![
                 Line::from(Span::styled(
                     "  No database selected",
                     Style::default().fg(theme.dim),
                 )),
-                Line::from(Span::styled(
-                    "  Navigate to a .db or .sqlite file and press Enter to select",
-                    Style::default().fg(theme.dim),
-                )),
+                Line::from(Span::styled(hint, Style::default().fg(theme.dim))),
             ]
         } else {
             let name = picker
@@ -260,7 +283,9 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Footer — context-aware
-    let footer_text = if is_db_mode {
+    let footer_text = if is_dir_mode {
+        " j/k:navigate  Enter:open dir  Space:select dir  Esc:confirm  ?:help  q:quit"
+    } else if is_db_mode {
         " j/k:navigate  Enter:select & confirm  Esc:cancel  ?:help  q:quit"
     } else {
         " j/k:navigate  Space/Enter:select  Enter:open dir  Esc:done  ?:help  q:quit"

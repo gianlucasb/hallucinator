@@ -1381,7 +1381,8 @@ async fn update_openalex(
     since: Option<&str>,
     min_year: Option<u32>,
 ) -> anyhow::Result<()> {
-    use indicatif::{HumanBytes, HumanCount, ProgressBar, ProgressStyle};
+    use indicatif::{HumanBytes, HumanCount, MultiProgress, ProgressBar, ProgressStyle};
+    use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
     if since.is_none() && min_year.is_none() {
@@ -1394,18 +1395,23 @@ async fn update_openalex(
         eprintln!("Only indexing works published in {min_year} or later");
     }
 
+    let multi = MultiProgress::new();
+
     let bar_style = ProgressStyle::with_template(
-        "{spinner:.cyan} [{bar:40.cyan/dim}] {pos}/{len} partitions  {msg}",
+        "{spinner:.cyan} [{bar:40.cyan/dim}] {pos}/{len} files  {msg}",
     )
     .unwrap()
     .progress_chars("=> ");
 
     let spinner_style = ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap();
+    let file_spinner_style = ProgressStyle::with_template("  {spinner:.dim} {msg:.dim}").unwrap();
 
-    let bar = ProgressBar::new(0);
+    let bar = multi.add(ProgressBar::new(0));
     bar.set_style(spinner_style.clone());
     bar.set_message("Listing OpenAlex S3 partitions...");
     bar.enable_steady_tick(Duration::from_millis(120));
+
+    let mut file_spinners: HashMap<String, ProgressBar> = HashMap::new();
 
     let build_start = Instant::now();
 
@@ -1417,17 +1423,37 @@ async fn update_openalex(
             hallucinator_openalex::BuildProgress::ListingPartitions { message } => {
                 bar.set_message(message);
             }
+            hallucinator_openalex::BuildProgress::FileStarted { filename } => {
+                let s = multi.add(ProgressBar::new_spinner());
+                s.set_style(file_spinner_style.clone());
+                s.set_message(filename.clone());
+                s.enable_steady_tick(Duration::from_millis(120));
+                file_spinners.insert(filename, s);
+            }
+            hallucinator_openalex::BuildProgress::FileComplete { filename } => {
+                if let Some(s) = file_spinners.remove(&filename) {
+                    s.finish_and_clear();
+                }
+            }
+            hallucinator_openalex::BuildProgress::FileProgress {
+                filename,
+                bytes_downloaded,
+            } => {
+                if let Some(s) = file_spinners.get(&filename) {
+                    s.set_message(format!("{} ({})", filename, HumanBytes(bytes_downloaded)));
+                }
+            }
             hallucinator_openalex::BuildProgress::Downloading {
-                partitions_done,
-                partitions_total,
+                files_done,
+                files_total,
                 bytes_downloaded,
                 records_indexed,
             } => {
-                if bar.length() == Some(0) && partitions_total > 0 {
-                    bar.set_length(partitions_total);
+                if bar.length() == Some(0) && files_total > 0 {
+                    bar.set_length(files_total);
                     bar.set_style(bar_style.clone());
                 }
-                bar.set_position(partitions_done);
+                bar.set_position(files_done);
                 let elapsed = build_start.elapsed().as_secs_f64();
                 let speed = if elapsed > 0.5 {
                     format!(
@@ -1456,20 +1482,38 @@ async fn update_openalex(
                     HumanCount(records_indexed)
                 ));
             }
+            hallucinator_openalex::BuildProgress::FileSkipped { filename, error } => {
+                if let Some(s) = file_spinners.remove(&filename) {
+                    s.finish_and_clear();
+                }
+                bar.suspend(|| {
+                    eprintln!("Warning: skipped {} ({error})", filename);
+                });
+            }
             hallucinator_openalex::BuildProgress::Merging => {
+                for (_, s) in file_spinners.drain() {
+                    s.finish_and_clear();
+                }
                 bar.set_message("Merging index segments...");
             }
             hallucinator_openalex::BuildProgress::Complete {
                 publications,
                 skipped,
+                failed_files,
             } => {
                 if skipped {
                     bar.finish_with_message("Index is already up to date");
                 } else {
+                    let warn = if failed_files.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({} files failed)", failed_files.len())
+                    };
                     bar.finish_with_message(format!(
-                        "Indexed {} publications (total {:.0?})",
+                        "Indexed {} publications (total {:.0?}){}",
                         HumanCount(publications),
-                        build_start.elapsed()
+                        build_start.elapsed(),
+                        warn,
                     ));
                 }
             }
