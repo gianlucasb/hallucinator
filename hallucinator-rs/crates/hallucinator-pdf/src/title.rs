@@ -488,11 +488,11 @@ fn has_title_text_before_quote(before: &str) -> bool {
         return false;
     }
 
-    // Check if the title portion ends with a preposition or article,
+    // Check if the title portion ends with a preposition, article, or conjunction,
     // indicating it continues into the quoted text
-    // e.g., "Comments on", "A Study of", "Finding a", "Understanding the"
+    // e.g., "Comments on", "A Study of", "Finding a", "Good proctor or"
     static CONTINUES_INTO_QUOTE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\b(of|on|in|for|with|to|a|an|the|about|from|into|through|toward|towards|called|titled|named|entitled)\s*$").unwrap()
+        Regex::new(r"(?i)\b(of|on|in|for|with|to|a|an|the|about|from|into|through|toward|towards|called|titled|named|entitled|or|and|vs|versus)\s*$").unwrap()
     });
 
     if CONTINUES_INTO_QUOTE.is_match(title_portion) {
@@ -2782,4 +2782,22 @@ fn test_has_title_text_before_quote_harvard() {
     println!("Before text: '{}'", before);
     println!("has_title_text_before_quote: {}", result);
     assert!(!result, "Should NOT detect author text as title text");
+}
+
+#[test]
+fn test_good_proctor_or_big_brother() {
+    // Title with "or" before quoted text - should extract full title
+    let ref_text = r#"John Doe. Good proctor or "Big Brother"? AI Ethics and Online Exam Supervision Technologies. In Conf, 2023."#;
+    let (title, _) = extract_title_from_reference(ref_text);
+    println!("Extracted title: {}", title);
+    assert!(
+        title.to_lowercase().contains("good proctor"),
+        "Title should include 'Good proctor': {}",
+        title
+    );
+    assert!(
+        title.to_lowercase().contains("big brother"),
+        "Title should include 'Big Brother': {}",
+        title
+    );
 }
