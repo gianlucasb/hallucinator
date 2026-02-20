@@ -80,6 +80,13 @@ impl DatabaseBackend for CrossRef {
                         })
                         .unwrap_or_default();
 
+                    // Skip results with empty authors - let other DBs verify (issue #188)
+                    // CrossRef sometimes returns title matches without author data, which
+                    // causes false AuthorMismatch when we can't verify authors
+                    if authors.is_empty() {
+                        continue;
+                    }
+
                     let doi = item["DOI"].as_str();
                     let paper_url = doi.map(|d| format!("https://doi.org/{}", d));
 
