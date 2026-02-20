@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-acl"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-bbl"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "biblatex",
  "hallucinator-core",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-cli"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-core"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "arc-swap",
  "async-channel",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-dblp"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1325,7 +1325,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-ingest"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "flate2",
  "hallucinator-bbl",
@@ -1340,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-openalex"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "async-compression",
  "flate2",
@@ -1361,7 +1361,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-pdf"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "flate2",
  "hallucinator-bbl",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-pdf-mupdf"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "hallucinator-pdf",
  "mupdf",
@@ -1384,14 +1384,14 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-reporting"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "hallucinator-core",
 ]
 
 [[package]]
 name = "hallucinator-tui"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha.4"
 dependencies = [
  "anyhow",
  "async-channel",
