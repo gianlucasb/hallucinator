@@ -1,0 +1,11 @@
+[book]
+title = "Hallucinator Documentation"
+description = "Comprehensive documentation for the Hallucinated Reference Detector"
+src = "."
+
+[build]
+build-dir = "../target/book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/gianlucasb/hallucinator"

@@ -105,12 +105,12 @@ Override regex patterns and thresholds to handle non-standard paper formats.
 |----------|---------|-------------|
 | `section_header_regex` | Matches "References", "Bibliography", etc. | Regex to find the start of the references section |
 | `section_end_regex` | Matches "Appendix", "Acknowledgments", etc. | Regex to find the end of the references section |
-| `fallback_fraction` | `0.25` | If no header found, use the last N% of the document |
+| `fallback_fraction` | `0.7` | Fraction of document to skip when no header found (0.7 = use last 30%) |
 | `ieee_segment_regex` | Matches `[1]`, `[2]`, etc. | Regex for IEEE-style reference numbering |
 | `numbered_segment_regex` | Matches `1.`, `2.`, etc. | Regex for numbered-list references |
 | `fallback_segment_regex` | Double newline | Fallback segmentation when no numbering detected |
 | `min_title_words` | `4` | Minimum words in a title (shorter → skipped) |
-| `max_authors` | `20` | Cap on extracted author count per reference |
+| `max_authors` | `15` | Cap on extracted author count per reference |
 
 ```python
 ext = PdfExtractor()
@@ -232,9 +232,16 @@ config.crossref_mailto = "you@university.edu"  # CrossRef polite pool
 #### Concurrency and timeouts
 
 ```python
-config.max_concurrent_refs = 4       # references checked in parallel (default: 4)
+config.num_workers = 4               # references checked in parallel (default: 4)
 config.db_timeout_secs = 10          # per-database timeout (default: 10)
 config.db_timeout_short_secs = 5     # short timeout for fast DBs (default: 5)
+config.max_rate_limit_retries = 3    # max 429 retries per DB query (default: 3)
+```
+
+#### Persistent cache
+
+```python
+config.cache_path = "/path/to/cache.db"  # SQLite cache for cross-run persistence
 ```
 
 #### Disable databases
@@ -295,10 +302,16 @@ def on_progress(event):
         print(f"[{event.index + 1}/{event.total}] {r.status}: {r.title}")
     elif event.event_type == "warning":
         print(f"Warning: {event.title} — {event.message}")
+    elif event.event_type == "retrying":
+        print(f"Retrying: {event.title} (failed: {', '.join(event.failed_dbs)})")
     elif event.event_type == "retry_pass":
         print(f"Retrying {event.count} unresolved references...")
     elif event.event_type == "db_query_complete":
         print(f"  {event.db_name}: {event.db_status} ({event.elapsed_ms:.0f}ms)")
+    elif event.event_type == "rate_limit_wait":
+        print(f"  Rate limited on {event.db_name}, waiting...")
+    elif event.event_type == "rate_limit_retry":
+        print(f"  Retrying {event.db_name} (attempt {event.attempt})")
 
 results = validator.check(refs, progress=on_progress)
 ```
@@ -310,16 +323,16 @@ All properties return `None` when not applicable to the event type.
 | Property | Type | Event types |
 |----------|------|-------------|
 | `event_type` | `str` | all |
-| `index` | `int` | checking, result, warning |
-| `total` | `int` | checking, result, warning |
-| `title` | `str` | checking, warning |
+| `index` | `int` | checking, result, warning, retrying |
+| `total` | `int` | checking, result, warning, retrying |
+| `title` | `str` | checking, warning, retrying |
 | `result` | `ValidationResult` | result |
-| `failed_dbs` | `list[str]` | warning |
+| `failed_dbs` | `list[str]` | warning, retrying |
 | `message` | `str` | warning |
 | `count` | `int` | retry_pass |
 | `paper_index` | `int` | db_query_complete |
 | `ref_index` | `int` | db_query_complete |
-| `db_name` | `str` | db_query_complete |
+| `db_name` | `str` | db_query_complete, rate_limit_wait, rate_limit_retry |
 | `db_status` | `str` | db_query_complete |
 | `elapsed_ms` | `float` | db_query_complete |
 
@@ -390,7 +403,7 @@ for db in r.db_results:
     print()
 ```
 
-`DbResult.status` values: `"match"`, `"no_match"`, `"author_mismatch"`, `"timeout"`, `"error"`, `"skipped"`.
+`DbResult.status` values: `"match"`, `"no_match"`, `"author_mismatch"`, `"timeout"`, `"rate_limited"`, `"error"`, `"skipped"`.
 
 #### DOI and arXiv info
 
@@ -499,7 +512,7 @@ for r in results:
 
 **`DbResult.status`**: `"match"` | `"no_match"` | `"author_mismatch"` | `"timeout"` | `"error"` | `"skipped"`
 
-**`ProgressEvent.event_type`**: `"checking"` | `"result"` | `"warning"` | `"retry_pass"` | `"db_query_complete"`
+**`ProgressEvent.event_type`**: `"checking"` | `"result"` | `"warning"` | `"retrying"` | `"retry_pass"` | `"db_query_complete"` | `"rate_limit_wait"` | `"rate_limit_retry"`
 
 ---
 
