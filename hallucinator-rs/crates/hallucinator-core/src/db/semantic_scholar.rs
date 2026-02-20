@@ -66,6 +66,12 @@ impl DatabaseBackend for SemanticScholar {
                         })
                         .unwrap_or_default();
 
+                    // Skip results with empty authors - let other DBs verify
+                    // Semantic Scholar sometimes returns title matches without author data
+                    if authors.is_empty() {
+                        continue;
+                    }
+
                     let paper_url = item["url"].as_str().map(String::from);
 
                     return Ok(DbQueryResult::found(found_title, authors, paper_url));

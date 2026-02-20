@@ -102,6 +102,11 @@ impl DatabaseBackend for PubMed {
                         })
                         .unwrap_or_default();
 
+                    // Skip results with empty authors - let other DBs verify
+                    if authors.is_empty() {
+                        continue;
+                    }
+
                     let paper_url = format!("https://pubmed.ncbi.nlm.nih.gov/{}/", pmid);
 
                     return Ok(DbQueryResult::found(found_title, authors, Some(paper_url)));

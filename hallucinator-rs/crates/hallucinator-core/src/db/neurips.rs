@@ -64,6 +64,11 @@ impl DatabaseBackend for NeurIPS {
                         _ => vec![],
                     };
 
+                    // Skip results with empty authors - let other DBs verify
+                    if authors.is_empty() {
+                        continue;
+                    }
+
                     return Ok(DbQueryResult::found(found_title, authors, Some(paper_url)));
                 }
             }

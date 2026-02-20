@@ -63,6 +63,11 @@ impl DatabaseBackend for OpenAlex {
                         })
                         .unwrap_or_default();
 
+                    // Skip results with empty authors - let other DBs verify
+                    if authors.is_empty() {
+                        continue;
+                    }
+
                     let paper_url = item["doi"]
                         .as_str()
                         .map(String::from)

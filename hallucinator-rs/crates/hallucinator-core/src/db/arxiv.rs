@@ -126,16 +126,19 @@ fn parse_arxiv_response(xml: &str, title: &str) -> Result<DbQueryResult, DbQuery
                         // Check if this entry matches
                         let entry_title = current_title.trim().to_string();
                         if titles_match(title, &entry_title) {
-                            let link = if current_link.is_empty() {
-                                None
-                            } else {
-                                Some(current_link.clone())
-                            };
-                            return Ok(DbQueryResult::found(
-                                entry_title,
-                                current_authors.clone(),
-                                link,
-                            ));
+                            // Skip results with empty authors - let other DBs verify
+                            if !current_authors.is_empty() {
+                                let link = if current_link.is_empty() {
+                                    None
+                                } else {
+                                    Some(current_link.clone())
+                                };
+                                return Ok(DbQueryResult::found(
+                                    entry_title,
+                                    current_authors.clone(),
+                                    link,
+                                ));
+                            }
                         }
                         in_entry = false;
                     }

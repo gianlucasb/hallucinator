@@ -401,7 +401,15 @@ fn try_quoted_title_with_config(
     for re in resolved.iter() {
         if let Some(caps) = re.captures(ref_text) {
             let quoted_part = caps.get(1).unwrap().as_str().trim();
+            let before_quote = ref_text[..caps.get(0).unwrap().start()].trim();
             let after_quote = ref_text[caps.get(0).unwrap().end()..].trim();
+
+            // Check for "middle quote" pattern: significant text BEFORE the quote
+            // that looks like part of a title (not just author names).
+            // e.g., "A Study of "Something" in Systems" - skip, let other extractors handle
+            if has_title_text_before_quote(before_quote) {
+                continue;
+            }
 
             // IEEE: comma inside quotes means title is complete
             // Accept 2+ words for quoted titles (quotes are a strong indicator)
@@ -422,7 +430,14 @@ fn try_quoted_title_with_config(
                 } else if after_quote.chars().next().is_some_and(|c| c.is_uppercase()) {
                     Some(after_quote)
                 } else {
-                    None
+                    // Also handle lowercase continuation - truncate at venue markers
+                    // e.g., "Title" examining something. In Conf → "Title examining something"
+                    let end = find_subtitle_end(after_quote);
+                    if end > 0 {
+                        Some(&after_quote[..end])
+                    } else {
+                        None
+                    }
                 };
 
                 if let Some(sub) = subtitle_text {
@@ -444,6 +459,63 @@ fn try_quoted_title_with_config(
         }
     }
     None
+}
+
+/// Check if text before a quote contains significant title content (not just author names).
+/// Returns true if this looks like a "middle quote" pattern where the quote is embedded
+/// in a larger title, e.g., "A Study of "Something" in Systems" or "Comments on "X"".
+fn has_title_text_before_quote(before: &str) -> bool {
+    let before = before.trim();
+    if before.is_empty() {
+        return false;
+    }
+
+    // Look for the title portion after the last sentence boundary (year or period)
+    // e.g., "Author. 1996. Comments on " → extract "Comments on"
+    // e.g., "Author. A Study of " → extract "A Study of"
+    static TITLE_START: Lazy<Regex> = Lazy::new(|| {
+        // Match year followed by period/space, or just a period followed by space
+        Regex::new(r"(?:\d{4}[.\s]+|\.\s+)([A-Z].*)$").unwrap()
+    });
+
+    let title_portion = if let Some(caps) = TITLE_START.captures(before) {
+        caps.get(1).unwrap().as_str().trim()
+    } else {
+        before
+    };
+
+    if title_portion.is_empty() {
+        return false;
+    }
+
+    // Check if the title portion ends with a preposition, article, or conjunction,
+    // indicating it continues into the quoted text
+    // e.g., "Comments on", "A Study of", "Finding a", "Good proctor or"
+    static CONTINUES_INTO_QUOTE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(of|on|in|for|with|to|a|an|the|about|from|into|through|toward|towards|called|titled|named|entitled|or|and|vs|versus)\s*$").unwrap()
+    });
+
+    if CONTINUES_INTO_QUOTE.is_match(title_portion) {
+        return true;
+    }
+
+    // Also check for capitalized title-like patterns that don't end in prepositions
+    // but clearly look like title content (multiple words starting with caps)
+    // e.g., "A Comprehensive Study"
+    let words: Vec<&str> = title_portion.split_whitespace().collect();
+    if words.len() >= 2 {
+        // Check if it looks like a title (has articles/prepositions typical of titles)
+        // Match title words followed by space and another word (to exclude initials like "A.")
+        // e.g., "A Study" matches, but "A.," does not
+        static TITLE_WORDS: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"(?i)\b(a|an|the|of|in|on|for|with|to)\s+[a-z]").unwrap()
+        });
+        if TITLE_WORDS.is_match(title_portion) {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn find_subtitle_end(text: &str) -> usize {
@@ -2617,4 +2689,115 @@ mod tests {
         assert_eq!(cleaned, "", "DOI URL should be rejected as title");
     }
 
+}
+
+#[cfg(test)]
+mod quote_fix_tests {
+    use super::*;
+
+    #[test]
+    fn test_lowercase_continuation_after_quote() {
+        // Quote at start, lowercase continuation (no colon/dash)
+        let ref_text = r#"John Smith. "Be nice or leave me alone" examining social norms in online communities. In CHI, 2023."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "Should be from quotes");
+        assert!(
+            title.to_lowercase().contains("examining") || title.to_lowercase().contains("social"),
+            "Title should include text after quotes: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_middle_quote_skipped() {
+        // Quote in middle of title - should be handled by other extractors
+        let ref_text = r#"John Smith. A Study of "Something Important" in Modern Systems. In Conf, 2024."#;
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.to_lowercase().contains("study") || title.to_lowercase().contains("modern"),
+            "Title should include text around quotes: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_colon_subtitle_still_works() {
+        // Quote + colon should still work as before
+        let ref_text = r#"Bob Wilson. "Do Anything Now": Characterizing jailbreak prompts on LLMs. In CCS, 2023."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "Should be from quotes");
+        assert!(
+            title.to_lowercase().contains("characterizing"),
+            "Title should include subtitle after colon: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_uppercase_subtitle_still_works() {
+        // Quote + uppercase should still work as before
+        let ref_text = r#"Alice Brown. "Why Should I Trust You?" Explaining the predictions of any classifier. In KDD, 2016."#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "Should be from quotes");
+        assert!(
+            title.to_lowercase().contains("explaining"),
+            "Title should include subtitle after uppercase: {}",
+            title
+        );
+    }
+}
+
+#[test]
+fn test_do_anything_now_from_pdf() {
+    let ref_text = r#"Xinyue Shen et al. "do anything now": Characterizing and evaluating in-the-wild jailbreak prompts on large language models. In CCS, 2023."#;
+    let (title, from_quotes) = extract_title_from_reference(ref_text);
+    println!("Extracted title: {}", title);
+    println!("From quotes: {}", from_quotes);
+    // Should include the subtitle
+    assert!(
+        title.to_lowercase().contains("characterizing"),
+        "Title should include subtitle: {}",
+        title
+    );
+}
+
+#[test]
+fn test_comments_on_possibilistic() {
+    let ref_text = r#"Mauro Barni, Vito Cappellini, and Alessandro Mecocci. 1996. Comments on "a possibilistic approach to clustering". IEEE Trans. Fuzzy Syst., 4(3):393–396"#;
+    let (title, from_quotes) = extract_title_from_reference(ref_text);
+    println!("Extracted title: {}", title);
+    println!("From quotes: {}", from_quotes);
+    // Should include "Comments on", not just the quoted part
+    assert!(
+        title.to_lowercase().contains("comments"),
+        "Title should include 'Comments on': {}",
+        title
+    );
+}
+
+#[test]
+fn test_has_title_text_before_quote_harvard() {
+    let before = "Biswas, A., Saha, K. and De Choudhury, M. (2025) ";
+    let result = has_title_text_before_quote(before);
+    println!("Before text: '{}'", before);
+    println!("has_title_text_before_quote: {}", result);
+    assert!(!result, "Should NOT detect author text as title text");
+}
+
+#[test]
+fn test_good_proctor_or_big_brother() {
+    // Title with "or" before quoted text - should extract full title
+    let ref_text = r#"John Doe. Good proctor or "Big Brother"? AI Ethics and Online Exam Supervision Technologies. In Conf, 2023."#;
+    let (title, _) = extract_title_from_reference(ref_text);
+    println!("Extracted title: {}", title);
+    assert!(
+        title.to_lowercase().contains("good proctor"),
+        "Title should include 'Good proctor': {}",
+        title
+    );
+    assert!(
+        title.to_lowercase().contains("big brother"),
+        "Title should include 'Big Brother': {}",
+        title
+    );
 }

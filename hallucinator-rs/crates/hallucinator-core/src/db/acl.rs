@@ -40,12 +40,13 @@ impl DatabaseBackend for AclOffline {
             .map_err(|e| DbQueryError::Other(e.to_string()))??;
 
             match result {
-                Some(qr) => Ok(DbQueryResult::found(
+                Some(qr) if !qr.record.authors.is_empty() => Ok(DbQueryResult::found(
                     qr.record.title,
                     qr.record.authors,
                     qr.record.url,
                 )),
-                None => Ok(DbQueryResult::not_found()),
+                // Skip results with empty authors - let other DBs verify
+                _ => Ok(DbQueryResult::not_found()),
             }
         })
     }
@@ -110,6 +111,11 @@ fn parse_acl_results(html: &str, title: &str) -> Result<DbQueryResult, DbQueryEr
                     .select(&author_sel)
                     .map(|a| a.text().collect::<String>().trim().to_string())
                     .collect();
+
+                // Skip results with empty authors - let other DBs verify
+                if authors.is_empty() {
+                    continue;
+                }
 
                 let paper_url = entry
                     .select(&link_sel)

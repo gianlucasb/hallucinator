@@ -41,12 +41,13 @@ impl DatabaseBackend for DblpOffline {
             .map_err(|e| DbQueryError::Other(e.to_string()))??;
 
             match result {
-                Some(qr) => Ok(DbQueryResult::found(
+                Some(qr) if !qr.record.authors.is_empty() => Ok(DbQueryResult::found(
                     qr.record.title,
                     qr.record.authors,
                     qr.record.url,
                 )),
-                None => Ok(DbQueryResult::not_found()),
+                // Skip results with empty authors - let other DBs verify
+                _ => Ok(DbQueryResult::not_found()),
             }
         })
     }
@@ -97,7 +98,7 @@ impl DatabaseBackend for DblpOnline {
                 let found_title = info["title"].as_str().unwrap_or("");
 
                 if titles_match(title, found_title) {
-                    let authors = match &info["authors"]["author"] {
+                    let authors: Vec<String> = match &info["authors"]["author"] {
                         serde_json::Value::Array(arr) => arr
                             .iter()
                             .filter_map(|a| {
@@ -118,6 +119,11 @@ impl DatabaseBackend for DblpOnline {
                         }
                         _ => vec![],
                     };
+
+                    // Skip results with empty authors - let other DBs verify
+                    if authors.is_empty() {
+                        continue;
+                    }
 
                     let paper_url = info["url"].as_str().map(String::from);
 

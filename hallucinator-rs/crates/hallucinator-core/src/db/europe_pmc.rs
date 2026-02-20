@@ -71,6 +71,11 @@ impl DatabaseBackend for EuropePmc {
                             .collect()
                     };
 
+                    // Skip results with empty authors - let other DBs verify
+                    if authors.is_empty() {
+                        continue;
+                    }
+
                     let paper_url = if let Some(doi) = item["doi"].as_str() {
                         Some(format!("https://doi.org/{}", doi))
                     } else if let Some(pmcid) = item["pmcid"].as_str() {
