@@ -508,9 +508,8 @@ fn has_title_text_before_quote(before: &str) -> bool {
         // Check if it looks like a title (has articles/prepositions typical of titles)
         // Match title words followed by space and another word (to exclude initials like "A.")
         // e.g., "A Study" matches, but "A.," does not
-        static TITLE_WORDS: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"(?i)\b(a|an|the|of|in|on|for|with|to)\s+[a-z]").unwrap()
-        });
+        static TITLE_WORDS: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"(?i)\b(a|an|the|of|in|on|for|with|to)\s+[a-z]").unwrap());
         if TITLE_WORDS.is_match(title_portion) {
             return true;
         }
@@ -2711,7 +2710,8 @@ mod quote_fix_tests {
     #[test]
     fn test_middle_quote_skipped() {
         // Quote in middle of title - should be handled by other extractors
-        let ref_text = r#"John Smith. A Study of "Something Important" in Modern Systems. In Conf, 2024."#;
+        let ref_text =
+            r#"John Smith. A Study of "Something Important" in Modern Systems. In Conf, 2024."#;
         let (title, _) = extract_title_from_reference(ref_text);
         assert!(
             title.to_lowercase().contains("study") || title.to_lowercase().contains("modern"),
