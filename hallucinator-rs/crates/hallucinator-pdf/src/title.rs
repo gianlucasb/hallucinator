@@ -9,6 +9,7 @@ use crate::text_processing::fix_hyphenation;
 static MID_SENTENCE_ABBREVIATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         "vs", "eg", "ie", "cf", "fig", "figs", "eq", "eqs", "sec", "ch", "pt", "no",
+        "al", // "et al."
     ]
     .into_iter()
     .collect()
@@ -35,8 +36,17 @@ pub(crate) fn extract_title_from_reference_with_config(
     ref_text: &str,
     config: &PdfParsingConfig,
 ) -> (String, bool) {
-    // Normalize whitespace and fix hyphenation
+    // Fix hyphenation first (handles "pri-\nvacy" → "privacy")
     let ref_text = fix_hyphenation(ref_text);
+
+    // Fix DOI line breaks: DOIs can get split across lines in PDFs, e.g.
+    // "doi.org/10.1109/SecDev.2016.\n013" → "doi.org/10.1109/SecDev.2016.013"
+    // This must run BEFORE whitespace normalization to avoid "2016. 013" → sentence split
+    static DOI_LINE_BREAK: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(doi\.org/[^\s]+)\.\s*\n\s*(\d+)").unwrap());
+    let ref_text = DOI_LINE_BREAK.replace_all(&ref_text, "$1.$2");
+
+    // Normalize whitespace
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
     let ref_text = WS_RE.replace_all(&ref_text, " ");
     let ref_text = ref_text.trim();
@@ -65,6 +75,11 @@ pub(crate) fn extract_title_from_reference_with_config(
 
     // === Format 1c: Organization/Documentation - "Organization: Title (Year)" ===
     if let Some(result) = try_org_doc(ref_text) {
+        return result;
+    }
+
+    // === Format 1d: RFC/Internet Draft - "Authors. RFC XXXX: Title, Year." ===
+    if let Some(result) = try_rfc_reference(ref_text) {
         return result;
     }
 
@@ -123,6 +138,16 @@ pub(crate) fn extract_title_from_reference_with_config(
 
     // === Format 7: Direct "Title. In Venue" fallback ===
     if let Some(result) = try_direct_in_venue(ref_text) {
+        return result;
+    }
+
+    // === Format 8: URL reference with accessed date: "Title. (Accessed Date)." ===
+    if let Some(result) = try_accessed_date(ref_text) {
+        return result;
+    }
+
+    // === Format 9: Standard document: "Title. Standard-No, Year." ===
+    if let Some(result) = try_standard_document(ref_text) {
         return result;
     }
 
@@ -359,6 +384,13 @@ pub(crate) fn clean_title_with_config(
     static DOI_URL_ONLY: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^https?://(?:dx\.)?doi\.org/").unwrap());
     if DOI_URL_ONLY.is_match(&title) {
+        return String::new();
+    }
+
+    // FIX 4e2: Reject pure numeric DOI suffixes as titles (e.g., "013", "9833668", "641993")
+    // These appear when title extraction fails and falls back to DOI components
+    static PURE_NUMERIC: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d+$").unwrap());
+    if PURE_NUMERIC.is_match(&title) {
         return String::new();
     }
 
@@ -736,6 +768,48 @@ fn try_org_doc(ref_text: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Handle RFC references: "Authors. RFC XXXX: Title, Year." or "Authors. RFC XXXX: Title. Year."
+/// Also handles Internet-Drafts and similar IETF documents.
+fn try_rfc_reference(ref_text: &str) -> Option<(String, bool)> {
+    // Match pattern: ". RFC XXXX: Title" (RFC followed by number and colon)
+    // The title follows the colon and ends at a year or end of reference
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\.\s+(RFC\s*\d+(?:bis)?|Internet-Draft|draft-[a-zA-Z0-9\-]+)\s*:\s*").unwrap()
+    });
+
+    let m = RE.find(ref_text)?;
+    let after_colon = &ref_text[m.end()..];
+
+    // Find the end of the title (ends at year or end of string)
+    static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            // ", Year" at end
+            Regex::new(r",\s*(?:19|20)\d{2}\.?\s*$").unwrap(),
+            // ". Year" (could be followed by more content)
+            Regex::new(r"\.\s*(?:19|20)\d{2}").unwrap(),
+            // ", Month Year"
+            Regex::new(r",\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}").unwrap(),
+        ]
+    });
+
+    let mut title_end = after_colon.len();
+    for re in END_PATTERNS.iter() {
+        if let Some(end_m) = re.find(after_colon) {
+            title_end = title_end.min(end_m.start());
+        }
+    }
+
+    let title = after_colon[..title_end].trim();
+    // Remove trailing period if any
+    let title = title.strip_suffix('.').unwrap_or(title).trim();
+
+    if title.split_whitespace().count() >= 2 {
+        Some((title.to_string(), false))
+    } else {
+        None
+    }
+}
+
 fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\((\d{4}[a-z]?)\)\.?\s+").unwrap());
 
@@ -870,26 +944,83 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     }
 }
 
-/// Handle arXiv preprint format: "Authors. Title. Year. arXiv: ID"
-/// In this format, the title comes BEFORE the year, followed by arXiv.
+/// Handle arXiv preprint formats:
+/// - Format 1: "Authors. Title. Year. arXiv: ID"
+/// - Format 2: "Authors. Title. arXiv:ID, Year." (common ML/AI style)
+/// - Format 3: "Authors. Title, Year. arXiv:ID." (comma before year)
 fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
-    // Match pattern: ". YEAR. arXiv:" or ". YEAR. arXiv "
-    static RE: Lazy<Regex> =
+    // Try Format 2 first: ". arXiv:ID, Year" (more common in recent papers)
+    // Pattern: Title ends at ". arXiv:" and the arXiv ID is followed by ", Year"
+    static RE2: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\.\s*arXiv\s*:\s*\d+\.\d+(?:v\d+)?\s*,\s*(?:19|20)\d{2}").unwrap());
+
+    if let Some(m) = RE2.find(ref_text) {
+        let before_arxiv = &ref_text[..m.start()];
+
+        // Find the title: look for the last ". X" pattern (sentence boundary)
+        static TITLE_START: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r#"\.\s+([A-Z0-9"\u{201c}])"#).unwrap()
+        });
+
+        let mut title_start_pos = None;
+        for caps in TITLE_START.captures_iter(before_arxiv) {
+            if let Some(m) = caps.get(1) {
+                title_start_pos = Some(m.start());
+            }
+        }
+
+        if let Some(title_start) = title_start_pos {
+            let title = before_arxiv[title_start..].trim();
+            let title = title.strip_suffix('.').unwrap_or(title).trim();
+
+            if title.split_whitespace().count() >= 2 {
+                return Some((title.to_string(), false));
+            }
+        }
+    }
+
+    // Try Format 3: ", Year. arXiv:ID" (comma before year, common in short preprints)
+    // Example: "Author et al. Title, 2023. arXiv:2310.06825."
+    static RE3: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r",\s*(?:19|20)\d{2}\.\s*arXiv\s*:\s*\d+\.\d+").unwrap());
+
+    if let Some(m) = RE3.find(ref_text) {
+        let before_comma = &ref_text[..m.start()];
+
+        // Find the title: look for the last ". X" pattern (sentence boundary)
+        static TITLE_START: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r#"\.\s+([A-Z0-9"\u{201c}])"#).unwrap()
+        });
+
+        let mut title_start_pos = None;
+        for caps in TITLE_START.captures_iter(before_comma) {
+            if let Some(m) = caps.get(1) {
+                title_start_pos = Some(m.start());
+            }
+        }
+
+        if let Some(title_start) = title_start_pos {
+            let title = before_comma[title_start..].trim();
+            let title = title.strip_suffix('.').unwrap_or(title).trim();
+
+            if title.split_whitespace().count() >= 2 {
+                return Some((title.to_string(), false));
+            }
+        }
+    }
+
+    // Try Format 1: ". YEAR. arXiv:" or ". YEAR. arXiv "
+    static RE1: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\.\s*(?:19|20)\d{2}\.\s*arXiv[:\s]").unwrap());
 
-    let m = RE.find(ref_text)?;
+    let m = RE1.find(ref_text)?;
     let before_year = &ref_text[..m.start()];
 
     // Find the title: look for the last ". X" pattern (sentence boundary) before the year
-    // where X is an uppercase letter or digit that starts the title
-    // This handles: "Author Name. Title Here. YEAR."
     static TITLE_START: Lazy<Regex> = Lazy::new(|| {
-        // Match ". " followed by uppercase letter (title start)
-        // We'll find ALL such matches and pick the LAST one closest to the year
         Regex::new(r#"\.\s+([A-Z0-9"\u{201c}])"#).unwrap()
     });
 
-    // Find all potential title starts and pick the last one (closest to the year)
     let mut title_start_pos = None;
     for caps in TITLE_START.captures_iter(before_year) {
         if let Some(m) = caps.get(1) {
@@ -899,8 +1030,6 @@ fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
 
     let title_start = title_start_pos?;
     let title = before_year[title_start..].trim();
-
-    // Remove trailing period
     let title = title.strip_suffix('.').unwrap_or(title).trim();
 
     if title.split_whitespace().count() >= 2 {
@@ -926,8 +1055,43 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
         ]
     });
 
+    // Pattern to detect editor lists: ". In Name, Name, ..., editors,"
+    // This should NOT be treated as a venue marker
+    // Format: ". In FirstName LastName, FirstName LastName, and FirstName LastName, editors,"
+    // Note: Pattern must match from the start of venue_match which includes the period
+    static EDITOR_PATTERN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\.?\s*[Ii]n\s+[A-Z][a-zA-Z\u{00C0}-\u{024F}\.\-]+(?:\s+[A-Za-z\u{00C0}-\u{024F}\.\-]+)*,.*\beditors?,")
+            .unwrap()
+    });
+
+    // Pattern to detect standard document numbers after title
+    // E.g., "Title. IEEE No 297-1969" - should not extract "IEEE No 297-1969" as title
+    static STANDARD_NUM_TITLE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^(?:IEEE|ISO|NIST|RFC|FIPS|ITU)(?:\s+No\.?)?\s*[\d\-]+").unwrap()
+    });
+
     for vp in VENUE_PATTERNS.iter() {
         if let Some(venue_match) = vp.find(ref_text) {
+            // Check if this match is actually an editor list, not a venue
+            // Use floor_char_boundary to avoid slicing in the middle of a UTF-8 character
+            let editor_check_end = ref_text.floor_char_boundary(venue_match.start().saturating_add(200));
+            if EDITOR_PATTERN.is_match(&ref_text[venue_match.start()..editor_check_end]) {
+                // This is an editor list, not a regular venue.
+                // Extract the title from BEFORE the ". In editors" marker
+                // instead of skipping to other patterns which may match the year.
+                let before_editors = ref_text[..venue_match.start()].trim();
+                let parts = split_sentences_skip_initials(before_editors);
+                if parts.len() >= 2 {
+                    let title = parts[1].trim();
+                    static TRAIL_ED: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
+                    let title = TRAIL_ED.replace(title, "");
+                    if !title.is_empty() && title.split_whitespace().count() >= 3 {
+                        return Some((title.to_string(), false));
+                    }
+                }
+                continue; // If extraction failed, continue to next pattern
+            }
+
             let before_venue = ref_text[..venue_match.start()].trim();
 
             // First try: split into sentences
@@ -940,8 +1104,16 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                     // Verify it doesn't look like authors
                     static AUTHOR_CHECK: Lazy<Regex> =
                         Lazy::new(|| Regex::new(r"^[A-Z][a-z]+\s+[A-Z][a-z]+,").unwrap());
-                    if !AUTHOR_CHECK.is_match(&title) {
+                    // Also reject if it looks like a standard document number
+                    if !AUTHOR_CHECK.is_match(&title) && !STANDARD_NUM_TITLE.is_match(&title) {
                         return Some((title.to_string(), false));
+                    }
+                    // If parts[1] is a standard number, try parts[0] instead
+                    if STANDARD_NUM_TITLE.is_match(&title) && !parts[0].is_empty() {
+                        let first_part = parts[0].trim();
+                        if first_part.split_whitespace().count() >= 3 {
+                            return Some((first_part.to_string(), false));
+                        }
                     }
                 }
             }
@@ -1264,6 +1436,14 @@ fn try_book_citation(ref_text: &str) -> Option<(String, bool)> {
     let title_start = title_start_match.start();
     let title_text = &ref_text[title_start..];
 
+    // Skip if the "title" starts with words indicating this is an editor list, not a book title
+    // e.g., "and A. Oh, editors, Advances..." should not match
+    static EDITOR_START: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^editors?,").unwrap());
+    if EDITOR_START.is_match(title_text) {
+        return None;
+    }
+
     // Find where title ends: first period followed by space and then publisher/year
     // Publishers: "MIT press", "Springer", "Elsevier", "Cambridge", "Oxford", etc.
     // Or: capital word followed by comma and 4-digit year
@@ -1334,6 +1514,44 @@ fn try_direct_in_venue(ref_text: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Handle URL references with accessed date: "Title. (Accessed Date)."
+/// Common in web references without explicit authors.
+fn try_accessed_date(ref_text: &str) -> Option<(String, bool)> {
+    // Match: "Title. (Accessed MM-DD-YYYY)" or "(Ac- cessed ...)" with hyphenation
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^([A-Z][^.]+)\.\s*\((?:Ac-?\s*cessed|Accessed|Retrieved|Last accessed)\s+").unwrap()
+    });
+
+    let caps = RE.captures(ref_text)?;
+    let title = caps.get(1).unwrap().as_str().trim();
+
+    // Ensure it's a reasonable title (at least 3 words)
+    if title.split_whitespace().count() >= 3 {
+        Some((title.to_string(), false))
+    } else {
+        None
+    }
+}
+
+/// Handle standard document references: "Title. Standard-No, Year."
+/// Common for IEEE, ISO, NIST standards.
+fn try_standard_document(ref_text: &str) -> Option<(String, bool)> {
+    // Match: "Title. IEEE No XXX, Year" or "Title. ISO XXXX, Year" etc.
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^([A-Z][^.]+)\.\s*(?:IEEE|ISO|NIST|RFC|FIPS|ITU)\s+(?:No\.?\s*)?[\d\-]+").unwrap()
+    });
+
+    let caps = RE.captures(ref_text)?;
+    let title = caps.get(1).unwrap().as_str().trim();
+
+    // Ensure it's a reasonable title (at least 3 words)
+    if title.split_whitespace().count() >= 3 {
+        Some((title.to_string(), false))
+    } else {
+        None
+    }
+}
+
 fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     let sentences = split_sentences_skip_initials(ref_text);
     if sentences.len() < 2 {
@@ -1343,17 +1561,32 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     let mut potential_title = sentences[1].trim().to_string();
 
     // Check if it looks like authors (high ratio of capitalized words + "and")
+    // BUT be careful: titles can also have capitalized words and "and"
     let words: Vec<&str> = potential_title.split_whitespace().collect();
     if !words.is_empty() {
-        static CAP_WORD: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Z][a-z]+$").unwrap());
-        let cap_words = words.iter().filter(|w| CAP_WORD.is_match(w)).count();
-        let and_count = words.iter().filter(|w| w.to_lowercase() == "and").count();
+        // Check if the sentence looks like an author list (names separated by commas)
+        // Real author lists have patterns like "John Smith, Jane Doe, and Bob Wilson"
+        // Titles rarely have this many comma-separated capitalized pairs
+        static AUTHOR_LIST_PATTERN: Lazy<Regex> = Lazy::new(|| {
+            // Match: CapWord CapWord, CapWord CapWord, and CapWord CapWord
+            // This is more specific than just "many capitalized words + and"
+            Regex::new(r"^(?:[A-Z][a-z]+\s+[A-Z][a-z]+,\s*)+(?:and\s+)?[A-Z][a-z]+\s+[A-Z][a-z]+$")
+                .unwrap()
+        });
 
-        if (cap_words as f64 / words.len() as f64) > 0.7 && and_count > 0 {
-            // Try third sentence
-            if sentences.len() >= 3 {
-                potential_title = sentences[2].trim().to_string();
+        let looks_like_author_list = AUTHOR_LIST_PATTERN.is_match(&potential_title);
+
+        if looks_like_author_list && sentences.len() >= 3 {
+            let third = sentences[2].trim();
+            // Only use third sentence if it's not just a year or very short
+            static JUST_YEAR: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"^(?:19|20)\d{2}[a-z]?\.?$").unwrap());
+            let third_word_count = third.split_whitespace().count();
+
+            if !JUST_YEAR.is_match(third) && third_word_count >= 3 {
+                potential_title = third.to_string();
             }
+            // Otherwise keep sentences[1] - it's probably the real title
         }
     }
 
@@ -1379,9 +1612,13 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
 
     // Regex for matching characters in surname (letters, accents, apostrophes, hyphens)
     // Note: Rust regex doesn't support Unicode properties the same way, so we use
-    // character classes for common diacritics
+    // character classes for common diacritics including:
+    // - Latin Extended-A: U+0100-U+017F
+    // - Latin-1 Supplement: U+00A0-U+00FF
+    // - Combining Diacritical Marks: U+0300-U+036F
+    // - Spacing Modifier Letters: U+02B0-U+02FF (for names like "P˘as˘areanu" with U+02D8)
     static AUTHOR_AFTER: Lazy<Vec<Regex>> = Lazy::new(|| {
-        let sc = r"[a-zA-Z\u{00A0}-\u{017F}'\-`\u{00B4}]"; // surname chars
+        let sc = r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}]"; // surname chars
         vec![
             // Surname followed by comma: "Smith,"
             Regex::new(&format!(r"^([A-Z]{}+)\s*,", sc)).unwrap(),
@@ -1403,6 +1640,8 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z]{}+)\s*,", sc, sc)).unwrap(),
             // Middle initial without period: "D Kaplan,"
             Regex::new(&format!(r"^[A-Z]\s+({}+)\s*,", sc)).unwrap(),
+            // Surname + "et al." pattern: "Smith et al."
+            Regex::new(&format!(r"^([A-Z]{}+)\s+et\s+al\.", sc)).unwrap(),
         ]
     });
 
@@ -1457,7 +1696,39 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         }
         let word_before = &text[word_start..pos];
         if MID_SENTENCE_ABBREVIATIONS.contains(word_before.to_lowercase().as_str()) {
-            continue;
+            // Special handling for "al." (from "et al.")
+            // If what follows looks like a title start (capital, not author pattern), it IS a boundary
+            if word_before.to_lowercase() == "al" {
+                let after_period = &text[m.end()..];
+                let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
+                if !is_author && after_period.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    // This "al." is followed by what looks like a title - treat it as a boundary
+                    // (don't continue, fall through to sentence boundary handling)
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+
+        // Check for surname (4+ chars, starts with capital) followed by potential title
+        // This handles cases like "P˘as˘areanu. Symbolic" where the surname ends with lowercase
+        // and is followed by what looks like a title start
+        {
+            // Count the word length including any combining diacritics
+            let word_len = text[word_start..pos].chars().count();
+            let first_char = text[word_start..].chars().next();
+
+            if word_len >= 4 && first_char.is_some_and(|c| c.is_uppercase()) {
+                let after_period = &text[m.end()..];
+                // Check if what follows looks like the start of a title (capital letter NOT followed by author patterns)
+                // Use the AUTHOR_AFTER pattern for "Surname. Title"
+                let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
+                if is_author {
+                    continue; // Skip — this surname is followed by a title, not a sentence boundary
+                }
+            }
         }
 
         // This is a real sentence boundary
@@ -2850,5 +3121,184 @@ fn test_usenix_header_at_end_stripped() {
         cleaned.to_lowercase().contains("error-correcting"),
         "Title should retain main content: {}",
         cleaned
+    );
+}
+
+// ───────────────── USENIX Extraction Bug Tests ─────────────────
+
+#[test]
+fn test_usenix_workshop_participants_title() {
+    // Paper 145 ref 33: workshop report without traditional author format
+    // Title has hyphenation: "Iden- tifying" should become "Identifying"
+    let ref_text = "David Ott, Christopher Peikert, and other workshop participants. Iden- tifying Research Challenges in Post Quantum Cryptography Migra- tion and Cryptographic Agility. 2019.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    println!("Workshop title extracted: {}", title);
+    assert!(
+        title.to_lowercase().contains("identifying research challenges"),
+        "Should extract title from workshop report format: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_usenix_in_editors_not_in_venue() {
+    // Paper 168 ref 90: "In Peter Mehlitz..." is editors, not venue
+    // Should extract: "Symbolic quantitative information flow"
+    let ref_text = "Quang-Sang Phan, Pasquale Malacaria, Olga Tkachuk, and Corina S. P˘as˘areanu. Symbolic quantitative information flow. In Peter Mehlitz, Nitin Rungta, and Willem Visser, editors, Proceedings of the Java PathFinder Workshop.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.to_lowercase().contains("symbolic quantitative"),
+        "Should extract title before 'In editors' pattern: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_usenix_url_accessed_date() {
+    // Paper 143 ref 5: URL with accessed date
+    // Should extract: "Defcon 30 hacking conference schedule"
+    let ref_text = "Defcon 30 hacking conference schedule. (Ac- cessed 09-20-2022).";
+    let (title, _) = extract_title_from_reference(ref_text);
+    println!("URL accessed title: {}", title);
+    assert!(
+        title.to_lowercase().contains("defcon 30 hacking conference"),
+        "Should extract title from URL reference: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_usenix_ieee_standard() {
+    // Paper 194 ref 1: IEEE standard document
+    // Should extract: "IEEE recommended practice for speech quality measurements"
+    let ref_text = "IEEE recommended practice for speech quality mea- surements. IEEE No 297-1969, 1969.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    println!("IEEE standard title: {}", title);
+    assert!(
+        title.to_lowercase().contains("speech quality"),
+        "Should extract title from IEEE standard format: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_utf8_multibyte_in_venue_marker() {
+    // Regression test for UTF-8 boundary panic when slicing around venue markers.
+    // The middle dot '·' is a 2-byte character (U+00B7, bytes 0xC2 0xB7).
+    // Previously, adding 200 bytes to venue_match.start() could land in the
+    // middle of this character, causing a panic.
+    let ref_text = "Zongyang Zhang, Weihan Li, Yanpei Guo, Kexin Shi, Sherman SM Chow, Ximeng Liu, and Jin Dong. Fast {RS-IOP} multivariate polynomial commitments and verifiable secret sharing. In 33rd USENIX Security Symposium (USENIX Security 24), pages 3187·3204, 2024.";
+    // Should not panic - just verify it completes without crashing
+    let (title, _) = extract_title_from_reference(ref_text);
+    println!("Title with middle dot: {}", title);
+    assert!(
+        !title.is_empty(),
+        "Should extract a title without panicking on UTF-8 characters"
+    );
+}
+
+#[test]
+fn test_rfc_reference_format() {
+    // RFC references have format: Authors. RFC XXXX: Title, Year.
+    let ref_text = "Roy Arends, Rob Austein, Matt Larson, Dan Massey, and Scott Rose. RFC 4033: DNS Security Introduction and Requirements, 2005.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    // The title should be the RFC content, not the author list
+    assert!(
+        title.to_lowercase().contains("dns security"),
+        "Should extract RFC title, not authors: {}",
+        title,
+    );
+    assert!(
+        !title.to_lowercase().contains("arends"),
+        "Should not include authors in title: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_arxiv_comma_before_year() {
+    // arXiv format: Authors. Title, Year. arXiv:ID.
+    // Common in short preprints like "et al." references
+    let ref_text = "Albert Q. Jiang et al. Mistral 7B, 2023. arXiv:2310.06825.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    // Title should be "Mistral 7B", not include "et al."
+    assert!(
+        title.to_lowercase().contains("mistral"),
+        "Should extract Mistral 7B as title: {}",
+        title,
+    );
+    assert!(
+        !title.to_lowercase().contains("jiang"),
+        "Should not include author name in title: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_et_al_not_sentence_boundary() {
+    // "et al." should not be treated as a sentence boundary
+    // With the LNCS format handler, "Author et al.:" should extract the title correctly
+    let ref_text = "Bowe, S., Maller, M., et al.: Halo: Recursive proof composition without a trusted setup. arXiv preprint arXiv:2019.07497, 2019.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.to_lowercase().contains("halo"),
+        "Title should be 'Halo: Recursive proof...': {}",
+        title,
+    );
+    assert!(
+        !title.to_lowercase().contains("bowe"),
+        "Title should not include author name: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_editors_with_initials() {
+    // NeurIPS format with editors listed as "I. Surname, I. Surname, ..., editors,"
+    let ref_text = "Long Ouyang, Jeffrey Wu, Xu Jiang, and Ryan Lowe. Training language models to follow instructions with human feedback. In S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems, volume 35, pages 27730–27744. Curran Associates, Inc., 2022.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.to_lowercase().contains("training language models"),
+        "Should extract 'Training language models...', got: {}",
+        title,
+    );
+    assert!(
+        !title.to_lowercase().contains("editors"),
+        "Should not include 'editors' in title: {}",
+        title,
+    );
+}
+
+#[test]
+fn test_et_al_extraction() {
+    // Test that "et al." doesn't cause incorrect title extraction
+    // The "A. Smith et al." pattern should be kept together as author text
+
+    // Test split_sentences_skip_initials directly
+    let test_text = "A. Smith et al. Machine learning for security analysis";
+    let parts = split_sentences_skip_initials(test_text);
+    assert!(
+        parts.len() >= 2,
+        "Should have at least 2 parts: {:?}",
+        parts
+    );
+    assert!(
+        parts[1].starts_with("Machine"),
+        "Part[1] should start with 'Machine': {:?}",
+        parts
+    );
+
+    // Test full extraction
+    let ref_text = "A. Smith et al. Machine learning for security analysis. In Proceedings of IEEE, 2023.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.contains("Machine learning"),
+        "Title should contain 'Machine learning', got: '{}'",
+        title
+    );
+    assert!(
+        !title.starts_with("al") && !title.contains("et al"),
+        "Title should not start with 'al' or contain 'et al': '{}'",
+        title
     );
 }

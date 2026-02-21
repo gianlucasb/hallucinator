@@ -23,16 +23,23 @@ pub(crate) fn find_references_section_with_config(
 
     let header_re = config.section_header_re.as_ref().unwrap_or(&HEADER_RE);
 
-    if let Some(m) = header_re.find(text) {
+    // Use the LAST "References" header, not the first.
+    // Some papers have multiple "References" headers (e.g., table headers like
+    // "Table 2: References to related work") before the actual reference list.
+    let matches: Vec<_> = header_re.find_iter(text).collect();
+    if let Some(m) = matches.last() {
         let ref_start = m.end();
         let rest = &text[ref_start..];
 
         static END_RE: Lazy<Regex> = Lazy::new(|| {
             // Match common end-of-references markers:
             // - Explicit section headers: Appendix, Acknowledgments, etc.
-            // - Single-letter appendix sections: "A\nTechnical Lemmas" (common in NeurIPS)
+            // - Single-letter appendix sections: "A\nAppendix", "A\nTechnical Lemmas" (common in NeurIPS)
             // - Conference checklists: "NeurIPS Paper Checklist", "ICML Checklist", etc.
-            Regex::new(r"(?i)\n\s*(?:Appendix|Acknowledgments|Acknowledgements|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|(?:\w+\s+)?(?:Paper\s+)?Checklist|[A-Z]\n\s*(?:Technical|Proofs?|Additional|Extended|Experimental|Derivations?|Algorithms?|Details?|Implementation))")
+            //
+            // IMPORTANT: "Appendix" must be followed by whitespace, letter/number, or end-of-line.
+            // NOT followed by a colon (e.g., "Artifact Appendix: Title" in a reference).
+            Regex::new(r"(?i)\n\s*(?:Appendix(?:\s+[A-Z0-9]|\s*\n|\s*$)|Acknowledgments|Acknowledgements|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|(?:\w+\s+)?(?:Paper\s+)?Checklist|[A-Z]\n\s*(?:Appendix|Technical|Proofs?|Additional|Extended|Experimental|Derivations?|Algorithms?|Details?|Implementation))")
                 .unwrap()
         });
 
@@ -61,6 +68,58 @@ pub(crate) fn find_references_section_with_config(
     Some(text[cutoff..].to_string())
 }
 
+/// Strip conference page headers/footers that get embedded in PDF text extraction.
+///
+/// These headers appear when PDF pages are concatenated and break pattern matching.
+/// Examples:
+/// - "USENIX Association\n34th USENIX Security Symposium    2477" (split across lines)
+/// - "USENIX Association 34th USENIX Security Symposium 2477" (single line)
+/// - "216 34th USENIX Security Symposium USENIX Association"
+fn strip_page_headers(text: &str) -> String {
+    // USENIX headers can span multiple lines in PDF extraction:
+    // "USENIX Association\n34th USENIX Security Symposium    2477"
+    // Match both single-line and multi-line variants
+    static USENIX_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)(?:USENIX\s+Association\s*\n?\s*)?(?:\d+\s+)?\d+(?:st|nd|rd|th)\s+USENIX\s+(?:Security\s+Symposium|OSDI|ATC|NSDI|HotCloud|WOOT|FAST|LISA|SREcon)(?:\s+USENIX\s+Association)?(?:\s+\d+)?"
+        ).unwrap()
+    });
+
+    // "USENIX Association" on its own line (often appears before the symposium line)
+    static USENIX_ASSOC_ONLY: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?m)^\s*USENIX\s+Association\s*$").unwrap()
+    });
+
+    // IEEE S&P, EuroS&P, etc.
+    static IEEE_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)^\s*(?:\d+\s+)?(?:IEEE\s+)?(?:Symposium\s+on\s+Security\s+and\s+Privacy|S&P|EuroS&P)(?:\s+\d{4})?(?:\s+\d+)?\s*$"
+        ).unwrap()
+    });
+
+    // NDSS
+    static NDSS_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)^\s*(?:\d+\s+)?(?:Network\s+and\s+Distributed\s+System\s+Security\s+Symposium|NDSS)(?:\s+\d{4})?(?:\s+\d+)?\s*$"
+        ).unwrap()
+    });
+
+    // CCS
+    static CCS_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)^\s*(?:\d+\s+)?(?:ACM\s+)?(?:Conference\s+on\s+Computer\s+and\s+Communications\s+Security|CCS)(?:\s+['']?\d{2,4})?(?:\s+\d+)?\s*$"
+        ).unwrap()
+    });
+
+    let mut result = USENIX_HEADER.replace_all(text, "\n").to_string();
+    result = USENIX_ASSOC_ONLY.replace_all(&result, "\n").to_string();
+    result = IEEE_HEADER.replace_all(&result, "\n").to_string();
+    result = NDSS_HEADER.replace_all(&result, "\n").to_string();
+    result = CCS_HEADER.replace_all(&result, "\n").to_string();
+
+    result
+}
+
 /// Split a references section into individual reference strings.
 ///
 /// Tries multiple segmentation strategies in order:
@@ -78,6 +137,11 @@ pub(crate) fn segment_references_with_config(
     ref_text: &str,
     config: &PdfParsingConfig,
 ) -> Vec<String> {
+    // Preprocess: strip conference page headers/footers that get embedded in PDF text
+    // These break pattern matching (e.g., IEEE [1], [2], [3] sequentiality)
+    let ref_text = strip_page_headers(ref_text);
+    let ref_text = ref_text.as_str();
+
     // Strategy 1: IEEE style [1], [2], ...
     if let Some(refs) = try_ieee_with_config(ref_text, config) {
         return refs;
@@ -683,5 +747,67 @@ mod tests {
         // None of the numbered strategies will match, so fallback fires
         let refs = segment_references_with_config(text, &config);
         assert_eq!(refs.len(), 3);
+    }
+
+    #[test]
+    fn test_segment_ieee_with_usenix_page_header() {
+        // Simulates USENIX paper where page header appears between references
+        // The header spans two lines: "USENIX Association" and "34th USENIX Security Symposium 2477"
+        let text = concat!(
+            "[1] First reference with a long enough title here.\n",
+            "[2] Second reference also with sufficient content.\n",
+            "[3] Third reference ends before page break.\n",
+            "USENIX Association\n",
+            "34th USENIX Security Symposium    2477\n",
+            "[4] Fourth reference starts new page content.\n",
+            "[5] Fifth reference continues normally with text.\n",
+            "[6] Sixth reference completes the section here.\n",
+        );
+        let refs = segment_references(text);
+        assert_eq!(
+            refs.len(),
+            6,
+            "Should find 6 IEEE refs after stripping header: {:?}",
+            refs
+        );
+        assert!(refs[0].contains("First reference"));
+        assert!(refs[3].contains("Fourth reference"));
+        assert!(!refs.iter().any(|r| r.contains("USENIX Association")));
+    }
+
+    #[test]
+    fn test_strip_page_headers_usenix() {
+        let text = "some text before\nUSENIX Association\n34th USENIX Security Symposium    2477\nsome text after";
+        let stripped = strip_page_headers(text);
+        assert!(
+            !stripped.contains("USENIX Association"),
+            "Should strip USENIX Association: {}",
+            stripped
+        );
+        assert!(
+            !stripped.contains("Security Symposium"),
+            "Should strip USENIX Security Symposium: {}",
+            stripped
+        );
+        assert!(stripped.contains("some text before"));
+        assert!(stripped.contains("some text after"));
+    }
+
+    #[test]
+    fn test_find_references_uses_last_header() {
+        // Some papers have multiple "References" headers (e.g., table headers like
+        // "Table 2: References to related work") before the actual reference list.
+        // We should use the LAST occurrence.
+        let text = concat!(
+            "Table 2: Classification\n\nReferences\n\n",
+            "Type Variants Post Quantum...\n\n",
+            "5 Conclusion\n\nReferences\n\n",
+            "[1] First real reference here.\n",
+            "[2] Second real reference here.\n",
+        );
+        let section = find_references_section(text).unwrap();
+        // Should contain the actual references, not the table content
+        assert!(section.contains("[1] First real reference"), "Section: {}", section);
+        assert!(!section.contains("Classification"), "Should not contain table content");
     }
 }
