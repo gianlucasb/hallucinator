@@ -40,7 +40,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// PDF, .bbl, or .bib files to check
+    /// PDF, .bbl, .bib files, or archives (.zip, .tar.gz) to check
     file_paths: Vec<PathBuf>,
 
     /// OpenAlex API key
@@ -383,9 +383,19 @@ async fn main() -> anyhow::Result<()> {
         _ => theme::Theme::hacker(),
     };
 
-    // Build filenames for display
-    let filenames: Vec<String> = cli
-        .file_paths
+    // Separate archives from regular files — archives need deferred extraction
+    let mut regular_paths: Vec<PathBuf> = Vec::new();
+    let mut archive_paths: Vec<PathBuf> = Vec::new();
+    for path in &cli.file_paths {
+        if hallucinator_ingest::is_archive_path(path) {
+            archive_paths.push(path.clone());
+        } else {
+            regular_paths.push(path.clone());
+        }
+    }
+
+    // Build filenames for display (regular files only; archives add theirs during extraction)
+    let filenames: Vec<String> = regular_paths
         .iter()
         .map(|p| {
             p.file_name()
@@ -450,8 +460,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = App::new(filenames, theme);
 
-    // Store file paths for deferred processing
-    app.file_paths = cli.file_paths.clone();
+    // Store regular file paths for deferred processing (archives are queued separately)
+    app.file_paths = regular_paths.clone();
 
     // Apply the fully-resolved config state
     app.config_state = config_state;
@@ -539,8 +549,19 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Single-paper mode: if exactly one PDF, skip the queue and go directly to paper view
-    if cli.file_paths.len() == 1 && cli.load.is_none() {
+    // Queue any archives for deferred extraction (the tick handler will process them)
+    let has_archives = !archive_paths.is_empty();
+    if has_archives {
+        let first_name = archive_paths[0]
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        app.extracting_archive = Some(first_name);
+        app.pending_archive_extractions = archive_paths;
+    }
+
+    // Single-paper mode: if exactly one regular file and no archives, skip the queue
+    if regular_paths.len() == 1 && !has_archives && cli.load.is_none() {
         app.screen = Screen::Paper(0);
         app.single_paper_mode = true;
     }
