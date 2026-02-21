@@ -56,9 +56,60 @@ impl App {
                     }
                     Action::SearchInput(ch) => {
                         if ch == '\x08' {
-                            self.export_state.edit_buffer.pop();
+                            // Backspace: delete char before cursor
+                            if self.export_state.edit_cursor > 0 {
+                                let prev = self.export_state.edit_buffer
+                                    [..self.export_state.edit_cursor]
+                                    .char_indices()
+                                    .next_back()
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(0);
+                                self.export_state
+                                    .edit_buffer
+                                    .drain(prev..self.export_state.edit_cursor);
+                                self.export_state.edit_cursor = prev;
+                            }
                         } else {
-                            self.export_state.edit_buffer.push(ch);
+                            self.export_state
+                                .edit_buffer
+                                .insert(self.export_state.edit_cursor, ch);
+                            self.export_state.edit_cursor += ch.len_utf8();
+                        }
+                    }
+                    Action::CursorLeft => {
+                        let cur = &mut self.export_state.edit_cursor;
+                        *cur = self.export_state.edit_buffer[..*cur]
+                            .char_indices()
+                            .next_back()
+                            .map(|(i, _)| i)
+                            .unwrap_or(0);
+                    }
+                    Action::CursorRight => {
+                        let cur = &mut self.export_state.edit_cursor;
+                        if *cur < self.export_state.edit_buffer.len() {
+                            *cur += self.export_state.edit_buffer[*cur..]
+                                .chars()
+                                .next()
+                                .map(|c| c.len_utf8())
+                                .unwrap_or(0);
+                        }
+                    }
+                    Action::CursorHome => {
+                        self.export_state.edit_cursor = 0;
+                    }
+                    Action::CursorEnd => {
+                        self.export_state.edit_cursor = self.export_state.edit_buffer.len();
+                    }
+                    Action::DeleteForward => {
+                        let cur = self.export_state.edit_cursor;
+                        if cur < self.export_state.edit_buffer.len() {
+                            let next = cur
+                                + self.export_state.edit_buffer[cur..]
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.len_utf8())
+                                    .unwrap_or(0);
+                            self.export_state.edit_buffer.drain(cur..next);
                         }
                     }
                     Action::Tick => {
@@ -103,6 +154,7 @@ impl App {
                         // Start editing the output path
                         self.export_state.editing_path = true;
                         self.export_state.edit_buffer = self.export_state.output_path.clone();
+                        self.export_state.edit_cursor = self.export_state.edit_buffer.len();
                         self.input_mode = InputMode::TextInput;
                     }
                     4 => {
@@ -368,6 +420,7 @@ impl App {
                     // Clean up any in-progress editing
                     self.config_state.editing = false;
                     self.config_state.edit_buffer.clear();
+                    self.config_state.edit_cursor = 0;
                     self.input_mode = InputMode::Normal;
 
                     if self.config_state.dirty && !self.config_state.confirm_exit {
@@ -533,13 +586,107 @@ impl App {
                 self.input_mode = InputMode::Search;
                 self.search_query.clear();
             }
+            Action::CursorLeft
+            | Action::CursorRight
+            | Action::CursorHome
+            | Action::CursorEnd
+            | Action::DeleteForward => {
+                if self.config_state.editing {
+                    let buf = &mut self.config_state.edit_buffer;
+                    let cur = &mut self.config_state.edit_cursor;
+                    match action {
+                        Action::CursorLeft => {
+                            // Move to previous char boundary
+                            *cur = buf[..*cur]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                        }
+                        Action::CursorRight => {
+                            // Move to next char boundary
+                            if *cur < buf.len() {
+                                *cur += buf[*cur..]
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.len_utf8())
+                                    .unwrap_or(0);
+                            }
+                        }
+                        Action::CursorHome => *cur = 0,
+                        Action::CursorEnd => *cur = buf.len(),
+                        Action::DeleteForward => {
+                            if *cur < buf.len() {
+                                let next = *cur
+                                    + buf[*cur..]
+                                        .chars()
+                                        .next()
+                                        .map(|c| c.len_utf8())
+                                        .unwrap_or(0);
+                                buf.drain(*cur..next);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                } else if self.export_state.editing_path {
+                    let buf = &mut self.export_state.edit_buffer;
+                    let cur = &mut self.export_state.edit_cursor;
+                    match action {
+                        Action::CursorLeft => {
+                            *cur = buf[..*cur]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                        }
+                        Action::CursorRight => {
+                            if *cur < buf.len() {
+                                *cur += buf[*cur..]
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.len_utf8())
+                                    .unwrap_or(0);
+                            }
+                        }
+                        Action::CursorHome => *cur = 0,
+                        Action::CursorEnd => *cur = buf.len(),
+                        Action::DeleteForward => {
+                            if *cur < buf.len() {
+                                let next = *cur
+                                    + buf[*cur..]
+                                        .chars()
+                                        .next()
+                                        .map(|c| c.len_utf8())
+                                        .unwrap_or(0);
+                                buf.drain(*cur..next);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
             Action::SearchInput(c) => {
                 if self.config_state.editing {
                     // Route to config text editing
                     if c == '\x08' {
-                        self.config_state.edit_buffer.pop();
+                        // Backspace: delete char before cursor
+                        if self.config_state.edit_cursor > 0 {
+                            let prev = self.config_state.edit_buffer
+                                [..self.config_state.edit_cursor]
+                                .char_indices()
+                                .next_back()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            self.config_state
+                                .edit_buffer
+                                .drain(prev..self.config_state.edit_cursor);
+                            self.config_state.edit_cursor = prev;
+                        }
                     } else {
-                        self.config_state.edit_buffer.push(c);
+                        self.config_state
+                            .edit_buffer
+                            .insert(self.config_state.edit_cursor, c);
+                        self.config_state.edit_cursor += c.len_utf8();
                     }
                 } else {
                     if c == '\x08' {
@@ -564,6 +711,7 @@ impl App {
                 if self.config_state.editing {
                     self.config_state.editing = false;
                     self.config_state.edit_buffer.clear();
+                    self.config_state.edit_cursor = 0;
                     self.input_mode = InputMode::Normal;
                 } else {
                     self.input_mode = InputMode::Normal;

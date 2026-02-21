@@ -56,6 +56,7 @@ impl App {
                 };
                 self.config_state.editing = true;
                 self.config_state.edit_buffer = value;
+                self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                 self.input_mode = InputMode::TextInput;
             }
             ConfigSection::Concurrency => {
@@ -69,6 +70,7 @@ impl App {
                 };
                 self.config_state.editing = true;
                 self.config_state.edit_buffer = value;
+                self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                 self.input_mode = InputMode::TextInput;
             }
             ConfigSection::Display => match self.config_state.item_cursor {
@@ -80,6 +82,7 @@ impl App {
                     // Edit FPS
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.fps.to_string();
+                    self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                     self.input_mode = InputMode::TextInput;
                 }
                 _ => {}
@@ -89,21 +92,25 @@ impl App {
                     // Item 0: edit DBLP offline path
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.dblp_offline_path.clone();
+                    self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                     self.input_mode = InputMode::TextInput;
                 } else if self.config_state.item_cursor == 1 {
                     // Item 1: edit ACL offline path
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.acl_offline_path.clone();
+                    self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                     self.input_mode = InputMode::TextInput;
                 } else if self.config_state.item_cursor == 2 {
                     // Item 2: edit OpenAlex offline path
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.openalex_offline_path.clone();
+                    self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                     self.input_mode = InputMode::TextInput;
                 } else if self.config_state.item_cursor == 3 {
                     // Item 3: edit cache path
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.cache_path.clone();
+                    self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                     self.input_mode = InputMode::TextInput;
                 } else if self.config_state.item_cursor == 4 {
                     // Item 4: clear cache button
@@ -116,6 +123,7 @@ impl App {
                     self.config_state.editing = true;
                     self.config_state.edit_buffer =
                         self.config_state.searxng_url.clone().unwrap_or_default();
+                    self.config_state.edit_cursor = self.config_state.edit_buffer.len();
                     self.input_mode = InputMode::TextInput;
                 } else {
                     // Items 7+: toggle DB (same as space)
@@ -230,6 +238,7 @@ impl App {
         self.config_state.dirty = true;
         self.config_state.editing = false;
         self.config_state.edit_buffer.clear();
+        self.config_state.edit_cursor = 0;
         self.input_mode = InputMode::Normal;
     }
 

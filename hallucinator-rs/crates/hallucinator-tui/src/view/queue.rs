@@ -192,7 +192,24 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                         format!("{} Retrying...", spinner_char(app.tick))
                     }
                 }
-                PaperPhase::Checking | PaperPhase::Extracting => {
+                PaperPhase::Checking => {
+                    let bar_w = 12;
+                    let (filled, empty) = if paper.total_refs > 0 {
+                        let done = paper.completed_count();
+                        let ratio = done as f64 / paper.total_refs as f64;
+                        let f = (ratio * bar_w as f64) as usize;
+                        (f, bar_w - f)
+                    } else {
+                        (0, bar_w)
+                    };
+                    format!(
+                        "{} {}{}",
+                        spinner_char(app.tick),
+                        "\u{2588}".repeat(filled),
+                        "\u{2591}".repeat(empty),
+                    )
+                }
+                PaperPhase::Extracting => {
                     format!("{} {}", spinner_char(app.tick), paper.phase.label())
                 }
                 _ => paper.phase.label().to_string(),
@@ -332,6 +349,18 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         ));
         spans.push(Span::styled(
             " Space:mark  Enter:open  s/S:sort  f:filter  c:config  e:export  ?:help",
+            theme.footer_style(),
+        ));
+    } else if app.batch_complete && !app.file_paths.is_empty() {
+        spans.push(Span::styled(
+            " [r] Start ",
+            Style::default()
+                .fg(theme.header_fg)
+                .bg(theme.active)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " Space:mark  Enter:open  s/S:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
             theme.footer_style(),
         ));
     } else {

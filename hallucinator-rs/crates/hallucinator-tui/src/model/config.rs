@@ -34,6 +34,8 @@ pub struct ConfigState {
     pub item_cursor: usize,
     pub editing: bool,
     pub edit_buffer: String,
+    /// Byte offset of the cursor within `edit_buffer`.
+    pub edit_cursor: usize,
     pub prev_screen: Option<super::super::app::Screen>,
     /// Whether config has been modified since last save.
     pub dirty: bool,
@@ -104,6 +106,7 @@ impl Default for ConfigState {
             item_cursor: 0,
             editing: false,
             edit_buffer: String::new(),
+            edit_cursor: 0,
             prev_screen: None,
             dirty: false,
             confirm_exit: false,

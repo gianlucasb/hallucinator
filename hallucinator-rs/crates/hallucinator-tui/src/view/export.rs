@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
+use crate::view::config::render_edit_field;
 
 pub use hallucinator_reporting::ExportFormat;
 
@@ -46,6 +47,8 @@ pub struct ExportState {
     pub cursor: usize, // 0=format, 1=scope, 2=filter, 3=path, 4=confirm
     pub editing_path: bool,
     pub edit_buffer: String,
+    /// Byte offset of the cursor within `edit_buffer`.
+    pub edit_cursor: usize,
     pub message: Option<String>,
 }
 
@@ -60,6 +63,7 @@ impl Default for ExportState {
             cursor: 0,
             editing_path: false,
             edit_buffer: String::new(),
+            edit_cursor: 0,
             message: None,
         }
     }
@@ -121,7 +125,7 @@ pub fn render(f: &mut Frame, app: &App) {
     // Output path
     let path_indicator = if export.cursor == 3 { "> " } else { "  " };
     let path_display = if export.editing_path {
-        format!("{}\u{2588}", export.edit_buffer)
+        render_edit_field(&export.edit_buffer, export.edit_cursor)
     } else {
         export.output_path.clone()
     };

@@ -8,6 +8,21 @@ use crate::app::App;
 use crate::model::config::{ConfigSection, ConfigState};
 use crate::theme::Theme;
 
+/// Render an edit field with a block cursor at the given byte offset.
+pub(crate) fn render_edit_field(buffer: &str, cursor: usize) -> String {
+    let cursor = cursor.min(buffer.len());
+    let (before, after) = buffer.split_at(cursor);
+    if let Some(c) = after.chars().next() {
+        let rest = &after[c.len_utf8()..];
+        // Show the char under cursor as the block cursor, then the rest
+        // For simplicity, use the block character to represent cursor position
+        format!("{}\u{2588}{}", before, rest)
+    } else {
+        // Cursor at end of string
+        format!("{}\u{2588}", before)
+    }
+}
+
 /// Render the config screen into the given area.
 /// `footer_area` is a full-width row below the main content + activity panel.
 pub fn render_in(f: &mut Frame, app: &App, area: Rect, footer_area: Rect) {
@@ -134,7 +149,7 @@ fn render_api_keys(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
     for (i, (label, display_default)) in items.iter().enumerate() {
         let cursor = if config.item_cursor == i { "> " } else { "  " };
         let display_val = if config.editing && config.item_cursor == i {
-            format!("{}\u{2588}", config.edit_buffer)
+            render_edit_field(&config.edit_buffer, config.edit_cursor)
         } else {
             display_default.clone()
         };
@@ -179,7 +194,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     // Item 0: DBLP offline path (editable)
     let cursor = if config.item_cursor == 0 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 0 {
-        format!("{}\u{2588}", config.edit_buffer)
+        render_edit_field(&config.edit_buffer, config.edit_cursor)
     } else if config.dblp_offline_path.is_empty() {
         "(not set)".to_string()
     } else {
@@ -220,7 +235,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     // Item 1: ACL offline path (editable)
     let cursor = if config.item_cursor == 1 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 1 {
-        format!("{}\u{2588}", config.edit_buffer)
+        render_edit_field(&config.edit_buffer, config.edit_cursor)
     } else if config.acl_offline_path.is_empty() {
         "(not set)".to_string()
     } else {
@@ -261,7 +276,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     // Item 2: OpenAlex offline path (editable)
     let cursor = if config.item_cursor == 2 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 2 {
-        format!("{}\u{2588}", config.edit_buffer)
+        render_edit_field(&config.edit_buffer, config.edit_cursor)
     } else if config.openalex_offline_path.is_empty() {
         "(not set)".to_string()
     } else {
@@ -302,7 +317,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     // Item 3: Cache path (editable)
     let cursor = if config.item_cursor == 3 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 3 {
-        format!("{}\u{2588}", config.edit_buffer)
+        render_edit_field(&config.edit_buffer, config.edit_cursor)
     } else if config.cache_path.is_empty() {
         "(not set)".to_string()
     } else {
@@ -362,7 +377,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     // Item 6: SearxNG URL (editable)
     let cursor = if config.item_cursor == 6 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 6 {
-        format!("{}\u{2588}", config.edit_buffer)
+        render_edit_field(&config.edit_buffer, config.edit_cursor)
     } else {
         match &config.searxng_url {
             Some(url) => truncate_path(url, max_path_len),
@@ -429,7 +444,7 @@ fn render_concurrency(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme
     for (i, (label, value)) in items.iter().enumerate() {
         let cursor = if config.item_cursor == i { "> " } else { "  " };
         let display_val = if config.editing && config.item_cursor == i {
-            format!("{}\u{2588}", config.edit_buffer)
+            render_edit_field(&config.edit_buffer, config.edit_cursor)
         } else {
             value.to_string()
         };
@@ -463,7 +478,7 @@ fn render_display(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
     // Item 1: FPS
     let cursor = if config.item_cursor == 1 { "> " } else { "  " };
     let display_val = if config.editing && config.item_cursor == 1 {
-        format!("{}\u{2588}", config.edit_buffer)
+        render_edit_field(&config.edit_buffer, config.edit_cursor)
     } else {
         config.fps.to_string()
     };

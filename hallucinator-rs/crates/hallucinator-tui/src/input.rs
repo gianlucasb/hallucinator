@@ -88,6 +88,11 @@ fn map_key_text_input(key: &KeyEvent) -> Action {
         KeyCode::Enter => Action::SearchConfirm,
         KeyCode::Char(c) => Action::SearchInput(c),
         KeyCode::Backspace => Action::SearchInput('\x08'),
+        KeyCode::Left => Action::CursorLeft,
+        KeyCode::Right => Action::CursorRight,
+        KeyCode::Home => Action::CursorHome,
+        KeyCode::End => Action::CursorEnd,
+        KeyCode::Delete => Action::DeleteForward,
         _ => Action::None,
     }
 }
