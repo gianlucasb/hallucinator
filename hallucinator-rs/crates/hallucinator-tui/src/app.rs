@@ -2,9 +2,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 use tokio::sync::mpsc;
 
 use hallucinator_ingest::archive::ArchiveItem;
@@ -2502,9 +2503,8 @@ impl App {
         let total_verified: usize = self.papers.iter().map(|p| p.stats.verified).sum();
         let total_not_found: usize = self.papers.iter().map(|p| p.stats.not_found).sum();
         let total_mismatch: usize = self.papers.iter().map(|p| p.stats.author_mismatch).sum();
-        let total_retracted: usize = self.papers.iter().map(|p| p.stats.retracted).sum();
 
-        let mut spans = vec![
+        let spans = vec![
             Span::styled(
                 format!(" {}/{} papers ", done, total),
                 Style::default().fg(theme.text),
@@ -2525,22 +2525,27 @@ impl App {
                 format!("NF:{} ", total_not_found),
                 Style::default().fg(theme.not_found),
             ),
-            Span::styled(
-                format!("R:{}", total_retracted),
-                Style::default().fg(theme.retracted),
-            ),
         ];
 
-        // Elapsed timer
-        let elapsed = self.elapsed();
-        if elapsed.as_secs() > 0 {
-            spans.push(Span::styled(
-                format!(" {}:{:02}", elapsed.as_secs() / 60, elapsed.as_secs() % 60),
-                Style::default().fg(theme.dim),
-            ));
-        }
-
         Line::from(spans)
+    }
+
+    /// Build a right-aligned FPS/RSS line for the footer bar.
+    fn build_footer_right(&self) -> Line<'static> {
+        Line::from(vec![
+            Span::styled(
+                format!(
+                    "RSS:{:.0}MB ",
+                    self.measured_rss_bytes as f64 / (1024.0 * 1024.0)
+                ),
+                Style::default().fg(self.theme.dim),
+            ),
+            Span::styled(
+                format!("FPS:{:.2}", self.measured_fps),
+                Style::default().fg(self.theme.dim),
+            ),
+        ])
+        .alignment(Alignment::Right)
     }
 
     /// Cycle theme: hacker → modern → gnr → hacker.
@@ -2799,6 +2804,10 @@ impl App {
             Screen::Config => crate::view::config::render_in(f, self, main_area, footer_area),
             Screen::Banner | Screen::FilePicker => unreachable!(),
         }
+
+        // Render FPS/RSS right-aligned in the footer (painter's order: overwrites right side)
+        let footer_right = self.build_footer_right();
+        f.render_widget(Paragraph::new(vec![footer_right]), footer_area);
 
         if self.config_state.confirm_exit {
             crate::view::config_confirm::render(f, &self.theme);

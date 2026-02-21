@@ -319,12 +319,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             ]));
         }
     }
-    let rss_mb = app.measured_rss_bytes as f64 / (1024.0 * 1024.0);
-    lines.push(Line::from(Span::styled(
-        format!(" FPS: {:.0}  RSS: {:.1} MB", app.measured_fps, rss_mb),
-        Style::default().fg(theme.dim),
-    )));
-
     // Log messages (archive extraction, errors)
     if !activity.messages.is_empty() {
         lines.push(Line::from(""));

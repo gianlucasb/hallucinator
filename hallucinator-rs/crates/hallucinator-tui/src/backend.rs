@@ -9,6 +9,27 @@ use hallucinator_core::{Config, ExtractionResult, ProgressEvent};
 
 use crate::tui_event::BackendEvent;
 
+/// A job submitted to the extraction worker pool.
+struct ExtractionJob {
+    path: PathBuf,
+    result_tx: tokio::sync::oneshot::Sender<Result<ExtractionResult, String>>,
+}
+
+/// Worker that pulls extraction jobs from the channel and runs them on
+/// the blocking thread pool. N workers = N concurrent extractions.
+async fn extraction_worker(rx: async_channel::Receiver<ExtractionJob>) {
+    while let Ok(job) = rx.recv().await {
+        let result = tokio::task::spawn_blocking(move || {
+            hallucinator_ingest::extract_references(&job.path)
+                .map_err(|e| format!("Extraction failed: {}", e))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("Task join error: {}", e)));
+
+        let _ = job.result_tx.send(result);
+    }
+}
+
 /// Remap progress event indices from the filtered (checkable-only) vec back to
 /// the full all-refs vec, so the TUI's ref_states (which includes skipped refs)
 /// receives updates at the correct positions.
@@ -82,27 +103,40 @@ pub async fn run_batch_with_offset(
     let pool = ValidationPool::new(config.clone(), cancel.clone(), num_workers);
     let pool_tx = pool.sender();
 
-    // Spawn one task per paper. Extraction is fast (CPU-bound via spawn_blocking),
-    // and each task then submits refs to the shared pool and awaits results.
-    // The ValidationPool is the sole concurrency bottleneck.
+    // Bounded extraction: N worker tasks pull from a channel, so at most N
+    // CPU-heavy PDF extractions run concurrently (prevents resource exhaustion).
+    let max_extractors = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let (extract_tx, extract_rx) = async_channel::unbounded::<ExtractionJob>();
+    for _ in 0..max_extractors {
+        let rx = extract_rx.clone();
+        tokio::spawn(extraction_worker(rx));
+    }
+    // Drop our clone so the channel closes once the sender side is dropped
+    drop(extract_rx);
+
+    // Spawn one task per paper. Each task submits its extraction to the
+    // worker pool, then feeds validated refs into the shared ValidationPool.
     let mut handles = Vec::new();
     for (i, pdf_path) in pdfs.into_iter().enumerate() {
         let paper_index = offset + i;
         let pool_tx = pool_tx.clone();
         let tx = tx.clone();
         let cancel = cancel.clone();
+        let extract_tx = extract_tx.clone();
 
         handles.push(tokio::spawn(async move {
             if cancel.is_cancelled() {
                 return;
             }
-            process_single_paper(paper_index, &pdf_path, &pool_tx, &tx, &cancel).await;
+            process_single_paper(paper_index, &pdf_path, &pool_tx, &extract_tx, &tx, &cancel).await;
         }));
     }
 
-    // Drop our clone of the pool sender so shutdown can complete
-    // once all paper tasks finish submitting
+    // Drop our clones so shutdown can complete once all paper tasks finish
     drop(pool_tx);
+    drop(extract_tx);
 
     for handle in handles {
         let _ = handle.await;
@@ -120,20 +154,29 @@ async fn process_single_paper(
     paper_index: usize,
     pdf_path: &std::path::Path,
     pool_tx: &async_channel::Sender<RefJob>,
+    extract_tx: &async_channel::Sender<ExtractionJob>,
     tx: &mpsc::UnboundedSender<BackendEvent>,
     cancel: &CancellationToken,
 ) {
     // Signal extraction start
     let _ = tx.send(BackendEvent::ExtractionStarted { paper_index });
 
-    // Extract references (blocking call)
-    let path = pdf_path.to_path_buf();
-    let extraction: Result<ExtractionResult, String> = tokio::task::spawn_blocking(move || {
-        hallucinator_ingest::extract_references(&path)
-            .map_err(|e| format!("Extraction failed: {}", e))
-    })
-    .await
-    .unwrap_or_else(|e| Err(format!("Task join error: {}", e)));
+    // Submit extraction to the bounded worker pool
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let job = ExtractionJob {
+        path: pdf_path.to_path_buf(),
+        result_tx,
+    };
+    if extract_tx.send(job).await.is_err() {
+        let _ = tx.send(BackendEvent::ExtractionFailed {
+            paper_index,
+            error: "Extraction channel closed".to_string(),
+        });
+        return;
+    }
+    let extraction: Result<ExtractionResult, String> = result_rx
+        .await
+        .unwrap_or_else(|_| Err("Extraction worker dropped".to_string()));
 
     let extraction = match extraction {
         Ok(ext) => ext,

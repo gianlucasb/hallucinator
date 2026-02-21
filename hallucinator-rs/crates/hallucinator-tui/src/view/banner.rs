@@ -860,8 +860,8 @@ pub fn render_logo_bar(
         return chunks[1];
     }
 
-    // 5-line bar: logo+icon left, tip pane right
     let rows = Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).split(area);
+
     let cols = Layout::horizontal([Constraint::Length(logo_glass_width), Constraint::Min(15)])
         .split(rows[0]);
 
@@ -879,9 +879,10 @@ pub fn render_logo_bar(
             Span::styled(icon_line.to_string(), Style::default().fg(theme.text)),
         ]));
     }
-    // Row 3: blank separator, Row 4: stats
+
+    // Blank line + stats line below logo (fits within the 5-row column)
+    logo_lines.push(Line::from(""));
     if let Some(stats) = stats_line {
-        logo_lines.push(Line::raw(""));
         logo_lines.push(stats);
     }
 
