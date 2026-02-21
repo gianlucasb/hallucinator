@@ -11,6 +11,7 @@ pub enum Action {
     GoTop,
     GoBottom,
     CycleSort,
+    ReverseSortDirection,
     CycleFilter,
     ToggleHelp,
     StartSearch,
