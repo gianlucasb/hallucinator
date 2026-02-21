@@ -1,5 +1,7 @@
 use regex::Regex;
 
+use crate::scoring::ScoringWeights;
+
 /// Controls how a list of patterns/values is overridden from its defaults.
 #[derive(Debug, Clone, Default)]
 pub enum ListOverride<T> {
@@ -64,6 +66,10 @@ pub struct PdfParsingConfig {
     // ── text_processing.rs ──
     /// Compound-word suffixes that should preserve the hyphen.
     pub(crate) compound_suffixes: ListOverride<String>,
+
+    // ── scoring.rs ──
+    /// Weights for the segmentation scoring function.
+    pub(crate) scoring_weights: Option<ScoringWeights>,
 }
 
 impl Default for PdfParsingConfig {
@@ -80,7 +86,20 @@ impl Default for PdfParsingConfig {
             min_title_words: 4,
             max_authors: 15,
             compound_suffixes: ListOverride::Default,
+            scoring_weights: None,
         }
+    }
+}
+
+impl PdfParsingConfig {
+    /// Get the scoring weights, using defaults if not configured.
+    pub(crate) fn scoring_weights(&self) -> ScoringWeights {
+        self.scoring_weights.clone().unwrap_or_default()
+    }
+
+    /// Get the minimum title word count.
+    pub fn min_title_words(&self) -> usize {
+        self.min_title_words
     }
 }
 
@@ -101,6 +120,7 @@ pub struct PdfParsingConfigBuilder {
     min_title_words: Option<usize>,
     max_authors: Option<usize>,
     compound_suffixes: ListOverridePlainBuilder,
+    scoring_weights: Option<ScoringWeights>,
 }
 
 /// Helper for building `ListOverride<Regex>` from string patterns.
@@ -217,6 +237,14 @@ impl PdfParsingConfigBuilder {
         self
     }
 
+    // ── Scoring weights ──
+
+    /// Set custom scoring weights for segmentation strategy selection.
+    pub fn scoring_weights(mut self, weights: ScoringWeights) -> Self {
+        self.scoring_weights = Some(weights);
+        self
+    }
+
     /// Compile all string patterns into regexes and produce a [`PdfParsingConfig`].
     pub fn build(self) -> Result<PdfParsingConfig, regex::Error> {
         let compile = |opt: Option<String>| -> Result<Option<Regex>, regex::Error> {
@@ -260,6 +288,7 @@ impl PdfParsingConfigBuilder {
             min_title_words: self.min_title_words.unwrap_or(4),
             max_authors: self.max_authors.unwrap_or(15),
             compound_suffixes: compile_plain(self.compound_suffixes),
+            scoring_weights: self.scoring_weights,
         })
     }
 }

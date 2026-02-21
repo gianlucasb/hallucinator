@@ -7,6 +7,7 @@ pub mod backend;
 pub mod config;
 pub mod extractor;
 pub mod identifiers;
+pub mod scoring;
 pub mod section;
 pub mod text_processing;
 pub mod title;
@@ -14,6 +15,8 @@ pub mod title;
 pub use backend::PdfBackend;
 pub use config::{ListOverride, PdfParsingConfig, PdfParsingConfigBuilder};
 pub use extractor::PdfExtractor;
+pub use scoring::{score_segmentation, select_best_segmentation, ScoringWeights};
+pub use section::{SegmentationResult, SegmentationStrategy};
 // Re-export domain types from core (canonical definitions live there)
 pub use hallucinator_core::{ExtractionResult, Reference, SkipStats};
 
