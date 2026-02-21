@@ -151,6 +151,11 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
+    // === Format 10: Thesis/Technical report: "Author, Title. PhD thesis, ..." ===
+    if let Some(result) = try_thesis_citation(ref_text) {
+        return result;
+    }
+
     // === Fallback: second sentence ===
     if let Some(result) = try_fallback_sentence(ref_text) {
         return result;
@@ -198,6 +203,16 @@ pub(crate) fn clean_title_with_config(
     // Normalize whitespace after stripping
     static MULTI_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unwrap());
     title = MULTI_SPACE.replace_all(&title, " ").trim().to_string();
+
+    // Strip leading/trailing braces used in BibTeX-style titles: "{TANGO}" -> "TANGO"
+    // Only strip if both opening and closing braces are present
+    if title.starts_with('{') && title.contains('}') {
+        title = title.replacen('{', "", 1);
+        // Remove the FIRST closing brace only (preserves nested braces if any)
+        if let Some(pos) = title.find('}') {
+            title = format!("{}{}", &title[..pos], &title[pos + 1..]);
+        }
+    }
 
     // For non-quoted titles, truncate at first sentence-ending period
     if !from_quotes {
@@ -1045,6 +1060,8 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(r"\.\s*[Ii]n:\s+(?:Proceedings|Workshop|Conference|Symposium|IFIP|IEEE|ACM)").unwrap(),
             Regex::new(r"\.\s*[Ii]n:\s+[A-Z]").unwrap(),
             Regex::new(r"\.\s*[Ii]n\s+(?:Proceedings|Workshop|Conference|Symposium|AAAI|IEEE|ACM|USENIX)").unwrap(),
+            // Handle "In YEAR Venue" format: ". In 2017 USENIX Workshop"
+            Regex::new(r"\.\s*[Ii]n\s+(?:19|20)\d{2}\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS)").unwrap(),
             Regex::new(r"\.\s*[Ii]n\s+[A-Z][a-z]+\s+(?:Conference|Workshop|Symposium)").unwrap(),
             Regex::new(r"\.\s*[Ii]n\s+(?:The\s+)?(?:\w+\s+)+(?:International\s+)?(?:Conference|Workshop|Symposium)").unwrap(),
             Regex::new(r"\.\s*(?:NeurIPS|ICML|ICLR|CVPR|ICCV|ECCV|AAAI|IJCAI|CoRR|JMLR),").unwrap(),
@@ -1097,22 +1114,51 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
             // First try: split into sentences
             let parts = split_sentences_skip_initials(before_venue);
             if parts.len() >= 2 {
-                let title = parts[1].trim();
                 static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
-                let title = TRAIL.replace(title, "");
-                if !title.is_empty() {
-                    // Verify it doesn't look like authors
-                    static AUTHOR_CHECK: Lazy<Regex> =
-                        Lazy::new(|| Regex::new(r"^[A-Z][a-z]+\s+[A-Z][a-z]+,").unwrap());
-                    // Also reject if it looks like a standard document number
-                    if !AUTHOR_CHECK.is_match(&title) && !STANDARD_NUM_TITLE.is_match(&title) {
-                        return Some((title.to_string(), false));
-                    }
-                    // If parts[1] is a standard number, try parts[0] instead
-                    if STANDARD_NUM_TITLE.is_match(&title) && !parts[0].is_empty() {
-                        let first_part = parts[0].trim();
-                        if first_part.split_whitespace().count() >= 3 {
-                            return Some((first_part.to_string(), false));
+
+                // Check if parts[1] looks like authors (sequence of names with initials)
+                // Heuristics:
+                // 1. Contains author initials (single capital letter followed by period)
+                // 2. High ratio of capitalized words (>60%)
+                // 3. Contains comma-separated names
+                let looks_like_author_list = {
+                    let text = parts[1].trim();
+                    let has_initials =
+                        Regex::new(r"\b[A-Z]\.\s").unwrap().is_match(text);
+                    let words: Vec<&str> = text.split_whitespace().collect();
+                    let cap_words = words
+                        .iter()
+                        .filter(|w| w.chars().next().is_some_and(|c| c.is_uppercase()))
+                        .count();
+                    let cap_ratio = cap_words as f64 / words.len().max(1) as f64;
+                    // If it has initials and high capitalization, likely authors
+                    has_initials && cap_ratio > 0.6
+                };
+
+                let title_idx = if parts.len() >= 3 && looks_like_author_list {
+                    // parts[1] looks like an author list, use parts[2] if available
+                    2
+                } else {
+                    1
+                };
+
+                if title_idx < parts.len() {
+                    let title = parts[title_idx].trim();
+                    let title = TRAIL.replace(title, "");
+                    if !title.is_empty() {
+                        // Verify it doesn't look like authors
+                        static AUTHOR_CHECK: Lazy<Regex> =
+                            Lazy::new(|| Regex::new(r"^[A-Z][a-z]+\s+[A-Z][a-z]+,").unwrap());
+                        // Also reject if it looks like a standard document number
+                        if !AUTHOR_CHECK.is_match(&title) && !STANDARD_NUM_TITLE.is_match(&title) {
+                            return Some((title.to_string(), false));
+                        }
+                        // If parts[title_idx] is a standard number, try parts[0] instead
+                        if STANDARD_NUM_TITLE.is_match(&title) && !parts[0].is_empty() {
+                            let first_part = parts[0].trim();
+                            if first_part.split_whitespace().count() >= 3 {
+                                return Some((first_part.to_string(), false));
+                            }
                         }
                     }
                 }
@@ -1356,17 +1402,21 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     // The key is finding ", and Initial. Surname. TitleStart"
     static AND_AUTHOR_TITLE_RE: Lazy<Regex> = Lazy::new(|| {
         // Initial pattern: single letter "A." or multi-letter "Yu." (Russian/Chinese patronymics)
-        // Also handles compound initials like "A.-B." or "A. B."
-        // Use lazy quantifier (*?) to avoid matching too many initials
-        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z](?:[a-z]{0,2})?\.)*?";
+        // Also handles compound initials like "A.-B." or "A. B." (space-separated single letters)
+        // IMPORTANT: The compound part must be single letters only to avoid matching "Ng." as initial
+        // Use GREEDY quantifier to capture full compound initials like "K.-Y." before surname
+        let initial = r"[\x41-\x5A\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0027}\u{0060}\u{00B4}](?:[a-z]{0,2})?\.(?:[\s\-]*[A-Z]\.)*";
         let particle =
             r"(?:(?:von|van|de|del|della|di|da|dos|das|du|le|la|les|den|der|ten|ter|op|het)\s+)?";
         let surname_chars = r"[A-Za-z\u{00C0}-\u{024F}\u{0027}\u{0060}\u{00B4}\u{2019}\-]";
+        // Surname must START with a letter (not hyphen/apostrophe), then 1+ more surname chars
+        // This prevents "-Y" (from compound initials like "K.-Y.") being matched as surname
+        let surname_start = r"[A-Za-z\u{00C0}-\u{024F}]";
         // Require at least 2 chars in surname to avoid matching single-letter initials like "G."
         // Use lazy quantifier (*?) to avoid consuming title words as part of surname
         let surname = format!(
-            r"{}{}{{2,}}(?:\s+{}+)*?",
-            particle, surname_chars, surname_chars
+            r"{}{}{}{{1,}}(?:\s+{}+)*?",
+            particle, surname_start, surname_chars, surname_chars
         );
         let pattern = format!(
             r#",?\s+and\s+{}\s*{}\.\s+([A-Z\u{{00C0}}-\u{{00D6}}][a-z]|[A-Z]\s+[a-z]|[0-9]|["\u{{201c}}\u{{201d}}])"#,
@@ -1552,6 +1602,59 @@ fn try_standard_document(ref_text: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Handle thesis and technical report citations.
+///
+/// Format: "Author, Title. PhD thesis/Master's thesis/Technical report, Institution, Year"
+/// Examples:
+/// - "E. Blidborg, Cache Poisoning in DNS over HTTPS clients. PhD thesis, KTH, Stockholm, Sweden, 2020"
+/// - "J. Doe, Analysis of Systems. Master's thesis, MIT, 2019"
+/// - "A. Smith, Protocol Design. Technical report, IETF, 2021"
+fn try_thesis_citation(ref_text: &str) -> Option<(String, bool)> {
+    // Match the thesis/report marker that ends the title
+    static THESIS_MARKER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\.\s+(?:Ph\.?D\.?|Master'?s?|M\.?S\.?|B\.?S\.?|Bachelor'?s?|Doctoral|Technical|Tech\.?)\s+(?:thesis|dissertation|report|rep\.),?\s").unwrap()
+    });
+
+    let thesis_match = THESIS_MARKER.find(ref_text)?;
+
+    // The title ends at the period before the thesis marker
+    let title_end = thesis_match.start();
+
+    // Now find the author/title separator: typically "Author(s), Title"
+    // Look for pattern: "Initial. Lastname, " near the start
+    static AUTHOR_END: Lazy<Regex> = Lazy::new(|| {
+        // Match: "I. Surname, " or "I. I. Surname, " or "Surname, I., " (inverted)
+        // The comma after surname marks the end of author, start of title
+        Regex::new(r"^(?:[A-Z]\.\s*)+[A-Za-z\u{00C0}-\u{024F}'-]+,\s+").unwrap()
+    });
+
+    // Also handle inverted format: "Surname, I., Title"
+    static AUTHOR_INVERTED: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^[A-Za-z\u{00C0}-\u{024F}'-]+,\s*(?:[A-Z]\.\s*)+,?\s+").unwrap()
+    });
+
+    let title_start = if let Some(m) = AUTHOR_END.find(ref_text) {
+        m.end()
+    } else if let Some(m) = AUTHOR_INVERTED.find(ref_text) {
+        m.end()
+    } else {
+        return None;
+    };
+
+    if title_start >= title_end {
+        return None;
+    }
+
+    let title = ref_text[title_start..title_end].trim();
+
+    // Sanity check: title should have at least 3 words
+    if title.split_whitespace().count() >= 3 {
+        Some((title.to_string(), false))
+    } else {
+        None
+    }
+}
+
 fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     let sentences = split_sentences_skip_initials(ref_text);
     if sentences.len() < 2 {
@@ -1607,7 +1710,7 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
 
 /// Split text into sentences, but skip periods that are author initials
 /// (e.g., "M." "J.") or mid-sentence abbreviations (e.g., "vs.").
-fn split_sentences_skip_initials(text: &str) -> Vec<String> {
+pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
     static PERIOD_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s+").unwrap());
 
     // Regex for matching characters in surname (letters, accents, apostrophes, hyphens)
@@ -1620,8 +1723,11 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
     static AUTHOR_AFTER: Lazy<Vec<Regex>> = Lazy::new(|| {
         let sc = r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}]"; // surname chars
         vec![
-            // Surname followed by comma: "Smith,"
-            Regex::new(&format!(r"^([A-Z]{}+)\s*,", sc)).unwrap(),
+            // Surname followed by comma + initial: "Chung, E." or "Chandrasekaran, D."
+            // The key pattern is: surname + comma + single capital + period (an initial)
+            // This distinguishes "Chandrasekaran, D." (author) from "Foundations, properties" (title)
+            // since title words after comma are lowercase. No length limit needed with this pattern.
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*(?:and\s+)?[A-Z]\.", sc)).unwrap(),
             // Surname + Initial(s) + comma: "Smith JK,"
             Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z][A-Z]?)\s*,", sc)).unwrap(),
             // Surname + Initial comma: "Smith J,"
@@ -1634,14 +1740,48 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(r"^[A-Z]\.-[A-Z]\.").unwrap(),
             // Surname + period + Capital: "Smith. X"
             Regex::new(&format!(r"^([A-Z]{}+)\.\s+[A-Z]", sc)).unwrap(),
-            // Surname + "and" + Capital
-            Regex::new(&format!(r"(?i)^([A-Z]{}+)\s+and\s+[A-Z]", sc)).unwrap(),
+            // Surname + "and" + Name, followed by author terminator (comma, period, or another "and")
+            // This prevents matching title phrases like "Universal and Transferable Adversarial"
+            // which would otherwise match "Surname and Firstname" pattern
+            Regex::new(&format!(r"(?i)^([A-Z]{}{{1,12}})\s+and\s+[A-Z]{}{{1,12}}\s*(?:[,.]|\s+(?:and|et)\s)", sc, sc)).unwrap(),
+            // Surname + "and" + Firstname Lastname. (two-word second author ending with period)
+            // Handles "Griffin and Gordon Wilfong." author format
+            Regex::new(&format!(r"^([A-Z]{}+)\s+and\s+[A-Z]{}+\s+[A-Z]{}+\.", sc, sc, sc)).unwrap(),
+            // Surname + "and" + Firstname I. Lastname. (second author with middle initial)
+            // Handles "Braga and Brenda J. Bond." author format
+            Regex::new(&format!(r"^([A-Z]{}+)\s+and\s+[A-Z]{}+\s+[A-Z]\.\s+[A-Z]{}+\.", sc, sc, sc)).unwrap(),
+            // Handle "and et al." pattern (unusual but appears in some references)
+            Regex::new(r"^and\s+et\s+al\.").unwrap(),
+            // Handle "Surname and et al." pattern (unusual format)
+            Regex::new(&format!(r"^([A-Z]{}+)\s+and\s+et\s+al\.", sc)).unwrap(),
+            // Surname + "and" + Initial. Surname: "Smith and A. Jones"
+            // This handles "Initial. Surname and Initial. Surname" author lists
+            Regex::new(&format!(r"^([A-Z]{}+)\s+and\s+[A-Z]\.\s+([A-Z]{}+)", sc, sc)).unwrap(),
             // Multi-part surname: "Van Goethem,"
             Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z]{}+)\s*,", sc, sc)).unwrap(),
             // Middle initial without period: "D Kaplan,"
             Regex::new(&format!(r"^[A-Z]\s+({}+)\s*,", sc)).unwrap(),
             // Surname + "et al." pattern: "Smith et al."
             Regex::new(&format!(r"^([A-Z]{}+)\s+et\s+al\.", sc)).unwrap(),
+            // Lowercase surname particles (Dutch/German/French): "van Rijswijk", "von Neumann", "de la Cruz"
+            // After initial like "R. van Rijswijk-Deij,"
+            Regex::new(&format!(r"^(?:van|von|de|du|den|der|ten|ter|op|la|le|di|da|dos|das|del)\s+{}+", sc)).unwrap(),
+            // Middle name + Surname + "and": "J. Zico Kolter, and Matt Fredrikson"
+            // Matches "Zico Kolter, and M" where Zico is middle name, Kolter is surname
+            Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z]{}+),\s+and\s+[A-Z]", sc, sc)).unwrap(),
+            // Firstname Lastname + comma (not already covered): "Zico Kolter,"
+            // This is more permissive - any CapWord CapWord, pattern after initial
+            Regex::new(&format!(r"^([A-Z]{}{{2,}})\s+([A-Z]{}{{2,}})\s*,", sc, sc)).unwrap(),
+            // Multiple consecutive capitalized words (3+): "Jordan Qijun Gu Trevor"
+            // This handles malformed author lists without punctuation between names
+            // Require a 4th capitalized word OR a comma/initial after to avoid matching
+            // short title phrases like "Three Word Title" at end of text
+            // Use {1,} to match 2+ char names like "Gu" ([A-Z] + at least 1 more char)
+            Regex::new(&format!(r"^([A-Z]{}{{1,}})\s+([A-Z]{}{{1,}})\s+([A-Z]{}{{1,}})\s+(?:[A-Z]|,)", sc, sc, sc)).unwrap(),
+            // Surname followed by title in braces/brackets: "Apostolaki. {TANGO}:"
+            // This handles cases where the title starts with special punctuation
+            // After initial "M.", text "Apostolaki. {TANGO}" should continue (not split at M.)
+            Regex::new(&format!(r"^([A-Z]{}{{3,}})\.\s*[\[{{\u{{201c}}]", sc)).unwrap(),
         ]
     });
 
@@ -1709,6 +1849,19 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
                 }
             } else {
                 continue;
+            }
+        }
+
+        // Check for lowercase particle abbreviations like "v." (for "von")
+        // in names like "Klaus v. Gleissenthall"
+        if word_before.to_lowercase() == "v" {
+            let after_period = &text[m.end()..];
+            // If followed by a surname (Capital + lowercase), this is a particle, not a sentence end
+            if after_period.chars().next().is_some_and(|c| c.is_uppercase()) {
+                let second_char = after_period.chars().nth(1);
+                if second_char.is_some_and(|c| c.is_lowercase()) {
+                    continue; // Skip - this is "v. Surname" pattern
+                }
             }
         }
 
@@ -3301,4 +3454,40 @@ fn test_et_al_extraction() {
         "Title should not start with 'al' or contain 'et al': '{}'",
         title
     );
+}
+
+#[test]
+fn test_new_edge_cases() {
+    let cases = vec![
+        ("Tony J. Bates and Enke Chen. An Application of the BGP Community Attribute in Multi-home Routing. RFC 1998, August 1996", "An Application of the BGP Community Attribute"),
+        ("Timothy G. Griffin and Gordon Wilfong. An analysis of bgp convergence properties. In Proceedings of the Conference on Applications, Technologies, Architectures, and Protocols for Computer Communication, SIGCOMM '99, page 277–288, New York, NY, USA, 1999. Association for Computing Machinery", "An analysis of bgp convergence properties"),
+        ("Nigel P. Smart and Frederik Vercauteren. Fully homomorphic SIMD operations. Des. Codes Cryptogr., 71(1):57–81, 2014", "Fully homomorphic SIMD operations"),
+        ("M Y. Lu and et al. A Multimodal Generative AI Copilot for Human Pathology. Nature, 634:466–473, 2024", "A Multimodal Generative AI Copilot for Human Pathology"),
+        ("Andrew C. Harvey and Clara Fernandes. Time Series Models for Count or Qualitative Observations. Journal of Business & Economic Statistics, 1989. DOI:10.108 0/07350015.1989.10509750", "Time Series Models for Count or Qualitative Observations"),
+        ("Anthony A. Braga and Brenda J. Bond. Policing Crime and Disorder Hot Spots: A Randomized Controlled Trial. Criminology, 2008. DOI:10.1111/J.1745-9125.20 08.00124.X", "Policing Crime and Disorder Hot Spots"),
+        ("Mohammad S. Jalali and Jessica P. Kaiser. Cybersecurity in Hospitals: A Systematic, Organizational Perspective. Journal of Medical Internet Research, 20(5):e10059, 2018. doi:10. 2196/10059", "Cybersecurity in Hospitals"),
+        ("Sharan B. Merriam and Elizabeth J. Tisdell. Qualitative Research: A Guide to Design and Implementation. John Wiley & Sons, August 2015", "Qualitative Research: A Guide to Design and Implementation"),
+        ("Isra Mohamed Ali, Maurantonio Caprolu, and Roberto Di Pietro. Foundations, properties, and security applications of puzzles: A survey. ACM Comput. Surv., 53(4), 2020", "Foundations, properties, and security applications of puzzles"),
+        ("Michael J. Freedman and Robert Morris. Tarzan: a peerto-peer anonymizing network layer. In Proceedings of the 9th ACM Conference on Computer and Communications Security, CCS '02, page 193–206, New York, NY, USA, 2002. ACM", "Tarzan"),
+        ("Arjen K. Lenstra and Tim Voss. Information security risk assessment, aggregation, and mitigation. In ACISP, 2004", "Information security risk assessment, aggregation, and mitigation"),
+        ("Nigel P. Smart and Frederik Vercauteren. Fully homomorphic SIMD operations. Des. Codes Cryptogr., 2014", "Fully homomorphic SIMD operations"),
+        ("Simson L. Garfinkel and Philip Leclerc. Randomness concerns when deploying differential privacy. In WPES '20, September 2020. https://doi.org/10.1145/3411497.3420211", "Randomness concerns when deploying differential privacy"),
+        ("Matthew K. Franklin and Moti Yung. Communication complexity of secure computation (extended abstract). In ACM STOC, 1992", "Communication complexity of secure computation"),
+    ];
+
+    let mut failures = Vec::new();
+    for (i, (ref_text, expected_substr)) in cases.iter().enumerate() {
+        let (title, _) = extract_title_from_reference(ref_text);
+        let ok = title.to_lowercase().contains(&expected_substr.to_lowercase());
+        println!("[{}] {}", i + 1, if ok { "✓" } else { "✗" });
+        println!("    Input: {}...", &ref_text[..std::cmp::min(60, ref_text.len())]);
+        println!("    Title: '{}'", title);
+        if !ok {
+            println!("    Expected: '{}'", expected_substr);
+            failures.push(i + 1);
+        }
+        println!();
+    }
+
+    assert!(failures.is_empty(), "Failed cases: {:?}", failures);
 }

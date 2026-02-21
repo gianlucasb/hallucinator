@@ -145,11 +145,31 @@ fn strip_page_headers(text: &str) -> String {
         ).unwrap()
     });
 
+    // ACM conference headers: "CONF 'YY, Month DD–DD, YYYY, City, Country"
+    // Examples: "ASIA CCS '26, June 01–05, 2026, Bangalore, India"
+    //           "CHI '24, May 11-16, 2024, Honolulu, HI, USA"
+    static ACM_CONF_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)(?:ASIA\s+CCS|CHI|UIST|CSCW|MobiSys|MobiCom|SenSys|UbiComp|IMC|SIGCOMM|SOSP|OSDI|PLDI|POPL|ICSE|FSE|ASE|ISSTA|WWW|KDD|SIGIR|SIGMOD|VLDB|ICML|NeurIPS|ICLR|CVPR|ICCV|ECCV|ACL|EMNLP|NAACL)\s*['']?\d{2}(?:,\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}[–-]\d{1,2},\s*\d{4})?,\s*[A-Za-z\s,.]+"
+        ).unwrap()
+    });
+
+    // ACM author/affiliation header that sometimes appears: "Author Name, Affiliation"
+    // Pattern: "O.A Akanji, M. Egele, and G. StringhiniASIA CCS"
+    // This handles concatenated author names with conference names
+    static ACM_AUTHOR_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)[A-Z]\.\s*[A-Za-z]+(?:,\s*[A-Z]\.\s*[A-Za-z]+)*(?:,\s*and\s+[A-Z]\.\s*[A-Za-z]+)?(?:ASIA\s+CCS|CHI|WWW|CCS)"
+        ).unwrap()
+    });
+
     let mut result = USENIX_HEADER.replace_all(text, "\n").to_string();
     result = USENIX_ASSOC_ONLY.replace_all(&result, "\n").to_string();
     result = IEEE_HEADER.replace_all(&result, "\n").to_string();
     result = NDSS_HEADER.replace_all(&result, "\n").to_string();
     result = CCS_HEADER.replace_all(&result, "\n").to_string();
+    result = ACM_CONF_HEADER.replace_all(&result, "\n").to_string();
+    result = ACM_AUTHOR_HEADER.replace_all(&result, "\n").to_string();
 
     result
 }
@@ -268,10 +288,13 @@ pub(crate) fn segment_references_with_config(
 }
 
 fn try_ieee_with_config(ref_text: &str, config: &PdfParsingConfig) -> Option<Vec<String>> {
-    // Match [1], [2], etc. at start of string, after newline, or after period
-    // (handles PDFs where text extraction doesn't preserve newlines between refs)
+    // Match [1], [2], etc. at start of string, after newline, period, or closing bracket
+    // - Start/newline: standard IEEE format
+    // - Period: handles PDFs where text extraction doesn't preserve newlines
+    // - Closing bracket `]`: handles ACM format where DOIs end with `]` before next ref `[N]`
+    // - Digit: handles refs ending with year/page number directly before `[N]`
     static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?m)(?:^|\n|\.)\s*\[(\d+)\]\s*").unwrap());
+        Lazy::new(|| Regex::new(r"(?m)(?:^|\n|[.\]0-9])\s*\[(\d+)\]\s*").unwrap());
 
     let re = config.ieee_segment_re.as_ref().unwrap_or(&RE);
     let matches: Vec<_> = re.find_iter(ref_text).collect();
