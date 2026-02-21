@@ -143,6 +143,7 @@ fn db_status_str(s: &DbStatus) -> &'static str {
         DbStatus::NoMatch => "no_match",
         DbStatus::AuthorMismatch => "author_mismatch",
         DbStatus::Timeout => "timeout",
+        DbStatus::RateLimited => "rate_limited",
         DbStatus::Error => "error",
         DbStatus::Skipped => "skipped",
     }
@@ -448,20 +449,23 @@ impl PyProgressEvent {
         }
     }
 
-    /// Reference index within the paper (for db_query_complete events).
+    /// Reference index within the paper (for db_query_complete, rate_limit_retry events).
     #[getter]
     fn ref_index(&self) -> Option<usize> {
         match &self.inner {
-            ProgressEvent::DatabaseQueryComplete { ref_index, .. } => Some(*ref_index),
+            ProgressEvent::DatabaseQueryComplete { ref_index, .. }
+            | ProgressEvent::RateLimitRetry { ref_index, .. } => Some(*ref_index),
             _ => None,
         }
     }
 
-    /// Database name (for db_query_complete events).
+    /// Database name (for db_query_complete, rate_limit_wait, rate_limit_retry events).
     #[getter]
     fn db_name(&self) -> Option<&str> {
         match &self.inner {
-            ProgressEvent::DatabaseQueryComplete { db_name, .. } => Some(db_name),
+            ProgressEvent::DatabaseQueryComplete { db_name, .. }
+            | ProgressEvent::RateLimitWait { db_name, .. }
+            | ProgressEvent::RateLimitRetry { db_name, .. } => Some(db_name),
             _ => None,
         }
     }
@@ -481,6 +485,37 @@ impl PyProgressEvent {
         match &self.inner {
             ProgressEvent::DatabaseQueryComplete { elapsed, .. } => {
                 Some(elapsed.as_secs_f64() * 1000.0)
+            }
+            _ => None,
+        }
+    }
+
+    /// Retry attempt number (for rate_limit_retry events).
+    #[getter]
+    fn attempt(&self) -> Option<u32> {
+        match &self.inner {
+            ProgressEvent::RateLimitRetry { attempt, .. } => Some(*attempt),
+            _ => None,
+        }
+    }
+
+    /// Wait duration in milliseconds (for rate_limit_wait events).
+    #[getter]
+    fn wait_ms(&self) -> Option<f64> {
+        match &self.inner {
+            ProgressEvent::RateLimitWait { wait_duration, .. } => {
+                Some(wait_duration.as_secs_f64() * 1000.0)
+            }
+            _ => None,
+        }
+    }
+
+    /// Backoff duration in milliseconds (for rate_limit_retry events).
+    #[getter]
+    fn backoff_ms(&self) -> Option<f64> {
+        match &self.inner {
+            ProgressEvent::RateLimitRetry { backoff, .. } => {
+                Some(backoff.as_secs_f64() * 1000.0)
             }
             _ => None,
         }

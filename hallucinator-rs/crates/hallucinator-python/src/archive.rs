@@ -6,8 +6,7 @@ use std::thread::JoinHandle;
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 
-use hallucinator_pdf::PdfExtractor;
-use hallucinator_pdf::archive::{self, ArchiveItem};
+use hallucinator_ingest::archive::{self, ArchiveItem};
 
 use crate::types::PyExtractionResult;
 
@@ -67,7 +66,6 @@ impl PyArchiveEntry {
 #[pyclass(name = "ArchiveIterator")]
 pub struct PyArchiveIterator {
     rx: Arc<Mutex<mpsc::Receiver<ArchiveItem>>>,
-    extractor: PdfExtractor,
     // Keep temp_dir alive so extracted files aren't deleted during iteration.
     _temp_dir: tempfile::TempDir,
     warnings: Vec<String>,
@@ -77,13 +75,11 @@ pub struct PyArchiveIterator {
 impl PyArchiveIterator {
     pub fn new(
         rx: mpsc::Receiver<ArchiveItem>,
-        extractor: PdfExtractor,
         temp_dir: tempfile::TempDir,
         handle: JoinHandle<Result<(), String>>,
     ) -> Self {
         Self {
             rx: Arc::new(Mutex::new(rx)),
-            extractor,
             _temp_dir: temp_dir,
             warnings: Vec::new(),
             thread_handle: Some(handle),
@@ -144,8 +140,7 @@ impl PyArchiveIterator {
                     if file_type == "pdf" {
                         // Run full reference extraction on the PDF.
                         let result =
-                            self.extractor
-                                .extract_references(&extracted.path)
+                            hallucinator_ingest::extract_references(&extracted.path)
                                 .map_err(|e| {
                                     PyRuntimeError::new_err(format!(
                                         "Failed to extract {}: {}",

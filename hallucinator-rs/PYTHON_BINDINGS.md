@@ -156,6 +156,52 @@ ext.add_segmentation_strategy(try_format_b)
 ext.clear_segmentation_strategies()  # Remove all custom strategies
 ```
 
+### Archive extraction
+
+Extract references from ZIP or tar.gz archives containing PDFs, BBL, or BIB files:
+
+```python
+ext = PdfExtractor()
+
+for entry in ext.extract_archive("papers.zip"):
+    print(f"{entry.filename} ({entry.file_type})")
+    if entry.result:  # PDF — full extraction
+        for ref in entry.result.references:
+            print(f"  {ref.title}")
+    elif entry.content:  # BBL/BIB — raw text
+        print(f"  {len(entry.content)} chars")
+```
+
+Use `max_size_bytes` to cap total extracted size (0 = unlimited):
+
+```python
+for entry in ext.extract_archive("papers.tar.gz", max_size_bytes=100_000_000):
+    ...
+```
+
+Check the iterator's `warnings` for size-limit messages after iteration.
+
+The `is_archive_path()` helper detects supported formats:
+
+```python
+from hallucinator import is_archive_path
+
+is_archive_path("papers.zip")     # True
+is_archive_path("papers.tar.gz")  # True
+is_archive_path("paper.pdf")      # False
+```
+
+#### ArchiveEntry
+
+Each item yielded from archive iteration:
+
+```python
+entry.filename   # str — original filename within the archive
+entry.file_type  # str — "pdf", "bbl", or "bib"
+entry.result     # ExtractionResult | None — populated for PDFs
+entry.content    # str | None — populated for BBL/BIB files
+```
+
 ### ExtractionResult
 
 Returned by `extract()` and `extract_from_text()`.
@@ -179,11 +225,63 @@ result.skip_stats.no_authors    # references with no parseable authors
 A parsed reference with structured fields.
 
 ```python
-ref.raw_citation  # str — the cleaned-up citation text
-ref.title         # str | None — extracted title
-ref.authors       # list[str] — author names
-ref.doi           # str | None — DOI if found
-ref.arxiv_id      # str | None — arXiv ID if found
+ref.raw_citation    # str — the cleaned-up citation text
+ref.title           # str | None — extracted title
+ref.authors         # list[str] — author names
+ref.doi             # str | None — DOI if found
+ref.arxiv_id        # str | None — arXiv ID if found
+ref.original_number # int — 1-based position in the PDF (0 for manually created refs)
+ref.skip_reason     # str | None — why this ref was skipped ("url_only", "short_title"), or None
+```
+
+#### Creating references manually
+
+You can create `Reference` objects directly — without PDF extraction — for batch validation of structured data (e.g. from a CSV, BibTeX parser, or API response):
+
+```python
+from hallucinator import Reference
+
+ref = Reference("Attention Is All You Need", authors=["Vaswani", "Shazeer"])
+ref = Reference("BERT", doi="10.18653/v1/N19-1423")
+ref = Reference("My Paper", authors=["Smith"], arxiv_id="2301.00001")
+```
+
+**Constructor signature:**
+
+```python
+Reference(
+    title: str,
+    authors: list[str] = [],
+    doi: str | None = None,
+    arxiv_id: str | None = None,
+    raw_citation: str | None = None,  # defaults to title if omitted
+)
+```
+
+---
+
+## Batch validation without PDF extraction
+
+For use cases where you already have structured reference data (titles, authors, DOIs) and want to validate without going through PDF extraction:
+
+```python
+from hallucinator import Reference, Validator, ValidatorConfig
+
+# Build references from structured data
+refs = [
+    Reference("Attention Is All You Need", authors=["Vaswani", "Shazeer"]),
+    Reference("BERT: Pre-training of Deep Bidirectional Transformers",
+              authors=["Devlin", "Chang"], doi="10.18653/v1/N19-1423"),
+    Reference("A Completely Made Up Paper Title That Does Not Exist"),
+]
+
+# Validate
+config = ValidatorConfig()
+validator = Validator(config)
+results = validator.check(refs)
+
+for r in results:
+    print(f"[{r.status}] {r.title}")
 ```
 
 ---
@@ -242,6 +340,16 @@ config.max_rate_limit_retries = 3    # max 429 retries per DB query (default: 3)
 
 ```python
 config.cache_path = "/path/to/cache.db"  # SQLite cache for cross-run persistence
+
+# Cache TTL tuning (optional)
+config.cache_positive_ttl_secs = 604800  # verified results (default: 7 days)
+config.cache_negative_ttl_secs = 86400   # not-found results (default: 24 hours)
+```
+
+#### SearxNG web search fallback
+
+```python
+config.searxng_url = "http://localhost:8888"  # optional SearxNG instance URL
 ```
 
 #### Disable databases
@@ -259,6 +367,7 @@ Point to local SQLite databases for DBLP and ACL Anthology (built with the CLI's
 ```python
 config.dblp_offline_path = "/path/to/dblp.db"
 config.acl_offline_path = "/path/to/acl.db"
+config.openalex_offline_path = "/path/to/openalex.idx"
 ```
 
 If the path doesn't exist or the file isn't a valid database, `Validator(config)` raises `RuntimeError`.
@@ -309,9 +418,9 @@ def on_progress(event):
     elif event.event_type == "db_query_complete":
         print(f"  {event.db_name}: {event.db_status} ({event.elapsed_ms:.0f}ms)")
     elif event.event_type == "rate_limit_wait":
-        print(f"  Rate limited on {event.db_name}, waiting...")
+        print(f"  Rate limited on {event.db_name}, waiting {event.wait_ms:.0f}ms...")
     elif event.event_type == "rate_limit_retry":
-        print(f"  Retrying {event.db_name} (attempt {event.attempt})")
+        print(f"  Retrying {event.db_name} (attempt {event.attempt}, backoff {event.backoff_ms:.0f}ms)")
 
 results = validator.check(refs, progress=on_progress)
 ```
@@ -331,10 +440,13 @@ All properties return `None` when not applicable to the event type.
 | `message` | `str` | warning |
 | `count` | `int` | retry_pass |
 | `paper_index` | `int` | db_query_complete |
-| `ref_index` | `int` | db_query_complete |
+| `ref_index` | `int` | db_query_complete, rate_limit_retry |
 | `db_name` | `str` | db_query_complete, rate_limit_wait, rate_limit_retry |
 | `db_status` | `str` | db_query_complete |
 | `elapsed_ms` | `float` | db_query_complete |
+| `attempt` | `int` | rate_limit_retry |
+| `wait_ms` | `float` | rate_limit_wait |
+| `backoff_ms` | `float` | rate_limit_retry |
 
 #### Cancellation
 
@@ -489,14 +601,17 @@ for r in results:
 |-------|-------------|
 | `PdfExtractor` | Configurable PDF extraction pipeline with custom strategy support |
 | `ExtractionResult` | Container for parsed references and skip statistics |
-| `Reference` | A parsed reference (title, authors, DOI, arXiv ID) |
+| `Reference` | A parsed reference (title, authors, DOI, arXiv ID) — also constructible manually |
 | `SkipStats` | Counts of skipped references by reason |
+| `ArchiveEntry` | A single entry yielded from archive extraction |
+| `ArchiveIterator` | Iterator over archive entries |
+| `is_archive_path()` | Returns `True` if a path looks like a supported archive |
 
 ### Validation types
 
 | Class | Description |
 |-------|-------------|
-| `ValidatorConfig` | Configuration: API keys, timeouts, concurrency, disabled DBs, offline DB paths |
+| `ValidatorConfig` | Configuration: API keys, timeouts, concurrency, offline DBs, cache, SearxNG |
 | `Validator` | Validation engine — call `.check(refs)` to validate |
 | `ValidationResult` | Per-reference result: status, source, authors, per-DB details |
 | `DbResult` | Single database query result: status, elapsed time, found authors |
@@ -510,7 +625,7 @@ for r in results:
 
 **`ValidationResult.status`**: `"verified"` | `"not_found"` | `"author_mismatch"`
 
-**`DbResult.status`**: `"match"` | `"no_match"` | `"author_mismatch"` | `"timeout"` | `"error"` | `"skipped"`
+**`DbResult.status`**: `"match"` | `"no_match"` | `"author_mismatch"` | `"timeout"` | `"rate_limited"` | `"error"` | `"skipped"`
 
 **`ProgressEvent.event_type`**: `"checking"` | `"result"` | `"warning"` | `"retrying"` | `"retry_pass"` | `"db_query_complete"` | `"rate_limit_wait"` | `"rate_limit_retry"`
 
@@ -526,6 +641,7 @@ See [`python/examples/`](python/examples/) for runnable scripts:
 | [`step_by_step.py`](python/examples/step_by_step.py) | Run each pipeline stage individually |
 | [`custom_regexes.py`](python/examples/custom_regexes.py) | Override patterns for non-standard formats |
 | [`validate_references.py`](python/examples/validate_references.py) | Full pipeline: extract + validate + report |
+| [`batch_validate.py`](python/examples/batch_validate.py) | Validate references without PDF extraction (#178) |
 
 ---
 

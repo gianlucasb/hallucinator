@@ -22,7 +22,11 @@ pub struct PyValidatorConfig {
     pub(crate) s2_api_key: Option<String>,
     pub(crate) dblp_offline_path: Option<String>,
     pub(crate) acl_offline_path: Option<String>,
+    pub(crate) openalex_offline_path: Option<String>,
     pub(crate) cache_path: Option<String>,
+    pub(crate) cache_positive_ttl_secs: u64,
+    pub(crate) cache_negative_ttl_secs: u64,
+    pub(crate) searxng_url: Option<String>,
     pub(crate) num_workers: usize,
     pub(crate) max_rate_limit_retries: u32,
     pub(crate) db_timeout_secs: u64,
@@ -58,6 +62,20 @@ impl PyValidatorConfig {
             None => None,
         };
 
+        let openalex_offline_db = match &self.openalex_offline_path {
+            Some(path) => {
+                let db = hallucinator_openalex::OpenAlexDatabase::open(std::path::Path::new(path))
+                    .map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "Failed to open OpenAlex database: {}",
+                            e
+                        ))
+                    })?;
+                Some(Arc::new(Mutex::new(db)))
+            }
+            None => None,
+        };
+
         let rate_limiters = std::sync::Arc::new(hallucinator_core::RateLimiters::new(
             self.crossref_mailto.is_some(),
             self.s2_api_key.is_some(),
@@ -70,6 +88,8 @@ impl PyValidatorConfig {
             dblp_offline_db,
             acl_offline_path: self.acl_offline_path.as_ref().map(PathBuf::from),
             acl_offline_db,
+            openalex_offline_path: self.openalex_offline_path.as_ref().map(PathBuf::from),
+            openalex_offline_db,
             num_workers: self.num_workers,
             db_timeout_secs: self.db_timeout_secs,
             db_timeout_short_secs: self.db_timeout_short_secs,
@@ -79,13 +99,13 @@ impl PyValidatorConfig {
             max_rate_limit_retries: self.max_rate_limit_retries,
             rate_limiters,
             cache_path: self.cache_path.as_ref().map(PathBuf::from),
-            cache_positive_ttl_secs: hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
-            cache_negative_ttl_secs: hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs(),
-            searxng_url: None,
+            cache_positive_ttl_secs: self.cache_positive_ttl_secs,
+            cache_negative_ttl_secs: self.cache_negative_ttl_secs,
+            searxng_url: self.searxng_url.clone(),
             query_cache: Some(hallucinator_core::build_query_cache(
                 self.cache_path.as_ref().map(std::path::Path::new),
-                hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
-                hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs(),
+                self.cache_positive_ttl_secs,
+                self.cache_negative_ttl_secs,
             )),
         })
     }
@@ -100,7 +120,11 @@ impl PyValidatorConfig {
             s2_api_key: None,
             dblp_offline_path: None,
             acl_offline_path: None,
+            openalex_offline_path: None,
             cache_path: None,
+            cache_positive_ttl_secs: hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
+            cache_negative_ttl_secs: hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs(),
+            searxng_url: None,
             num_workers: 4,
             max_rate_limit_retries: 3,
             db_timeout_secs: 10,
@@ -155,6 +179,17 @@ impl PyValidatorConfig {
         self.acl_offline_path = value;
     }
 
+    /// Path to offline OpenAlex index directory (optional).
+    #[getter]
+    fn get_openalex_offline_path(&self) -> Option<&str> {
+        self.openalex_offline_path.as_deref()
+    }
+
+    #[setter]
+    fn set_openalex_offline_path(&mut self, value: Option<String>) {
+        self.openalex_offline_path = value;
+    }
+
     /// Path to persistent query cache SQLite database (optional).
     #[getter]
     fn get_cache_path(&self) -> Option<&str> {
@@ -164,6 +199,39 @@ impl PyValidatorConfig {
     #[setter]
     fn set_cache_path(&mut self, value: Option<String>) {
         self.cache_path = value;
+    }
+
+    /// TTL in seconds for positive (verified) cache entries (default: 604800 = 7 days).
+    #[getter]
+    fn get_cache_positive_ttl_secs(&self) -> u64 {
+        self.cache_positive_ttl_secs
+    }
+
+    #[setter]
+    fn set_cache_positive_ttl_secs(&mut self, value: u64) {
+        self.cache_positive_ttl_secs = value;
+    }
+
+    /// TTL in seconds for negative (not-found) cache entries (default: 86400 = 24 hours).
+    #[getter]
+    fn get_cache_negative_ttl_secs(&self) -> u64 {
+        self.cache_negative_ttl_secs
+    }
+
+    #[setter]
+    fn set_cache_negative_ttl_secs(&mut self, value: u64) {
+        self.cache_negative_ttl_secs = value;
+    }
+
+    /// SearxNG instance base URL for web search fallback (optional).
+    #[getter]
+    fn get_searxng_url(&self) -> Option<&str> {
+        self.searxng_url.as_deref()
+    }
+
+    #[setter]
+    fn set_searxng_url(&mut self, value: Option<String>) {
+        self.searxng_url = value;
     }
 
     /// Number of concurrent reference checks (default: 4).

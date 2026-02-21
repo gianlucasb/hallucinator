@@ -15,9 +15,12 @@ pdf = ["hallucinator-pdf/pdf"]
 
 [dependencies]
 hallucinator-pdf = { path = "../hallucinator-pdf", default-features = false }
+hallucinator-pdf-mupdf = { path = "../hallucinator-pdf-mupdf" }
+hallucinator-ingest = { path = "../hallucinator-ingest" }
 hallucinator-core = { path = "../hallucinator-core" }
 hallucinator-dblp = { path = "../hallucinator-dblp" }
 hallucinator-acl = { path = "../hallucinator-acl" }
+hallucinator-openalex = { path = "../hallucinator-openalex" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = "0.7"
 pyo3 = { version = "0.23", features = ["extension-module"] }

@@ -8,12 +8,44 @@ from hallucinator._native import DbResult as DbResult
 from hallucinator._native import DoiInfo as DoiInfo
 from hallucinator._native import ExtractionResult as ExtractionResult
 from hallucinator._native import ProgressEvent as ProgressEvent
-from hallucinator._native import Reference as Reference
 from hallucinator._native import RetractionInfo as RetractionInfo
 from hallucinator._native import SkipStats as SkipStats
 from hallucinator._native import ValidationResult as ValidationResult
 from hallucinator._native import Validator as Validator
 from hallucinator._native import ValidatorConfig as ValidatorConfig
+from hallucinator._native import ArchiveEntry as ArchiveEntry
+from hallucinator._native import ArchiveIterator as ArchiveIterator
+from hallucinator._native import is_archive_path as is_archive_path
+
+class Reference:
+    """A parsed reference with structured fields.
+
+    Can be created manually for batch validation without PDF extraction.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        authors: list[str] = ...,
+        doi: Optional[str] = None,
+        arxiv_id: Optional[str] = None,
+        raw_citation: Optional[str] = None,
+    ) -> None: ...
+
+    @property
+    def raw_citation(self) -> str: ...
+    @property
+    def title(self) -> Optional[str]: ...
+    @property
+    def authors(self) -> list[str]: ...
+    @property
+    def doi(self) -> Optional[str]: ...
+    @property
+    def arxiv_id(self) -> Optional[str]: ...
+    @property
+    def original_number(self) -> int: ...
+    @property
+    def skip_reason(self) -> Optional[str]: ...
 
 class PdfExtractor:
     """A configurable PDF reference extractor with custom strategy support.
@@ -68,3 +100,6 @@ class PdfExtractor:
     def extract_from_text(self, text: str) -> ExtractionResult: ...
     def extract(self, path: str) -> ExtractionResult: ...
     def extract_text(self, path: str) -> str: ...
+    def extract_archive(
+        self, path: str, max_size_bytes: int = 0
+    ) -> ArchiveIterator: ...

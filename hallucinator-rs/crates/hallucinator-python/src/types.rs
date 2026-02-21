@@ -23,6 +23,36 @@ impl PyReference {
 
 #[pymethods]
 impl PyReference {
+    /// Create a Reference manually (without PDF extraction).
+    ///
+    /// Args:
+    ///     title: The paper title (used for database lookups).
+    ///     authors: List of author names (used for verification). Defaults to ``[]``.
+    ///     doi: The DOI, if known (enables fast DOI-based validation).
+    ///     arxiv_id: The arXiv ID, if known.
+    ///     raw_citation: Raw citation text for display. Defaults to the title.
+    #[new]
+    #[pyo3(signature = (title, authors=vec![], doi=None, arxiv_id=None, raw_citation=None))]
+    fn new(
+        title: String,
+        authors: Vec<String>,
+        doi: Option<String>,
+        arxiv_id: Option<String>,
+        raw_citation: Option<String>,
+    ) -> Self {
+        Self {
+            inner: Reference {
+                raw_citation: raw_citation.unwrap_or_else(|| title.clone()),
+                title: Some(title),
+                authors,
+                doi,
+                arxiv_id,
+                original_number: 0,
+                skip_reason: None,
+            },
+        }
+    }
+
     /// The raw citation text (cleaned up for display).
     #[getter]
     fn raw_citation(&self) -> &str {

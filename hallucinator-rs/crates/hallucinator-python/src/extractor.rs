@@ -1,10 +1,9 @@
-#[cfg(feature = "pdf")]
 use std::path::PathBuf;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use hallucinator_pdf::{PdfExtractor, PdfParsingConfigBuilder};
+use hallucinator_pdf::{PdfBackend, PdfExtractor, PdfParsingConfigBuilder};
 
 #[cfg(feature = "pdf")]
 use crate::archive::PyArchiveIterator;
@@ -164,10 +163,8 @@ impl PyPdfExtractor {
     /// Returns an `ExtractionResult` with `.references` and `.skip_stats`.
     #[cfg(feature = "pdf")]
     fn extract(&mut self, path: &str) -> PyResult<PyExtractionResult> {
-        let ext = self.extractor()?;
-        let result = ext
-            .extract_references(&PathBuf::from(path))
-            .map_err(pdf_error_to_py)?;
+        let result = hallucinator_ingest::extract_references(&PathBuf::from(path))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         Ok(PyExtractionResult::from(result))
     }
 
@@ -182,19 +179,12 @@ impl PyPdfExtractor {
     fn extract_archive(&mut self, path: &str, max_size_bytes: u64) -> PyResult<PyArchiveIterator> {
         let archive_path = PathBuf::from(path);
 
-        if !hallucinator_pdf::archive::is_archive_path(&archive_path) {
+        if !hallucinator_ingest::archive::is_archive_path(&archive_path) {
             return Err(PyValueError::new_err(format!(
                 "Unsupported archive format: {}. Expected .zip, .tar.gz, or .tgz",
                 path
             )));
         }
-
-        let config = self
-            .builder
-            .clone()
-            .build()
-            .map_err(|e| PyValueError::new_err(format!("Invalid regex: {}", e)))?;
-        let extractor = PdfExtractor::with_config(config);
 
         let temp_dir = tempfile::tempdir()
             .map_err(|e| PyValueError::new_err(format!("Failed to create temp dir: {}", e)))?;
@@ -202,7 +192,7 @@ impl PyPdfExtractor {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
-            hallucinator_pdf::archive::extract_archive_streaming(
+            hallucinator_ingest::archive::extract_archive_streaming(
                 &archive_path,
                 &dir,
                 max_size_bytes,
@@ -210,14 +200,15 @@ impl PyPdfExtractor {
             )
         });
 
-        Ok(PyArchiveIterator::new(rx, extractor, temp_dir, handle))
+        Ok(PyArchiveIterator::new(rx, temp_dir, handle))
     }
 
     /// Extract raw text from a PDF file (step 1).
     #[cfg(feature = "pdf")]
     fn extract_text(&mut self, path: &str) -> PyResult<String> {
-        let ext = self.extractor()?;
-        ext.extract_text(&PathBuf::from(path))
+        let backend = hallucinator_pdf_mupdf::MupdfBackend;
+        backend
+            .extract_text(&PathBuf::from(path))
             .map_err(pdf_error_to_py)
     }
 

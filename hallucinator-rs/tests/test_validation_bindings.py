@@ -3,6 +3,8 @@
 import pytest
 
 from hallucinator import (
+    ExtractionResult,
+    Reference,
     Validator,
     ValidatorConfig,
     ValidationResult,
@@ -467,3 +469,245 @@ def test_offline_db_results_empty():
     assert len(results) == 1
     assert results[0].db_results == []
     assert results[0].failed_dbs == []
+
+
+# ── Reference constructor ──
+
+
+def test_reference_constructor_minimal():
+    """Reference can be created with just a title."""
+    ref = Reference("Attention Is All You Need")
+    assert ref.title == "Attention Is All You Need"
+    assert ref.authors == []
+    assert ref.doi is None
+    assert ref.arxiv_id is None
+    assert ref.raw_citation == "Attention Is All You Need"  # defaults to title
+    assert ref.original_number == 0
+    assert ref.skip_reason is None
+
+
+def test_reference_constructor_full():
+    """Reference accepts all keyword arguments."""
+    ref = Reference(
+        "BERT: Pre-training of Deep Bidirectional Transformers",
+        authors=["Devlin", "Chang", "Lee", "Toutanova"],
+        doi="10.18653/v1/N19-1423",
+        arxiv_id="1810.04805",
+        raw_citation="J. Devlin et al., BERT..., NAACL 2019.",
+    )
+    assert ref.title == "BERT: Pre-training of Deep Bidirectional Transformers"
+    assert ref.authors == ["Devlin", "Chang", "Lee", "Toutanova"]
+    assert ref.doi == "10.18653/v1/N19-1423"
+    assert ref.arxiv_id == "1810.04805"
+    assert ref.raw_citation == "J. Devlin et al., BERT..., NAACL 2019."
+
+
+def test_reference_constructor_check():
+    """Manually created references can be passed to validator.check()."""
+    ref = Reference(
+        "A Paper About Testing Manual Reference Creation For Validation",
+        authors=["Smith", "Jones"],
+    )
+
+    config = _disabled_config()
+    validator = Validator(config)
+    results = validator.check([ref])
+
+    assert len(results) == 1
+    assert results[0].status == "not_found"
+    assert results[0].title == "A Paper About Testing Manual Reference Creation For Validation"
+
+
+def test_reference_repr():
+    """Reference.__repr__ includes title, author count, and DOI."""
+    ref = Reference("Test Title", authors=["A", "B"], doi="10.1234/test")
+    r = repr(ref)
+    assert "Reference(" in r
+    assert "Test Title" in r
+    assert "authors=2" in r
+    assert "10.1234/test" in r
+
+
+def test_reference_constructor_batch():
+    """Multiple manually created references can be validated in batch."""
+    refs = [
+        Reference(f"Test Paper Number {i} About Batch Reference Validation", authors=["Author"])
+        for i in range(5)
+    ]
+
+    config = _disabled_config(num_workers=2)
+    validator = Validator(config)
+    results = validator.check(refs)
+
+    assert len(results) == 5
+    for r in results:
+        assert r.status == "not_found"
+
+
+def test_reference_constructor_unicode():
+    """Reference handles Unicode titles and authors."""
+    ref = Reference(
+        "Über die Grundlagen der Quantenmechanik",
+        authors=["Müller", "Böhm", "López García"],
+    )
+    assert ref.title == "Über die Grundlagen der Quantenmechanik"
+    assert ref.authors == ["Müller", "Böhm", "López García"]
+    assert ref.raw_citation == "Über die Grundlagen der Quantenmechanik"
+
+
+def test_reference_constructor_empty_title():
+    """Reference accepts an empty string title (caller's responsibility)."""
+    ref = Reference("")
+    assert ref.title == ""
+    assert ref.raw_citation == ""
+
+
+def test_reference_constructor_many_authors():
+    """Reference handles a large author list."""
+    authors = [f"Author {i}" for i in range(50)]
+    ref = Reference("Large Collaboration Paper About Multi Author Systems", authors=authors)
+    assert len(ref.authors) == 50
+
+
+def test_reference_constructor_progress_events():
+    """Progress events report the correct title from manually-created references."""
+    ref = Reference(
+        "A Unique Title For Testing Progress Event Reporting System",
+        authors=["Smith"],
+    )
+
+    events = []
+
+    def on_progress(event):
+        events.append(event)
+
+    config = _disabled_config()
+    validator = Validator(config)
+    validator.check([ref], progress=on_progress)
+
+    checking = [e for e in events if e.event_type == "checking"]
+    assert len(checking) == 1
+    assert checking[0].title == "A Unique Title For Testing Progress Event Reporting System"
+
+    result_events = [e for e in events if e.event_type == "result"]
+    assert len(result_events) == 1
+    assert result_events[0].result.title == "A Unique Title For Testing Progress Event Reporting System"
+
+
+def test_reference_constructor_with_extraction_result():
+    """Manually-created references work with ExtractionResult._from_parts."""
+    refs = [
+        Reference("First Paper About Integration Testing Methods", authors=["A"]),
+        Reference("Second Paper About Integration Testing Methods", authors=["B"]),
+    ]
+    result = ExtractionResult._from_parts(refs, 5, 1, 1, 0, 1)
+    assert len(result) == 2
+    assert result.skip_stats.total_raw == 5
+    assert result.references[0].title == "First Paper About Integration Testing Methods"
+    assert result.references[1].authors == ["B"]
+
+
+def test_reference_constructor_mixed_with_parsed():
+    """Manually-created and PDF-parsed references can be validated together."""
+    ext = PdfExtractor()
+    parsed = ext.parse_reference(
+        'J. Smith, "A Paper About Testing Mixed Reference Sources Together," in Proc. IEEE, 2023.'
+    )
+    assert parsed is not None
+
+    manual = Reference(
+        "Another Paper About Testing Mixed Reference Sources Together",
+        authors=["Jones"],
+    )
+
+    config = _disabled_config()
+    validator = Validator(config)
+    results = validator.check([parsed, manual])
+
+    assert len(results) == 2
+    assert all(r.status == "not_found" for r in results)
+
+
+# ── OpenAlex offline config ──
+
+
+def test_openalex_offline_path_default():
+    """openalex_offline_path defaults to None."""
+    config = ValidatorConfig()
+    assert config.openalex_offline_path is None
+
+
+def test_openalex_offline_path_setter():
+    """openalex_offline_path can be set and read back."""
+    config = ValidatorConfig()
+    config.openalex_offline_path = "/tmp/openalex.idx"
+    assert config.openalex_offline_path == "/tmp/openalex.idx"
+    config.openalex_offline_path = None
+    assert config.openalex_offline_path is None
+
+
+def test_validator_invalid_openalex_path():
+    """Invalid openalex_offline_path raises RuntimeError on Validator construction."""
+    config = ValidatorConfig()
+    config.openalex_offline_path = "/nonexistent/path/openalex.idx"
+    with pytest.raises(RuntimeError, match="OpenAlex"):
+        Validator(config)
+
+
+# ── Cache TTL config ──
+
+
+def test_cache_positive_ttl_default():
+    """cache_positive_ttl_secs defaults to 7 days (604800s)."""
+    config = ValidatorConfig()
+    assert config.cache_positive_ttl_secs == 604800
+
+
+def test_cache_negative_ttl_default():
+    """cache_negative_ttl_secs defaults to 24 hours (86400s)."""
+    config = ValidatorConfig()
+    assert config.cache_negative_ttl_secs == 86400
+
+
+def test_cache_ttl_setters():
+    """Cache TTL values can be set and read back."""
+    config = ValidatorConfig()
+    config.cache_positive_ttl_secs = 3600
+    config.cache_negative_ttl_secs = 300
+    assert config.cache_positive_ttl_secs == 3600
+    assert config.cache_negative_ttl_secs == 300
+
+
+def test_cache_ttl_propagates():
+    """Custom cache TTLs don't break Validator construction."""
+    config = ValidatorConfig()
+    config.cache_positive_ttl_secs = 3600
+    config.cache_negative_ttl_secs = 60
+    validator = Validator(config)
+    assert repr(validator).startswith("Validator(")
+
+
+# ── SearxNG config ──
+
+
+def test_searxng_url_default():
+    """searxng_url defaults to None."""
+    config = ValidatorConfig()
+    assert config.searxng_url is None
+
+
+def test_searxng_url_setter():
+    """searxng_url can be set and read back."""
+    config = ValidatorConfig()
+    config.searxng_url = "http://localhost:8888"
+    assert config.searxng_url == "http://localhost:8888"
+    config.searxng_url = None
+    assert config.searxng_url is None
+
+
+def test_searxng_url_propagates():
+    """Setting searxng_url doesn't break Validator construction."""
+    config = ValidatorConfig()
+    config.searxng_url = "http://localhost:8888"
+    validator = Validator(config)
+    assert repr(validator).startswith("Validator(")
