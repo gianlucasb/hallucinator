@@ -75,17 +75,17 @@ fn render_progress(
     theme: &Theme,
 ) {
     let done = paper.completed_count();
-    let total = paper.total_refs;
-    let ratio = if total > 0 {
-        done as f64 / total as f64
+    let checkable = paper.total_refs.saturating_sub(paper.stats.skipped);
+    let ratio = if checkable > 0 {
+        done as f64 / checkable as f64
     } else {
         0.0
     };
 
-    let label = if done >= total && total > 0 {
-        format!("\u{2713} {} / {} refs", done, total)
+    let label = if done >= checkable && checkable > 0 {
+        format!("\u{2713} {} / {} refs", done, checkable)
     } else {
-        format!("{} {} / {} refs", spinner_char(tick), done, total)
+        format!("{} {} / {} refs", spinner_char(tick), done, checkable)
     };
 
     let gauge = Gauge::default()

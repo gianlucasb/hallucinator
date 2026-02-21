@@ -76,22 +76,21 @@ fn render_progress_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         0.0
     };
 
-    // Build a text progress bar: ██████░░░░ 12/50
-    let bar_width = (area.width as usize).saturating_sub(12);
+    // Build a text progress bar: ██████░░░░ 12/50 0:30
+    let elapsed = app.elapsed();
+    let elapsed_str = format!("{}:{:02}", elapsed.as_secs() / 60, elapsed.as_secs() % 60);
+    let count_str = format!(" {}/{} ", done, total);
+    let non_bar = 1 + count_str.len() + elapsed_str.len(); // leading space + count + timer
+    let bar_width = (area.width as usize).saturating_sub(non_bar);
     let filled = (ratio * bar_width as f64) as usize;
     let empty = bar_width.saturating_sub(filled);
 
     let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(empty);
-    let elapsed = app.elapsed();
-    let elapsed_str = format!("{}:{:02}", elapsed.as_secs() / 60, elapsed.as_secs() % 60);
 
     let mut spans = vec![
         Span::styled(" ", Style::default()),
         Span::styled(&bar, Style::default().fg(theme.active)),
-        Span::styled(
-            format!(" {}/{} ", done, total),
-            Style::default().fg(theme.text),
-        ),
+        Span::styled(count_str, Style::default().fg(theme.text)),
         Span::styled(elapsed_str, Style::default().fg(theme.dim)),
     ];
 

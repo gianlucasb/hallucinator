@@ -2499,7 +2499,7 @@ impl App {
         let theme = &self.theme;
         let total = self.papers.len();
         let done = self.papers.iter().filter(|p| p.phase.is_terminal()).count();
-        let total_refs: usize = self.papers.iter().map(|p| p.total_refs).sum();
+        let total_refs: usize = self.papers.iter().map(|p| p.stats.total).sum();
         let total_verified: usize = self.papers.iter().map(|p| p.stats.verified).sum();
         let total_not_found: usize = self.papers.iter().map(|p| p.stats.not_found).sum();
         let total_mismatch: usize = self.papers.iter().map(|p| p.stats.author_mismatch).sum();
