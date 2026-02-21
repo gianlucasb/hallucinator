@@ -129,13 +129,14 @@ impl PaperState {
 
     /// Percentage of references that are problematic (0.0 - 100.0).
     ///
-    /// Uses `total_refs` as the denominator (checkable refs only — skipped refs
-    /// are excluded at extraction time and never enter the validation pipeline).
+    /// Uses checkable refs (total minus skipped) as the denominator so the
+    /// percentage reflects only refs that actually entered the validation pipeline.
     pub fn problematic_pct(&self) -> f64 {
-        if self.total_refs == 0 {
+        let checkable = self.total_refs.saturating_sub(self.stats.skipped);
+        if checkable == 0 {
             0.0
         } else {
-            (self.problems() as f64 / self.total_refs as f64) * 100.0
+            (self.problems() as f64 / checkable as f64) * 100.0
         }
     }
 }

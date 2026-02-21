@@ -189,12 +189,9 @@ async fn process_single_paper(
     let skip_stats = extraction.skip_stats.clone();
     let all_refs = extraction.references;
 
-    // Count only non-skipped refs for the ref_count (used for stats/progress)
-    let checkable_count = all_refs.iter().filter(|r| r.skip_reason.is_none()).count();
-
     let _ = tx.send(BackendEvent::ExtractionComplete {
         paper_index,
-        ref_count: checkable_count,
+        ref_count: all_refs.len(),
         references: all_refs.clone(),
         skip_stats,
     });
