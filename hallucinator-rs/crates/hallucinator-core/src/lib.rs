@@ -333,6 +333,20 @@ pub fn build_query_cache(
     Arc::new(QueryCache::new(positive_ttl, negative_ttl))
 }
 
+/// Check a list of references against academic databases.
+///
+/// Validates each reference concurrently, querying multiple databases in parallel.
+/// Progress events are emitted via the callback. The operation can be cancelled
+/// via the CancellationToken.
+pub async fn check_references(
+    refs: Vec<Reference>,
+    config: Config,
+    progress: impl Fn(ProgressEvent) + Send + Sync + 'static,
+    cancel: CancellationToken,
+) -> Vec<ValidationResult> {
+    checker::check_references(refs, config, progress, cancel).await
+}
+
 #[cfg(test)]
 mod build_cache_tests {
     use super::*;
@@ -404,18 +418,4 @@ mod build_cache_tests {
 
         let _ = std::fs::remove_file(&path);
     }
-}
-
-/// Check a list of references against academic databases.
-///
-/// Validates each reference concurrently, querying multiple databases in parallel.
-/// Progress events are emitted via the callback. The operation can be cancelled
-/// via the CancellationToken.
-pub async fn check_references(
-    refs: Vec<Reference>,
-    config: Config,
-    progress: impl Fn(ProgressEvent) + Send + Sync + 'static,
-    cancel: CancellationToken,
-) -> Vec<ValidationResult> {
-    checker::check_references(refs, config, progress, cancel).await
 }

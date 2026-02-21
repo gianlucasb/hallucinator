@@ -183,8 +183,10 @@ mod tests {
             }),
             ..Default::default()
         };
-        let mut state = ConfigState::default();
-        state.cache_path = "existing.db".to_string();
+        let mut state = ConfigState {
+            cache_path: "existing.db".to_string(),
+            ..Default::default()
+        };
 
         apply_to_config_state(&file_cfg, &mut state);
         assert_eq!(state.cache_path, "existing.db"); // not overwritten
@@ -193,8 +195,10 @@ mod tests {
     #[test]
     fn apply_none_cache_path_does_not_overwrite() {
         let file_cfg = ConfigFile::default(); // no databases section
-        let mut state = ConfigState::default();
-        state.cache_path = "existing.db".to_string();
+        let mut state = ConfigState {
+            cache_path: "existing.db".to_string(),
+            ..Default::default()
+        };
 
         apply_to_config_state(&file_cfg, &mut state);
         assert_eq!(state.cache_path, "existing.db"); // preserved
@@ -202,8 +206,10 @@ mod tests {
 
     #[test]
     fn from_config_state_cache_path() {
-        let mut state = ConfigState::default();
-        state.cache_path = "/tmp/cache.db".to_string();
+        let state = ConfigState {
+            cache_path: "/tmp/cache.db".to_string(),
+            ..Default::default()
+        };
         let file_cfg = from_config_state(&state);
         assert_eq!(
             file_cfg.databases.unwrap().cache_path.unwrap(),
@@ -221,9 +227,11 @@ mod tests {
     #[test]
     fn full_round_trip_config_state_toml_config_state() {
         // ConfigState -> ConfigFile -> TOML -> ConfigFile -> ConfigState
-        let mut state = ConfigState::default();
-        state.cache_path = "/data/hallucinator_cache.db".to_string();
-        state.openalex_key = "test-key".to_string();
+        let state = ConfigState {
+            cache_path: "/data/hallucinator_cache.db".to_string(),
+            openalex_key: "test-key".to_string(),
+            ..Default::default()
+        };
 
         let file_cfg = from_config_state(&state);
         let toml_str = toml::to_string_pretty(&file_cfg).unwrap();
