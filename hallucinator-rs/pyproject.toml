@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "hallucinator"
-version = "0.1.1a1"
+version = "0.1.1a5"
 description = "Detect hallucinated references in academic papers"
 requires-python = ">=3.9"
 license = "AGPL-3.0-or-later"
