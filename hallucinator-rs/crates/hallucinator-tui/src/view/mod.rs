@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod banner;
 pub mod config;
+pub mod config_confirm;
 pub mod detail;
 pub mod export;
 pub mod file_picker;

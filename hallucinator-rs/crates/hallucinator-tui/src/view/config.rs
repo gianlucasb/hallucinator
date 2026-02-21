@@ -91,10 +91,8 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect, footer_area: Rect) {
 
     f.render_widget(content, chunks[2]);
 
-    // Footer — context-aware per section
-    let footer_text = if config.confirm_exit {
-        " Unsaved config changes. Save before leaving?  y:save  n:discard  Esc:cancel".to_string()
-    } else if config.editing {
+    // Footer — context-aware per section (confirm_exit is now a modal overlay)
+    let footer_text = if config.editing {
         " Type value, Enter:confirm, Esc:cancel".to_string()
     } else {
         let section_hint = match config.section {
@@ -113,14 +111,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect, footer_area: Rect) {
             section_hint, active_note
         )
     };
-    let footer_style = if config.confirm_exit {
-        Style::default()
-            .fg(theme.not_found)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        theme.footer_style()
-    };
-    let footer = Line::from(Span::styled(&footer_text, footer_style));
+    let footer = Line::from(Span::styled(&footer_text, theme.footer_style()));
     f.render_widget(Paragraph::new(footer), footer_area);
 }
 

@@ -1310,7 +1310,9 @@ impl App {
                     }
                 }
                 Action::OpenConfig => {
-                    self.config_state.prev_screen = Some(self.screen.clone());
+                    if self.screen != Screen::Config {
+                        self.config_state.prev_screen = Some(self.screen.clone());
+                    }
                     self.screen = Screen::Config;
                 }
                 Action::ToggleHelp => {
@@ -1568,7 +1570,9 @@ impl App {
                 self.activity_panel_visible = !self.activity_panel_visible;
             }
             Action::OpenConfig => {
-                self.config_state.prev_screen = Some(self.screen.clone());
+                if self.screen != Screen::Config {
+                    self.config_state.prev_screen = Some(self.screen.clone());
+                }
                 self.screen = Screen::Config;
             }
             Action::Export => {
@@ -2796,6 +2800,10 @@ impl App {
             Screen::Banner | Screen::FilePicker => unreachable!(),
         }
 
+        if self.config_state.confirm_exit {
+            crate::view::config_confirm::render(f, &self.theme);
+        }
+
         if self.export_state.active {
             crate::view::export::render(f, self);
         }
@@ -3858,6 +3866,47 @@ mod tests {
         // Should still be showing prompt, nothing changed
         assert_eq!(app.screen, Screen::Config);
         assert!(app.config_state.confirm_exit);
+    }
+
+    #[test]
+    fn open_config_from_config_does_not_overwrite_prev_screen() {
+        let mut app = test_app();
+        // Navigate to config from Queue
+        app.screen = Screen::Queue;
+        app.update(Action::OpenConfig);
+        assert_eq!(app.screen, Screen::Config);
+        assert_eq!(app.config_state.prev_screen, Some(Screen::Queue));
+
+        // Press ',' again while on Config — prev_screen must NOT become Config
+        app.update(Action::OpenConfig);
+        assert_eq!(app.screen, Screen::Config);
+        assert_eq!(app.config_state.prev_screen, Some(Screen::Queue));
+    }
+
+    #[test]
+    fn discard_from_config_opened_twice_exits_to_queue() {
+        // Regression test for #183: config screen becomes un-exitable
+        // when opened from config, changes made, then discarded.
+        let mut app = test_app();
+
+        // Open config from Queue
+        app.screen = Screen::Queue;
+        app.update(Action::OpenConfig);
+        assert_eq!(app.screen, Screen::Config);
+
+        // Simulate pressing ',' again while on Config
+        app.update(Action::OpenConfig);
+
+        // Make a change (dirty) and press Esc
+        app.config_state.dirty = true;
+        app.update(Action::NavigateBack);
+        assert!(app.config_state.confirm_exit);
+
+        // Press 'n' to discard
+        app.update(Action::NextMatch);
+        assert_eq!(app.screen, Screen::Queue);
+        assert!(!app.config_state.confirm_exit);
+        assert!(!app.config_state.dirty);
     }
 
     #[test]
