@@ -45,6 +45,7 @@ fn map_key_normal(key: &KeyEvent) -> Action {
         KeyCode::Char('g') => Action::GoTop,
         KeyCode::Char('G') => Action::GoBottom,
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::SaveConfig,
+        KeyCode::Char('S') => Action::ReverseSortDirection,
         KeyCode::Char('s') => Action::CycleSort,
         KeyCode::Char('f') => Action::CycleFilter,
         KeyCode::Char('/') => Action::StartSearch,

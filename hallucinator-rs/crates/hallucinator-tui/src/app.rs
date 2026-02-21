@@ -221,6 +221,7 @@ pub struct App {
     pub queue_cursor: usize,
     pub paper_cursor: usize,
     pub sort_order: SortOrder,
+    pub sort_reversed: bool,
     /// Maps visual row index → paper index (recomputed on sort/tick).
     pub queue_sorted: Vec<usize>,
     pub tick: usize,
@@ -324,6 +325,7 @@ impl App {
             queue_cursor: 0,
             paper_cursor: 0,
             sort_order: SortOrder::ProblematicPct,
+            sort_reversed: false,
             queue_sorted,
             tick: 0,
             theme,
@@ -394,6 +396,15 @@ impl App {
                         .then_with(|| a.cmp(&b))
                 });
             }
+            SortOrder::NotFound => {
+                indices.sort_by(|&a, &b| {
+                    self.papers[b]
+                        .stats
+                        .not_found
+                        .cmp(&self.papers[a].stats.not_found)
+                        .then_with(|| a.cmp(&b))
+                });
+            }
             SortOrder::ProblematicPct => {
                 indices.sort_by(|&a, &b| {
                     self.papers[b]
@@ -406,6 +417,9 @@ impl App {
             SortOrder::Name => {
                 indices.sort_by(|&a, &b| self.papers[a].filename.cmp(&self.papers[b].filename));
             }
+        }
+        if self.sort_reversed {
+            indices.reverse();
         }
         self.queue_sorted = indices;
 
@@ -1503,6 +1517,7 @@ impl App {
             Action::CycleSort => match &self.screen {
                 Screen::Queue => {
                     self.sort_order = self.sort_order.next();
+                    self.sort_reversed = false;
                     self.recompute_sorted_indices();
                 }
                 Screen::Paper(_) => {
@@ -1510,6 +1525,12 @@ impl App {
                 }
                 _ => {}
             },
+            Action::ReverseSortDirection => {
+                if self.screen == Screen::Queue {
+                    self.sort_reversed = !self.sort_reversed;
+                    self.recompute_sorted_indices();
+                }
+            }
             Action::CycleFilter => match &self.screen {
                 Screen::Queue => {
                     self.queue_filter = self.queue_filter.next();

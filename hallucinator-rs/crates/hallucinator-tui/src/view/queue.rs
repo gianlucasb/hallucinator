@@ -287,7 +287,15 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(theme.border_style())
-                .title(format!(" Sort: {} (s) ", app.sort_order.label())),
+                .title(
+                    if app.sort_order == crate::model::queue::SortOrder::Original {
+                        format!(" Sort: {} (s) ", app.sort_order.label())
+                    } else if app.sort_reversed {
+                        format!(" Sort: {} \u{2191} (s) ", app.sort_order.label())
+                    } else {
+                        format!(" Sort: {} \u{2193} (s) ", app.sort_order.label())
+                    },
+                ),
         )
         .row_highlight_style(theme.highlight_style());
 
@@ -323,12 +331,12 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  Enter:open  s:sort  f:filter  c:config  e:export  ?:help",
+            " Space:mark  Enter:open  s/S:sort  f:filter  c:config  e:export  ?:help",
             theme.footer_style(),
         ));
     } else {
         spans.push(Span::styled(
-            " Space:mark  Enter:open  s:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
+            " Space:mark  Enter:open  s/S:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
             theme.footer_style(),
         ));
     }

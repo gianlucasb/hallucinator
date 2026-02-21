@@ -9,7 +9,7 @@ use crate::theme::Theme;
 /// Render the help overlay as a centered popup.
 pub fn render(f: &mut Frame, theme: &Theme) {
     let area = f.area();
-    let popup = centered_rect(72, 44, area);
+    let popup = centered_rect(72, 45, area);
 
     let lines = vec![
         Line::from(Span::styled(
@@ -34,6 +34,7 @@ pub fn render(f: &mut Frame, theme: &Theme) {
         // Sorting & Filtering
         section_header("Sorting & Filtering", theme),
         key_line("s", "Cycle sort order", theme),
+        key_line("S", "Reverse sort direction", theme),
         key_line("f", "Cycle filter", theme),
         key_line("/", "Start search", theme),
         key_line("n / N", "Next / previous match", theme),

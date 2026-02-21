@@ -146,6 +146,7 @@ impl PaperState {
 pub enum SortOrder {
     Original,
     Problems,
+    NotFound,
     ProblematicPct,
     Name,
 }
@@ -154,7 +155,8 @@ impl SortOrder {
     pub fn next(self) -> Self {
         match self {
             Self::Original => Self::Problems,
-            Self::Problems => Self::ProblematicPct,
+            Self::Problems => Self::NotFound,
+            Self::NotFound => Self::ProblematicPct,
             Self::ProblematicPct => Self::Name,
             Self::Name => Self::Original,
         }
@@ -164,6 +166,7 @@ impl SortOrder {
         match self {
             Self::Original => "order",
             Self::Problems => "problems",
+            Self::NotFound => "not found",
             Self::ProblematicPct => "% flagged",
             Self::Name => "name",
         }
