@@ -8,19 +8,28 @@ Pro-tip: Press , to open config -- set API keys, concurrency, timeouts
 Pro-tip: Set an OpenAlex key for broader coverage (--openalex-key or config)
 Pro-tip: Build an offline DBLP database for instant local lookups (hallucinator-tui update-dblp)
 Pro-tip: Increase concurrent papers in config to process batches faster
-Pro-tip: Press Space on a reference to cycle FP reasons (parse/GS/timeout/known)
+Pro-tip: Press Space on a reference to cycle FP reasons (parse/GS/timeout/known/N/A) -- markings persist across sessions
 Pro-tip: Use s to cycle sort order, f to filter by status on queue/paper views
 Pro-tip: The Semantic Scholar API key improves rate limits (--s2-api-key)
 Pro-tip: Press e to export results as Markdown, JSON, or CSV
-Pro-tip: References with < 5 words are auto-skipped (too short for reliable matching)
+Pro-tip: References with < 4 words are auto-skipped (too short for reliable matching)
 Pro-tip: Press Tab to toggle the activity panel and get more room for the paper queue
 Pro-tip: Press ? anywhere for a full keybinding reference
 Pro-tip: You can set API keys via environment variables or a .env file
-Pro-tip: Run 'hallucinator-tui update-dblp' to build a local DBLP database (~1 GB compressed XML)
 Pro-tip: Press o to add more PDFs to the queue without restarting
+Pro-tip: Build an offline ACL Anthology database for local lookups (hallucinator-tui update-acl)
+Pro-tip: Build an offline OpenAlex index for local lookups (hallucinator-tui update-openalex)
+Pro-tip: Filter OpenAlex imports by date (--since 2024-01-01) or publication year (--min-year 2020)
+Pro-tip: Enable SearxNG as a fallback web search source (--searxng or configure URL in config)
+Pro-tip: Press Space on a paper in the queue to cycle its verdict (Safe/Questionable)
+Pro-tip: Load previously saved results with --load FILE to review without re-processing
+Pro-tip: Clear stale cache entries via --clear-cache (all) or --clear-not-found (just misses)
+Pro-tip: Press Ctrl+r to retry a single reference, or R to retry all not-found references
+Pro-tip: Press y to copy a reference to the clipboard (OSC 52)
+Pro-tip: Press p to open the source PDF in your default viewer
 
 # === How It Works ===
-Pro-tip: Each reference is checked against up to 11 databases simultaneously
+Pro-tip: Each reference is checked against up to 9 databases simultaneously
 Pro-tip: Databases: CrossRef, arXiv, DBLP, Semantic Scholar, ACL, PubMed, and more
 Pro-tip: Title matching uses fuzzy comparison at 95% similarity (rapidfuzz)
 Pro-tip: Author verification catches cases where a title exists but authors don't match
