@@ -51,8 +51,7 @@ pub fn render_in(f: &mut Frame, app: &mut App, paper_index: usize, area: Rect, f
         render_preview(f, chunks[ci], app, paper_index);
     }
 
-    let paper = &app.papers[paper_index];
-    render_footer(f, footer_area, app, paper, theme);
+    render_footer(f, footer_area, app, theme);
 }
 
 fn render_breadcrumb(f: &mut Frame, area: Rect, filename: &str, theme: &Theme) {
@@ -257,34 +256,19 @@ fn render_preview(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
     f.render_widget(preview, area);
 }
 
-fn render_footer(
-    f: &mut Frame,
-    area: Rect,
-    app: &App,
-    paper: &crate::model::queue::PaperState,
-    theme: &Theme,
-) {
-    let mut spans = vec![Span::styled(
-        format!(
-            " V:{} M:{} NF:{} R:{} ",
-            paper.stats.verified,
-            paper.stats.author_mismatch,
-            paper.stats.not_found,
-            paper.stats.retracted
-        ),
-        Style::default().fg(theme.text),
-    )];
+fn render_footer(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let mut spans = Vec::new();
 
     // Filter indicator
     if app.paper_filter != PaperFilter::All {
         spans.push(Span::styled(
-            format!("[filter: {}] ", app.paper_filter.label()),
+            format!(" [filter: {}] ", app.paper_filter.label()),
             Style::default().fg(theme.active),
         ));
     }
 
     spans.push(Span::styled(
-        " | Space:FP reason  Enter:detail  p:pdf  Ctrl+r:retry  R:retry all  s:sort  f:filter  c:config  e:export  Esc:back",
+        " Space:FP reason  Enter:detail  p:pdf  Ctrl+r:retry  R:retry all  s:sort  f:filter  c:config  e:export  Esc:back",
         theme.footer_style(),
     ));
 
