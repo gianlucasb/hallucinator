@@ -12,27 +12,25 @@ Created by Gianluca Stringhini with Claude Code and ChatGPT.
 
 
 
-## Rust TUI (Recommended for Batch Processing)
+## Rust TUI (Recommended for Most Scenarios)
 
-If you're willing to install Rust, the **[hallucinator-rs](hallucinator-rs/)** version includes a full terminal UI for batch-processing PDFs and archives interactively, with real-time progress, sorting/filtering, result export, and persistent configuration.
+The TUI includes a full terminal UI for batch-processing PDFs and archives interactively, with real-time progress, sorting/filtering, result export, and persistent configuration.
 
-[Install Rust](https://rust-lang.org/tools/install/), then:
-
+You can install it with:
 ```bash
-cd hallucinator-rs
-
-# Interactive TUI
-cargo build -p hallucinator-tui --release
-./target/release/hallucinator-tui
-
-# CLI
-cargo build -p hallucinator-cli --release
-./target/release/hallucinator-cli check paper.pdf
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/gianlucasb/hallucinator/releases/latest/download/hallucinator-tui-installer.sh | sh
 ```
 
 See **[hallucinator-rs/README.md](hallucinator-rs/README.md)** for full documentation.
 
 ---
+
+## Rust CLI
+
+When the TUI is not suitable, there's a pure CLI available too:
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/gianlucasb/hallucinator/releases/latest/download/hallucinator-cli-installer.sh | sh
+```
 
 ## Python Bindings (Early Release)
 
