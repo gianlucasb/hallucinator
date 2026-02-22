@@ -2,6 +2,8 @@ use std::time::Instant;
 
 use hallucinator_core::{DbStatus, ProgressEvent};
 
+use hallucinator_reporting::FpReason;
+
 use super::App;
 use crate::model::activity::ActiveQuery;
 use crate::model::paper::{RefPhase, RefState};
@@ -58,6 +60,15 @@ impl App {
                             }
                         })
                         .collect();
+
+                    // Restore persisted FP overrides from cache
+                    if let Some(cache) = &self.current_query_cache {
+                        for rs in &mut self.ref_states[paper_index] {
+                            if let Some(reason_str) = cache.get_fp_override(&rs.title) {
+                                rs.fp_reason = reason_str.parse::<FpReason>().ok();
+                            }
+                        }
+                    }
                 }
             }
             BackendEvent::ExtractionFailed { paper_index, error } => {

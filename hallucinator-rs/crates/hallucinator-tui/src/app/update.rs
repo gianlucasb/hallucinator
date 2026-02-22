@@ -778,6 +778,12 @@ impl App {
                                 && let Some(rs) = refs.get_mut(ref_idx)
                             {
                                 rs.fp_reason = FpReason::cycle(rs.fp_reason);
+                                if let Some(cache) = &self.current_query_cache {
+                                    cache.set_fp_override(
+                                        &rs.title,
+                                        rs.fp_reason.map(|r| r.as_str()),
+                                    );
+                                }
                             }
                         }
                     }
@@ -789,6 +795,9 @@ impl App {
                             && let Some(rs) = refs.get_mut(ref_idx)
                         {
                             rs.fp_reason = FpReason::cycle(rs.fp_reason);
+                            if let Some(cache) = &self.current_query_cache {
+                                cache.set_fp_override(&rs.title, rs.fp_reason.map(|r| r.as_str()));
+                            }
                         }
                     }
                     Screen::Config => {

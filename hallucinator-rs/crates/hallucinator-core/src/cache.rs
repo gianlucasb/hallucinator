@@ -105,6 +105,12 @@ impl SqliteWriter {
         // ALTER TABLE ADD COLUMN is a no-op if the column already exists (SQLite
         // returns "duplicate column name" error which we silently ignore).
         let _ = conn.execute_batch("ALTER TABLE query_cache ADD COLUMN retraction_json TEXT");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS fp_overrides (
+                 normalized_title TEXT PRIMARY KEY,
+                 fp_reason        TEXT NOT NULL
+             );",
+        )?;
         Ok(Self { conn })
     }
 
@@ -196,6 +202,22 @@ impl SqliteWriter {
         );
     }
 
+    // ── FP override methods ─────────────────────────────────────────
+
+    fn set_fp_override(&self, norm_title: &str, fp_reason: &str) {
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO fp_overrides (normalized_title, fp_reason) VALUES (?1, ?2)",
+            params![norm_title, fp_reason],
+        );
+    }
+
+    fn delete_fp_override(&self, norm_title: &str) {
+        let _ = self.conn.execute(
+            "DELETE FROM fp_overrides WHERE normalized_title = ?1",
+            params![norm_title],
+        );
+    }
+
     /// Count of (found, not_found) entries in the SQLite table.
     fn counts_by_type(&self) -> (usize, usize) {
         let found: usize = self
@@ -262,6 +284,19 @@ impl ReadPool {
     ) -> Option<(CachedResult, u64)> {
         let conn = self.acquire()?;
         let result = Self::query(&conn, norm_title, db_name, positive_ttl, negative_ttl);
+        self.release(conn);
+        result
+    }
+
+    fn get_fp_override(&self, norm_title: &str) -> Option<String> {
+        let conn = self.acquire()?;
+        let result = conn
+            .query_row(
+                "SELECT fp_reason FROM fp_overrides WHERE normalized_title = ?1",
+                params![norm_title],
+                |row| row.get(0),
+            )
+            .ok();
         self.release(conn);
         result
     }
@@ -691,6 +726,37 @@ impl QueryCache {
     /// The negative (not found) TTL.
     pub fn negative_ttl(&self) -> Duration {
         self.negative_ttl
+    }
+
+    // ── FP override methods ─────────────────────────────────────────
+
+    /// Store or remove a false-positive override for a reference title.
+    ///
+    /// `reason` is the string key from [`FpReason::as_str`]. Passing `None`
+    /// removes any existing override.
+    pub fn set_fp_override(&self, title: &str, reason: Option<&str>) {
+        let norm = normalize_title(title);
+        if let Some(ref sqlite_mutex) = self.sqlite_writer
+            && let Ok(store) = sqlite_mutex.lock()
+        {
+            if let Some(r) = reason {
+                store.set_fp_override(&norm, r);
+            } else {
+                store.delete_fp_override(&norm);
+            }
+        }
+    }
+
+    /// Look up a persisted false-positive override for a reference title.
+    ///
+    /// Returns the reason string (e.g. `"broken_parse"`) if one was stored.
+    pub fn get_fp_override(&self, title: &str) -> Option<String> {
+        let norm = normalize_title(title);
+        if let Some(ref pool) = self.read_pool {
+            pool.get_fp_override(&norm)
+        } else {
+            None
+        }
     }
 }
 
@@ -1470,6 +1536,120 @@ mod tests {
         assert_eq!(cache.l1_counts(), (1, 0));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── FP override tests ──────────────────────────────────────────
+
+    #[test]
+    fn fp_override_set_and_get() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.set_fp_override("Some Paper Title", Some("broken_parse"));
+        let result = cache.get_fp_override("Some Paper Title");
+        assert_eq!(result.as_deref(), Some("broken_parse"));
+
+        // Overwrite with a different reason
+        cache.set_fp_override("Some Paper Title", Some("known_good"));
+        let result = cache.get_fp_override("Some Paper Title");
+        assert_eq!(result.as_deref(), Some("known_good"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fp_override_delete_on_none() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.set_fp_override("Paper To Remove", Some("all_timed_out"));
+        assert!(cache.get_fp_override("Paper To Remove").is_some());
+
+        // Setting None removes the override
+        cache.set_fp_override("Paper To Remove", None);
+        assert!(cache.get_fp_override("Paper To Remove").is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fp_override_persists_across_restart() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let cache =
+                QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+            cache.set_fp_override("Persistent FP Paper", Some("exists_elsewhere"));
+        }
+
+        // Reopen — override should survive
+        let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        let result = cache2.get_fp_override("Persistent FP Paper");
+        assert_eq!(result.as_deref(), Some("exists_elsewhere"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fp_override_uses_normalized_title() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        // Insert with accented title
+        cache.set_fp_override("Résumé of Methods", Some("non_academic"));
+        // Look up with ASCII equivalent (normalization strips accents)
+        let result = cache.get_fp_override("Resume of Methods");
+        assert_eq!(result.as_deref(), Some("non_academic"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fp_override_survives_cache_clear() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        cache.set_fp_override("FP Paper", Some("known_good"));
+        cache.insert(
+            "FP Paper",
+            "DB",
+            &DbQueryResult::found("FP Paper", vec![], None),
+        );
+
+        // Clear the query cache — FP overrides should NOT be wiped
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.disk_len(), 0);
+
+        // FP override should still be there
+        let result = cache.get_fp_override("FP Paper");
+        assert_eq!(result.as_deref(), Some("known_good"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fp_override_not_found_returns_none() {
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        assert!(cache.get_fp_override("Nonexistent").is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fp_override_memory_only_cache() {
+        // In-memory cache (no SQLite) — set/get should be no-ops, not panic
+        let cache = QueryCache::default();
+        cache.set_fp_override("Paper", Some("broken_parse"));
+        assert!(cache.get_fp_override("Paper").is_none());
     }
 
     #[test]
