@@ -570,7 +570,7 @@ impl App {
 
         let spans = vec![
             Span::styled(
-                format!(" {}/{} papers ", done, total),
+                format!("{}/{} papers ", done, total),
                 Style::default().fg(theme.text),
             ),
             Span::styled(

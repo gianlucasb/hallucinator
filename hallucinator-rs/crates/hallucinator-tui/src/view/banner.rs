@@ -880,8 +880,7 @@ pub fn render_logo_bar(
         ]));
     }
 
-    // Blank line + stats line below logo (fits within the 5-row column)
-    logo_lines.push(Line::from(""));
+    // Stats line below logo (fits within the 5-row column)
     if let Some(stats) = stats_line {
         logo_lines.push(stats);
     }
