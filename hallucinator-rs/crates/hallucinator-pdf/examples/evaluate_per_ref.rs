@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     for entry in fs::read_dir(corpus_dir)? {
         let path = entry?.path();
         if path.extension().map_or(false, |e| e == "pdf") {
-            if let Some(tarball) = find_matching_tarball(&path) {
+            if let Some(tarball) = find_matching_gt(&path) {
                 match evaluate_paper(&path, &tarball, &config, &weights) {
                     Ok((gt_count, extracted_count, matched_count, unmatched)) => {
                         total_gt_refs += gt_count;
@@ -98,16 +98,21 @@ fn main() -> Result<()> {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() } else { format!("{}...", &s[..max]) }
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{}...", truncated)
+    }
 }
 
 fn evaluate_paper(
     pdf_path: &Path,
-    tarball_path: &Path,
+    gt_path: &Path,
     config: &PdfParsingConfig,
     weights: &ScoringWeights,
 ) -> Result<(usize, usize, usize, Vec<(String, String, f64)>)> {
-    let ground_truth = extract_bibtex_titles(tarball_path)?;
+    let ground_truth = extract_bibtex_titles(gt_path)?;
     if ground_truth.is_empty() {
         anyhow::bail!("No ground truth");
     }
@@ -131,15 +136,20 @@ fn evaluate_paper(
         return Ok((ground_truth.len(), 0, 0, vec![]));
     };
 
-    // Extract titles from references
+    // Extract titles from references and apply clean_title
     let extracted_titles: Vec<String> = result.references
         .iter()
         .filter_map(|r| {
-            let (title, _) = hallucinator_pdf::title::extract_title_from_reference(r);
-            if title.is_empty() || title.split_whitespace().count() < config.min_title_words() {
+            let (title, from_quotes) = hallucinator_pdf::title::extract_title_from_reference(r);
+            if title.is_empty() {
+                return None;
+            }
+            // Apply clean_title to remove trailing venue/metadata
+            let cleaned = hallucinator_pdf::title::clean_title(&title, from_quotes);
+            if cleaned.is_empty() || cleaned.split_whitespace().count() < config.min_title_words() {
                 None
             } else {
-                Some(title)
+                Some(cleaned)
             }
         })
         .collect();
@@ -202,24 +212,38 @@ fn extract_text_from_pdf(path: &Path) -> Result<String> {
     Ok(text)
 }
 
-fn extract_bibtex_titles(tarball_path: &Path) -> Result<Vec<String>> {
-    let file = fs::File::open(tarball_path)?;
-    let gz = GzDecoder::new(file);
-    let mut archive = Archive::new(gz);
+fn extract_bibtex_titles(gt_path: &Path) -> Result<Vec<String>> {
+    // Check if it's a direct bib/bbl file or a tarball
+    let ext = gt_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
-        if path.extension().map_or(false, |e| e == "bib" || e == "bbl") {
-            let mut contents = String::new();
-            entry.read_to_string(&mut contents)?;
-            let titles = parse_bibtex_titles(&contents);
-            if !titles.is_empty() {
-                return Ok(titles);
+    if ext == "bib" || ext == "bbl" {
+        // Direct bib/bbl file
+        let contents = fs::read_to_string(gt_path)?;
+        let titles = parse_bibtex_titles(&contents);
+        if !titles.is_empty() {
+            return Ok(titles);
+        }
+        anyhow::bail!("No titles in bib/bbl file")
+    } else {
+        // Tarball format
+        let file = fs::File::open(gt_path)?;
+        let gz = GzDecoder::new(file);
+        let mut archive = Archive::new(gz);
+
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_path_buf();
+            if path.extension().map_or(false, |e| e == "bib" || e == "bbl") {
+                let mut contents = String::new();
+                entry.read_to_string(&mut contents)?;
+                let titles = parse_bibtex_titles(&contents);
+                if !titles.is_empty() {
+                    return Ok(titles);
+                }
             }
         }
+        anyhow::bail!("No bib/bbl file found in tarball")
     }
-    anyhow::bail!("No bib/bbl file found")
 }
 
 fn parse_bibtex_titles(content: &str) -> Vec<String> {
@@ -266,10 +290,17 @@ fn extract_quoted(s: &str) -> Option<String> {
     s.find('"').map(|end| s[..end].to_string())
 }
 
-fn find_matching_tarball(pdf_path: &Path) -> Option<PathBuf> {
+fn find_matching_gt(pdf_path: &Path) -> Option<PathBuf> {
     let stem = pdf_path.file_stem()?.to_str()?;
     let parent = pdf_path.parent()?;
 
+    // First, try direct bib/bbl files (new format)
+    let bib = parent.join(format!("{}.bib", stem));
+    if bib.exists() { return Some(bib); }
+    let bbl = parent.join(format!("{}.bbl", stem));
+    if bbl.exists() { return Some(bbl); }
+
+    // Fall back to tarball (old format)
     let tarball = parent.join(format!("{}.tar.gz", stem));
     if tarball.exists() { return Some(tarball); }
 

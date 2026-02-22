@@ -75,62 +75,76 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &PdfParsingConfig)
         Regex::new(r"(\w)-\s+(\w)(\w*)").unwrap()
     });
 
+    // Second pattern: handle hyphenation without space (PDF extraction artifact)
+    // Only for common syllable-break suffixes that are never valid compound suffixes
+    static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| {
+        // Match: lowercase letter, hyphen (no space), then common syllable suffixes,
+        // followed by punctuation, space, or end of string
+        // NOTE: rust regex doesn't support look-ahead, so we capture the trailing char too
+        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous)([.\s,;:?!]|$)").unwrap()
+    });
+
     // Resolve compound suffixes: convert defaults to owned Strings for uniform handling
     let default_suffixes: Vec<String> = COMPOUND_SUFFIXES.iter().map(|s| s.to_string()).collect();
     let resolved = config.compound_suffixes.resolve(&default_suffixes);
     let suffix_set: HashSet<String> = resolved.into_iter().collect();
 
-    RE.replace_all(text, |caps: &regex::Captures| {
-        let before = &caps[1];
-        let after_char = &caps[2];
-        let after_rest = &caps[3];
+    let result = RE
+        .replace_all(text, |caps: &regex::Captures| {
+            let before = &caps[1];
+            let after_char = &caps[2];
+            let after_rest = &caps[3];
 
-        let after_word = format!("{}{}", after_char, after_rest);
-        let after_lower = after_word.to_lowercase();
+            let after_word = format!("{}{}", after_char, after_rest);
+            let after_lower = after_word.to_lowercase();
 
-        // If the character before the hyphen is a digit, keep the hyphen
-        // (product/model names like "Qwen2-VL", "GPT-4-turbo")
-        let before_chars: Vec<char> = before.chars().collect();
-        if before_chars.last().is_some_and(|c| c.is_ascii_digit()) {
-            return format!("{}-{}", before, after_word);
-        }
-
-        // Check if the word after the hyphen is a common compound suffix
-        for suffix in suffix_set.iter() {
-            if after_lower == *suffix
-                || after_lower.starts_with(&format!("{} ", suffix))
-                || after_lower.starts_with(&format!("{},", suffix))
-            {
+            // If the character before the hyphen is a digit, keep the hyphen
+            // (product/model names like "Qwen2-VL", "GPT-4-turbo")
+            let before_chars: Vec<char> = before.chars().collect();
+            if before_chars.last().is_some_and(|c| c.is_ascii_digit()) {
                 return format!("{}-{}", before, after_word);
             }
-        }
 
-        // Check if the full word (stripped of trailing punctuation) matches a suffix
-        let stripped = after_lower.trim_end_matches(['.', ',', ';', ':']);
-        if suffix_set.contains(stripped) {
-            return format!("{}-{}", before, after_word);
-        }
+            // Check if the word after the hyphen is a common compound suffix
+            for suffix in suffix_set.iter() {
+                if after_lower == *suffix
+                    || after_lower.starts_with(&format!("{} ", suffix))
+                    || after_lower.starts_with(&format!("{},", suffix))
+                {
+                    return format!("{}-{}", before, after_word);
+                }
+            }
 
-        // If the word after the hyphen is a small connector word starting with uppercase,
-        // it's likely a compound proper noun (e.g., "Over-The-Air", "Up-To-Date").
-        // But if it's a longer word starting with uppercase (like "Bridge" in "Base-Bridge"),
-        // it's likely CamelCase that broke across lines — remove the hyphen.
-        static HYPHEN_CONNECTORS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-            [
-                "The", "To", "Of", "In", "On", "Up", "Out", "At", "By", "For", "And", "Or", "A",
-                "An",
-            ]
-            .into_iter()
-            .collect()
-        });
-        if HYPHEN_CONNECTORS.contains(after_word.as_str()) {
-            return format!("{}-{}", before, after_word);
-        }
+            // Check if the full word (stripped of trailing punctuation) matches a suffix
+            let stripped = after_lower.trim_end_matches(['.', ',', ';', ':']);
+            if suffix_set.contains(stripped) {
+                return format!("{}-{}", before, after_word);
+            }
 
-        // Otherwise, it's likely a syllable break — remove hyphen
-        format!("{}{}", before, after_word)
-    })
-    .into_owned()
+            // If the word after the hyphen is a small connector word starting with uppercase,
+            // it's likely a compound proper noun (e.g., "Over-The-Air", "Up-To-Date").
+            // But if it's a longer word starting with uppercase (like "Bridge" in "Base-Bridge"),
+            // it's likely CamelCase that broke across lines — remove the hyphen.
+            static HYPHEN_CONNECTORS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+                [
+                    "The", "To", "Of", "In", "On", "Up", "Out", "At", "By", "For", "And", "Or",
+                    "A", "An",
+                ]
+                .into_iter()
+                .collect()
+            });
+            if HYPHEN_CONNECTORS.contains(after_word.as_str()) {
+                return format!("{}-{}", before, after_word);
+            }
+
+            // Otherwise, it's likely a syllable break — remove hyphen
+            format!("{}{}", before, after_word)
+        })
+        .into_owned();
+
+    // Second pass: fix hyphenation without space (e.g., "Mod-els" -> "Models")
+    // This handles PDF extraction artifacts where the newline/space was lost
+    RE_NO_SPACE.replace_all(&result, "$1$2$3").into_owned()
 }
 
 #[cfg(test)]
@@ -235,5 +249,21 @@ mod tests {
         assert_eq!(fix_hyphenation("Base- Bridge"), "BaseBridge");
         assert_eq!(fix_hyphenation("Base-\nBridge"), "BaseBridge");
         assert_eq!(fix_hyphenation("Smart- Phone"), "SmartPhone");
+    }
+
+    #[test]
+    fn test_fix_hyphenation_no_space() {
+        // PDF extraction artifact: hyphen kept but space/newline lost
+        // "Mod-els" should become "Models" (syllable break suffix)
+        assert_eq!(fix_hyphenation("Language Mod-els."), "Language Models.");
+        assert_eq!(fix_hyphenation("Implementa-tion"), "Implementation");
+        assert_eq!(fix_hyphenation("classifica-tion and"), "classification and");
+        assert_eq!(fix_hyphenation("cluster-ing."), "clustering.");
+        // Additional suffixes: -cient, -curity
+        assert_eq!(fix_hyphenation("effi-cient"), "efficient");
+        assert_eq!(fix_hyphenation("se-curity"), "security");
+        // But keep valid compound words
+        assert_eq!(fix_hyphenation("data-driven"), "data-driven");
+        assert_eq!(fix_hyphenation("task-agnostic"), "task-agnostic");
     }
 }

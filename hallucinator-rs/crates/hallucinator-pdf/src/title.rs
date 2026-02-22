@@ -1145,13 +1145,15 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 if title_idx < parts.len() {
                     let title = parts[title_idx].trim();
                     let title = TRAIL.replace(title, "");
+                    // Strip leading "Surname," pattern (from split author initials)
+                    let title = strip_leading_surname(&title);
                     if !title.is_empty() {
                         // Verify it doesn't look like authors
                         static AUTHOR_CHECK: Lazy<Regex> =
                             Lazy::new(|| Regex::new(r"^[A-Z][a-z]+\s+[A-Z][a-z]+,").unwrap());
                         // Also reject if it looks like a standard document number
                         if !AUTHOR_CHECK.is_match(&title) && !STANDARD_NUM_TITLE.is_match(&title) {
-                            return Some((title.to_string(), false));
+                            return Some((title, false));
                         }
                         // If parts[title_idx] is a standard number, try parts[0] instead
                         if STANDARD_NUM_TITLE.is_match(&title) && !parts[0].is_empty() {
@@ -1655,13 +1657,38 @@ fn try_thesis_citation(ref_text: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Strip leading "Surname," pattern from potential title.
+///
+/// Handles cases where author initial was split from surname during sentence splitting,
+/// e.g., "L. Ljung, System identification..." splits at "L." leaving
+/// "Ljung, System identification..." which needs the "Ljung," stripped.
+fn strip_leading_surname(title: &str) -> String {
+    // Pattern: CapWord (2-15 chars including diacritics), comma, space, then Capital (title start)
+    // Character class includes:
+    // - Basic letters: a-zA-Z
+    // - Latin Extended (accents): U+00C0-U+024F
+    // - Combining diacritical marks: U+0300-U+036F (for names like "Bäck" with separate diacritics)
+    // - Dieresis mark U+00A8 (¨) for LaTeX-style umlauts like "B¨ack"
+    // - Apostrophes and hyphens: '-
+    static LEADING_SURNAME: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^[A-Z][a-zA-Z\u{00A8}\u{00C0}-\u{024F}\u{0300}-\u{036F}'-]{1,14},\s+([A-Z])")
+            .unwrap()
+    });
+    if let Some(caps) = LEADING_SURNAME.captures(title) {
+        if let Some(title_start) = caps.get(1) {
+            return title[title_start.start()..].to_string();
+        }
+    }
+    title.to_string()
+}
+
 fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     let sentences = split_sentences_skip_initials(ref_text);
     if sentences.len() < 2 {
         return None;
     }
 
-    let mut potential_title = sentences[1].trim().to_string();
+    let mut potential_title = strip_leading_surname(sentences[1].trim());
 
     // Check if it looks like authors (high ratio of capitalized words + "and")
     // BUT be careful: titles can also have capitalized words and "and"
@@ -1711,7 +1738,10 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
 /// Split text into sentences, but skip periods that are author initials
 /// (e.g., "M." "J.") or mid-sentence abbreviations (e.g., "vs.").
 pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
+    // Match period followed by whitespace
     static PERIOD_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s+").unwrap());
+    // Match period immediately followed by capital letter (no space) - handles PDF extraction issues
+    static PERIOD_CAP: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.([A-Z])").unwrap());
 
     // Regex for matching characters in surname (letters, accents, apostrophes, hyphens)
     // Note: Rust regex doesn't support Unicode properties the same way, so we use
@@ -1721,7 +1751,7 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
     // - Combining Diacritical Marks: U+0300-U+036F
     // - Spacing Modifier Letters: U+02B0-U+02FF (for names like "P˘as˘areanu" with U+02D8)
     static AUTHOR_AFTER: Lazy<Vec<Regex>> = Lazy::new(|| {
-        let sc = r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}]"; // surname chars
+        let sc = r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}\u{2018}\u{2019}]"; // surname chars (incl. curly quotes)
         vec![
             // Surname followed by comma + initial: "Chung, E." or "Chandrasekaran, D."
             // The key pattern is: surname + comma + single capital + period (an initial)
@@ -1734,11 +1764,18 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^([A-Z]{}+)\s+[A-Z]{{1,2}},", sc)).unwrap(),
             // "and Surname" pattern
             Regex::new(r"(?i)^and\s+[A-Z]").unwrap(),
+            // "and . Surname" pattern (PDF extraction artifact where "G. Vigna" becomes ". Vigna G.")
+            Regex::new(r"(?i)^and\s+\.\s*[A-Z]").unwrap(),
+            // "Firstname Initial." pattern - common author format like "Vigna G."
+            // Handles malformed refs where initial moved: ". Vigna G. Title" should keep "Vigna G." as author
+            Regex::new(&format!(r"^[A-Z]{}+\s+[A-Z]\.", sc)).unwrap(),
             // Another initial: "X."
             Regex::new(r"^[A-Z]\.").unwrap(),
             // Compound initial: "X.-Y."
             Regex::new(r"^[A-Z]\.-[A-Z]\.").unwrap(),
-            // Surname + period + Capital: "Smith. X"
+            // Surname + period + Capital: "Smith. X" (original broad pattern)
+            // This matches author surname followed by any capital, treating it as author continuation
+            // The sentence splitting will later determine actual boundaries
             Regex::new(&format!(r"^([A-Z]{}+)\.\s+[A-Z]", sc)).unwrap(),
             // Surname + "and" + Name, followed by author terminator (comma, period, or another "and")
             // This prevents matching title phrases like "Universal and Transferable Adversarial"
@@ -1763,6 +1800,30 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^[A-Z]\s+({}+)\s*,", sc)).unwrap(),
             // Surname + "et al." pattern: "Smith et al."
             Regex::new(&format!(r"^([A-Z]{}+)\s+et\s+al\.", sc)).unwrap(),
+            // Surname, Firstname I. (inverted format with middle initial, followed by next name)
+            // Handles "Burns, Samuel C. Rios" after split at "J."
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*[A-Z]{}+\s+[A-Z]\.\s*[A-Z]", sc, sc)).unwrap(),
+            // Surname, Firstname [Middlenames...] I. (inverted format with middle names + initial)
+            // Handles "Oliveira, Ana Flávia C. Moura" after split at "P."
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+[A-Z]{}+)+\s+[A-Z]\.\s*[A-Z]", sc, sc, sc)).unwrap(),
+            // Surname, Firstname [Middle...] Lastname, (inverted format in comma-separated author list)
+            // Handles "Mazurek, Aron Laszka," and "Klemmer, Stefan Albert Horstmann,"
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+[A-Z]{}+)+\s*,", sc, sc, sc)).unwrap(),
+            // Surname, Firstname, (inverted format with single first name)
+            // Handles "Jordan, Qijun," in author list
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*[A-Z]{}{{2,}}\s*,", sc, sc)).unwrap(),
+            // Surname, et al (inverted format with et al)
+            // Handles "Fowl, et al" after split at "H."
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*et\s+al", sc)).unwrap(),
+            // Surname, Initial Surname (inverted format with initial without period)
+            // Handles "Garrido-Merchán, J L Arroyo-Barrigüete" after split at "C."
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*[A-Z]\s+[A-Z]", sc)).unwrap(),
+            // Surname, and Firstname (inverted format starting with "and")
+            // Handles "MacQueen, and Emily E. Namey" after split at "M."
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*and\s+[A-Z]", sc)).unwrap(),
+            // Surname, and . (PDF extraction artifact where initial moved after name)
+            // Handles "Kruegel, and . Vigna G." where "G. Vigna" became ". Vigna G."
+            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*and\s+\.", sc)).unwrap(),
             // Lowercase surname particles (Dutch/German/French): "van Rijswijk", "von Neumann", "de la Cruz"
             // After initial like "R. van Rijswijk-Deij,"
             Regex::new(&format!(r"^(?:van|von|de|du|den|der|ten|ter|op|la|le|di|da|dos|das|del)\s+{}+", sc)).unwrap(),
@@ -1772,6 +1833,9 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // Firstname Lastname + comma (not already covered): "Zico Kolter,"
             // This is more permissive - any CapWord CapWord, pattern after initial
             Regex::new(&format!(r"^([A-Z]{}{{2,}})\s+([A-Z]{}{{2,}})\s*,", sc, sc)).unwrap(),
+            // Middlename Surname + period: "Alex Halderman." after initial "J."
+            // Handles single-author refs with middle name: "J. Alex Halderman. Title"
+            Regex::new(&format!(r"^([A-Z]{}{{2,}})\s+([A-Z]{}{{2,}})\.", sc, sc)).unwrap(),
             // Multiple consecutive capitalized words (3+): "Jordan Qijun Gu Trevor"
             // This handles malformed author lists without punctuation between names
             // Require a 4th capitalized word OR a comma/initial after to avoid matching
@@ -1782,14 +1846,39 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // This handles cases where the title starts with special punctuation
             // After initial "M.", text "Apostolaki. {TANGO}" should continue (not split at M.)
             Regex::new(&format!(r"^([A-Z]{}{{3,}})\.\s*[\[{{\u{{201c}}]", sc)).unwrap(),
+            // Surname + period + Capital (no space) - PDF extraction lost space
+            // "Chua.Influence" after initial "L." should keep L. with Chua
+            // This recognizes Surname.TitleStart as author ending (Surname is followed by title)
+            Regex::new(&format!(r"^([A-Z]{}{{2,}})\.[A-Z]", sc)).unwrap(),
         ]
     });
 
     let mut sentences = Vec::new();
     let mut current_start = 0;
 
+    // Collect all potential sentence boundaries: (period_pos, next_sentence_start)
+    let mut potential_boundaries: Vec<(usize, usize)> = Vec::new();
+
+    // From PERIOD_SPACE: period followed by whitespace
     for m in PERIOD_SPACE.find_iter(text) {
-        let pos = m.start();
+        potential_boundaries.push((m.start(), m.end()));
+    }
+
+    // From PERIOD_CAP: period immediately followed by capital (no space)
+    // This handles PDF extraction issues where spaces between sentences are lost
+    for m in PERIOD_CAP.find_iter(text) {
+        let period_pos = m.start();
+        // Only add if there's no whitespace after period (not already covered by PERIOD_SPACE)
+        if period_pos + 1 < text.len() && !text.as_bytes()[period_pos + 1].is_ascii_whitespace() {
+            potential_boundaries.push((period_pos, period_pos + 1));
+        }
+    }
+
+    // Sort by period position and deduplicate
+    potential_boundaries.sort_by_key(|&(pos, _)| pos);
+    potential_boundaries.dedup_by_key(|&mut (pos, _)| pos);
+
+    for (pos, next_start) in potential_boundaries {
         if pos == 0 {
             continue;
         }
@@ -1800,7 +1889,7 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         if char_before.is_ascii_uppercase()
             && (pos == 1 || !text.as_bytes()[pos - 2].is_ascii_alphabetic())
         {
-            let after_period = &text[m.end()..];
+            let after_period = &text[next_start..];
             let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
             if is_author {
                 continue; // Skip — this is an author initial
@@ -1817,11 +1906,21 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             let word_len = pos - word_start;
             // Short words (2-3 chars) starting with capital followed by surname
             if (2..=3).contains(&word_len) && text.as_bytes()[word_start].is_ascii_uppercase() {
-                let after_period = &text[m.end()..];
+                let after_period = &text[next_start..];
                 let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
                 if is_author {
                     continue; // Skip — this is a multi-letter initial
                 }
+            }
+        }
+
+        // Check for malformed references where period is preceded by space
+        // e.g., "and . Vigna G." where "G. Vigna" became ". Vigna G." due to PDF extraction
+        if char_before == b' ' {
+            let after_period = &text[next_start..];
+            let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
+            if is_author {
+                continue; // Skip — this looks like an author name after malformed period
             }
         }
 
@@ -1839,7 +1938,7 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // Special handling for "al." (from "et al.")
             // If what follows looks like a title start (capital, not author pattern), it IS a boundary
             if word_before.to_lowercase() == "al" {
-                let after_period = &text[m.end()..];
+                let after_period = &text[next_start..];
                 let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
                 if !is_author && after_period.chars().next().is_some_and(|c| c.is_uppercase()) {
                     // This "al." is followed by what looks like a title - treat it as a boundary
@@ -1855,7 +1954,7 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         // Check for lowercase particle abbreviations like "v." (for "von")
         // in names like "Klaus v. Gleissenthall"
         if word_before.to_lowercase() == "v" {
-            let after_period = &text[m.end()..];
+            let after_period = &text[next_start..];
             // If followed by a surname (Capital + lowercase), this is a particle, not a sentence end
             if after_period.chars().next().is_some_and(|c| c.is_uppercase()) {
                 let second_char = after_period.chars().nth(1);
@@ -1874,14 +1973,24 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             let first_char = text[word_start..].chars().next();
 
             if word_len >= 4 && first_char.is_some_and(|c| c.is_uppercase()) {
-                let after_period = &text[m.end()..];
-                // Check if what follows looks like the start of a title (capital letter NOT followed by author patterns)
-                // Use the AUTHOR_AFTER pattern for "Surname. Title"
-                let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
+                let after_period = &text[next_start..];
+                // Check if what follows looks like more authors (NOT the Surname.Capital pattern,
+                // which is only for after initials, not after full surnames)
+                // Skip the last pattern in AUTHOR_AFTER which is the Surname.Capital pattern
+                let author_patterns_for_surname = AUTHOR_AFTER.len().saturating_sub(1);
+                let is_author = AUTHOR_AFTER.iter().take(author_patterns_for_surname).any(|re| re.is_match(after_period));
                 if is_author {
-                    continue; // Skip — this surname is followed by a title, not a sentence boundary
+                    continue; // Skip — this surname is followed by more authors, not a sentence boundary
                 }
             }
+        }
+
+        // Only treat as sentence boundary if followed by uppercase letter (or punctuation + uppercase)
+        // This prevents splitting at "h.p. lovecraft" where lowercase follows
+        let after_period = &text[next_start..];
+        let first_alpha = after_period.chars().find(|c| c.is_alphabetic());
+        if !first_alpha.is_some_and(|c| c.is_uppercase()) {
+            continue;
         }
 
         // This is a real sentence boundary
@@ -1889,7 +1998,7 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         if !sentence.is_empty() {
             sentences.push(sentence.to_string());
         }
-        current_start = m.end();
+        current_start = next_start;
     }
 
     // Add remaining text
@@ -1946,8 +2055,9 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"\[C\].*$").unwrap(),
         Regex::new(r"\[M\].*$").unwrap(),
         Regex::new(r"\[D\].*$").unwrap(),
-        Regex::new(r"(?i)\.\s*[Ii]n:\s+[A-Z].*$").unwrap(),
-        Regex::new(r"(?i)\.\s*[Ii]n\s+[A-Z].*$").unwrap(),
+        // Handle ". In" followed by capital letter or year (e.g., ".In 2020 Conference...")
+        Regex::new(r"(?i)\.\s*[Ii]n:\s+(?:[A-Z]|(?:19|20)\d{2}).*$").unwrap(),
+        Regex::new(r"(?i)\.\s*[Ii]n\s+(?:[A-Z]|(?:19|20)\d{2}).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR|PACM[- ]?\w+|JMLR|VLDB|SIGMOD|SIGKDD|PLDI|POPL|OOPSLA|SOSP|OSDI|IACR|Cryptology\s+ePrint).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s+International\s+Journal\b.*$").unwrap(),
@@ -1964,6 +2074,8 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i)\.\s*Data\s+in\s+brief.*$").unwrap(),
         Regex::new(r"(?i)\.\s*Biochemia\s+medica.*$").unwrap(),
         Regex::new(r"(?i)\.\s*KI-K\u{00FC}nstliche.*$").unwrap(),
+        // Handle ": in Venue" pattern (e.g., ".: in USENIX Security Symposium")
+        Regex::new(r"[.:]\s*:\s*[Ii]n\s+(?:USENIX|IEEE|ACM|[A-Z][a-z]+).*$").unwrap(),
         Regex::new(r"\s+arXiv\s+preprint.*$").unwrap(),
         Regex::new(r"\s+arXiv:\d+.*$").unwrap(),
         Regex::new(r"\s+CoRR\s+abs/.*$").unwrap(),
@@ -2017,6 +2129,19 @@ mod tests {
         let title = "My Great Paper. In Proceedings of USENIX Security";
         let cleaned = clean_title(title, false);
         assert_eq!(cleaned, "My Great Paper");
+    }
+
+    #[test]
+    fn test_clean_title_in_year_venue() {
+        // PDF extraction artifact: ". In YEAR" with no space before "In"
+        let title = "Scoring Popularity in GitHub.In 2020 International Conference";
+        let cleaned = clean_title(title, false);
+        assert_eq!(cleaned, "Scoring Popularity in GitHub");
+
+        // Also test normal case with space
+        let title2 = "Some Title. In 2023 IEEE Conference";
+        let cleaned2 = clean_title(title2, false);
+        assert_eq!(cleaned2, "Some Title");
     }
 
     #[test]
@@ -2078,6 +2203,41 @@ mod tests {
     }
 
     #[test]
+    fn test_split_sentences_no_space_after_period() {
+        // PDF extraction sometimes loses spaces between sentences
+        // e.g., "Chua.Influence" should split into "Chua" and "Influence..."
+        let text = "L. Chua.Influence of parasitic elements. Proceedings.";
+        let parts = split_sentences_skip_initials(text);
+        assert!(
+            parts.len() >= 2,
+            "Should split at period-capital: {:?}",
+            parts
+        );
+        assert!(
+            parts[0].contains("Chua"),
+            "First part should contain author: {:?}",
+            parts
+        );
+        assert!(
+            parts.iter().any(|p| p.contains("Influence")),
+            "Second part should contain title: {:?}",
+            parts
+        );
+    }
+
+    #[test]
+    fn test_split_sentences_no_space_multiple() {
+        // Multiple missing spaces in one reference
+        let text = "F. Roesner.Whenthe cookie meets the robot. ACL.";
+        let parts = split_sentences_skip_initials(text);
+        assert!(
+            parts.iter().any(|p| p.contains("Whenthe")),
+            "Should capture title starting with capital: {:?}",
+            parts
+        );
+    }
+
+    #[test]
     fn test_springer_year_format() {
         let ref_text =
             "Smith J, Jones A (2023) A novel approach to detection. Nature 500(3):123-456";
@@ -2106,6 +2266,29 @@ mod tests {
         assert!(
             cleaned.contains("With what effects?"),
             "Title should end with question mark: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_question_mark_with_subtitle() {
+        // Title has question mark but continues with lowercase subtitle
+        // "How do developers collaborate? investigating github heterogeneous networks"
+        let ref_text = "Gabriel P. Oliveira, Ana Flávia C. Moura, Natércia A. Batista, Michele A. Brandão, Andre Hora, and Mirella M. Moro. How do developers collaborate? investigating github heterogeneous networks. Software Quality Journal, 31(1):211–241, September 2022";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        eprintln!("Raw title: {}", title);
+        eprintln!("Cleaned: {}", cleaned);
+        // Should include the subtitle after the question mark
+        assert!(
+            cleaned.contains("investigating") || cleaned.contains("heterogeneous"),
+            "Subtitle after question mark should be included: {}",
+            cleaned,
+        );
+        // Should NOT include journal name
+        assert!(
+            !cleaned.contains("Software Quality"),
+            "Journal name should not be in title: {}",
             cleaned,
         );
     }
@@ -2793,6 +2976,44 @@ mod tests {
     }
 
     #[test]
+    fn test_ndss_iacr_eprint_quoted_title() {
+        // NDSS 2026 f207 reference 96 - IEEE style with quoted title
+        let ref_text = r#"M.-I. Ples¸a and R. F. Olimid, "Privacy-preserving multi-party search via homomorphic encryption with constant multiplicative depth," IACR ePrint, 2024"#;
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, from_quotes);
+        assert!(from_quotes, "Should detect quoted title");
+        assert!(
+            cleaned.contains("Privacy-preserving"),
+            "Title should contain 'Privacy-preserving': {}",
+            cleaned,
+        );
+        assert!(
+            !cleaned.contains("IACR"),
+            "IACR venue should not be in title: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_ndss_vigna_malformed_author() {
+        // NDSS 2026 f93 reference 45 - malformed author ". Vigna G." from PDF extraction
+        // "G. Vigna" became ". Vigna G." due to PDF extraction error
+        let ref_text = "R. McLaughlin, C. Kruegel, and . Vigna G. A large scale study of the ethereum arbitrage ecosystem. In (USENIX Security 23), pages 3295–3312, Anaheim, CA, August 2023. USENIX Association";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, from_quotes);
+        assert!(
+            cleaned.contains("large scale study") || cleaned.contains("ethereum arbitrage"),
+            "Title should contain the actual title: {}",
+            cleaned,
+        );
+        assert!(
+            !cleaned.contains("USENIX"),
+            "USENIX venue should not be in title: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
     fn test_version_number_period_not_sentence_boundary() {
         // Version numbers like "2.0" should not be treated as sentence boundaries
         let title = "Web 2.0 Technologies for Social Computing";
@@ -2819,6 +3040,117 @@ mod tests {
             cleaned.contains("Reinforcement learning"),
             "Title should contain main content: {}",
             cleaned
+        );
+    }
+
+    #[test]
+    fn test_single_author_book_ljung() {
+        // Single author book citation - surname should NOT be in title
+        let ref_text = "L. Ljung, System identification: theory for the user. Upper Saddle River, NJ, USA: Prentice-Hall, 1999.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            !cleaned.contains("Ljung"),
+            "Author surname should not be in title: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("System identification"),
+            "Title should contain main content: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_single_author_book_tsay() {
+        // Single author book citation with series info
+        let ref_text = "R. S. Tsay, Analysis of financial time series, 2nd ed., ser. Wiley Series in Probability and Statistics. Hoboken, NJ, USA: Wiley, 2005.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        eprintln!("Tsay title: {}", cleaned);
+        assert!(
+            !cleaned.contains("Tsay"),
+            "Author surname should not be in title: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("Analysis of financial time series"),
+            "Title should contain main content: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_single_author_middle_name_halderman() {
+        // Single author with middle name - "J. Alex Halderman" where Alex is middle name
+        let ref_text = "J. Alex Halderman. To strengthen security, change developers' incentives. IEEE Security & Privacy, 8(2):79–82, 2010";
+
+        // Debug: check sentence splitting
+        let sentences = split_sentences_skip_initials(ref_text);
+        eprintln!("Halderman sentences: {:?}", sentences);
+
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        eprintln!("Halderman title: {}", cleaned);
+        assert!(
+            !cleaned.contains("Halderman"),
+            "Author surname should not be in title: {}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Alex"),
+            "Author middle name should not be in title: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("To strengthen security"),
+            "Title should contain main content: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_uci_dataset_no_space_after_author() {
+        // UCI dataset reference with no space between author and title
+        // "Forina.Wine" should split at the period to extract "Wine" as title
+        let ref_text = "Stefan Aeberhard and M. Forina.Wine.UCIMachineLearningRepository, 1992.DOI:https://doi.org/10.24432/C5PC7J.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        // The DOI should NOT be the title
+        assert!(
+            !cleaned.contains("doi.org") && !cleaned.contains("10.24432"),
+            "DOI should not be extracted as title: {}",
+            cleaned
+        );
+        // The title should be "Wine" (short dataset name)
+        // Note: This is a very short title (1 word) so it may be filtered by min_title_words
+        // but the raw extraction should still get "Wine"
+        assert!(
+            title == "Wine" || title.contains("Wine"),
+            "Title should be 'Wine', got: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_strip_leading_surname_with_umlaut() {
+        // Test that surnames with umlauts are properly stripped
+        // The surname "Bäck" with dieresis should be recognized and stripped
+        let title = "B\u{00E4}ck, Improving Classification by Anomaly Detection";
+        let stripped = strip_leading_surname(title);
+        assert!(
+            stripped.starts_with("Improving"),
+            "Umlaut surname should be stripped: '{}'",
+            stripped
+        );
+
+        // Also test LaTeX-style dieresis (U+00A8) as separate character
+        let title_latex = "B\u{00A8}ack, Improving Classification by Anomaly Detection";
+        let stripped_latex = strip_leading_surname(title_latex);
+        assert!(
+            stripped_latex.starts_with("Improving"),
+            "LaTeX-style dieresis surname should be stripped: '{}'",
+            stripped_latex
         );
     }
 
