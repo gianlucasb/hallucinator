@@ -149,6 +149,7 @@ pub enum SortOrder {
     NotFound,
     ProblematicPct,
     Name,
+    Status,
 }
 
 impl SortOrder {
@@ -158,7 +159,8 @@ impl SortOrder {
             Self::Problems => Self::NotFound,
             Self::NotFound => Self::ProblematicPct,
             Self::ProblematicPct => Self::Name,
-            Self::Name => Self::Original,
+            Self::Name => Self::Status,
+            Self::Status => Self::Original,
         }
     }
 
@@ -169,6 +171,21 @@ impl SortOrder {
             Self::NotFound => "not found",
             Self::ProblematicPct => "% flagged",
             Self::Name => "name",
+            Self::Status => "status",
+        }
+    }
+}
+
+impl PaperPhase {
+    /// Sort key for status ordering: active phases first, then completed, then queued.
+    pub fn sort_key(&self) -> u8 {
+        match self {
+            Self::Checking => 0,
+            Self::Extracting => 1,
+            Self::Retrying => 2,
+            Self::Complete => 3,
+            Self::ExtractionFailed => 4,
+            Self::Queued => 5,
         }
     }
 }

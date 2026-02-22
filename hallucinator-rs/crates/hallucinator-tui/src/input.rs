@@ -59,6 +59,7 @@ fn map_key_normal(key: &KeyEvent) -> Action {
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageDown,
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageUp,
         KeyCode::Char('y') => Action::CopyToClipboard,
+        KeyCode::Char('p') => Action::OpenPdf,
         KeyCode::Char(',') | KeyCode::Char('c') => Action::OpenConfig,
         KeyCode::Char(' ') => Action::ToggleSafe,
         KeyCode::Tab => Action::ToggleActivityPanel,
