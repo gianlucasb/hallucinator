@@ -336,7 +336,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  Enter:open  o:add  c:config  e:export  ?:help  q:quit",
+            " Space:mark  Enter:open  p:pdf  o:add  c:config  e:export  ?:help  q:quit",
             theme.footer_style(),
         ));
     } else if app.processing_started && !app.batch_complete {
@@ -348,7 +348,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  Enter:open  s/S:sort  f:filter  c:config  e:export  ?:help",
+            " Space:mark  Enter:open  p:pdf  s/S:sort  f:filter  c:config  e:export  ?:help",
             theme.footer_style(),
         ));
     } else if app.batch_complete && !app.file_paths.is_empty() {
@@ -360,12 +360,12 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " Space:mark  Enter:open  s/S:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
+            " Space:mark  Enter:open  p:pdf  s/S:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
             theme.footer_style(),
         ));
     } else {
         spans.push(Span::styled(
-            " Space:mark  Enter:open  s/S:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
+            " Space:mark  Enter:open  p:pdf  s/S:sort  f:filter  o:add  c:config  e:export  ?:help  q:quit",
             theme.footer_style(),
         ));
     }

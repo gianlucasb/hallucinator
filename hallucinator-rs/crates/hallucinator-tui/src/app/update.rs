@@ -852,6 +852,27 @@ impl App {
                     self.activity.log("Copied to clipboard".to_string());
                 }
             }
+            Action::OpenPdf => {
+                let paper_idx = match &self.screen {
+                    Screen::Queue => self.queue_sorted.get(self.queue_cursor).copied(),
+                    Screen::Paper(i) | Screen::RefDetail(i, _) => Some(*i),
+                    _ => None,
+                };
+                if let Some(idx) = paper_idx
+                    && let Some(path) = self.file_paths.get(idx)
+                {
+                    if path.as_os_str().is_empty() {
+                        self.activity
+                            .log_warn("No source file path available for this paper".to_string());
+                    } else if !path.exists() {
+                        self.activity
+                            .log_warn(format!("File not found: {}", path.display()));
+                    } else if let Err(e) = open::that(path) {
+                        self.activity
+                            .log_warn(format!("Failed to open {}: {}", path.display(), e));
+                    }
+                }
+            }
             Action::SaveConfig => {
                 self.save_config();
                 if matches!(self.screen, Screen::Config) {

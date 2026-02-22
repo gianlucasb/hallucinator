@@ -419,6 +419,15 @@ impl App {
             SortOrder::Name => {
                 indices.sort_by(|&a, &b| self.papers[a].filename.cmp(&self.papers[b].filename));
             }
+            SortOrder::Status => {
+                indices.sort_by(|&a, &b| {
+                    self.papers[a]
+                        .phase
+                        .sort_key()
+                        .cmp(&self.papers[b].phase.sort_key())
+                        .then_with(|| a.cmp(&b))
+                });
+            }
         }
         if self.sort_reversed {
             indices.reverse();

@@ -7,6 +7,24 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Strip DBLP disambiguation suffixes from author names.
+///
+/// DBLP appends exactly 4 digits (e.g. " 0001") to distinguish authors with
+/// the same name. See <https://dblp.org/faq/1474704.html>.
+fn strip_dblp_suffix(name: &str) -> String {
+    let name = name.trim();
+    if name.len() > 5 {
+        let (prefix, suffix) = name.split_at(name.len() - 5);
+        if suffix.starts_with(' ')
+            && suffix[1..].len() == 4
+            && suffix[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            return prefix.to_string();
+        }
+    }
+    name.to_string()
+}
+
 pub struct DblpOnline;
 
 /// Offline DBLP backend backed by a local SQLite database with FTS5.
@@ -43,7 +61,11 @@ impl DatabaseBackend for DblpOffline {
             match result {
                 Some(qr) if !qr.record.authors.is_empty() => Ok(DbQueryResult::found(
                     qr.record.title,
-                    qr.record.authors,
+                    qr.record
+                        .authors
+                        .into_iter()
+                        .map(|a| strip_dblp_suffix(&a))
+                        .collect(),
                     qr.record.url,
                 )),
                 // Skip results with empty authors - let other DBs verify
@@ -125,6 +147,8 @@ impl DatabaseBackend for DblpOnline {
                         continue;
                     }
 
+                    let authors: Vec<String> =
+                        authors.into_iter().map(|a| strip_dblp_suffix(&a)).collect();
                     let paper_url = info["url"].as_str().map(String::from);
 
                     return Ok(DbQueryResult::found(found_title, authors, paper_url));
@@ -133,5 +157,40 @@ impl DatabaseBackend for DblpOnline {
 
             Ok(DbQueryResult::not_found())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_suffix_removes_4_digit_disambiguation() {
+        assert_eq!(strip_dblp_suffix("Nuno Santos 0001"), "Nuno Santos");
+        assert_eq!(strip_dblp_suffix("Wei Wang 0042"), "Wei Wang");
+        assert_eq!(strip_dblp_suffix("John Smith 0002"), "John Smith");
+    }
+
+    #[test]
+    fn strip_suffix_preserves_normal_names() {
+        assert_eq!(strip_dblp_suffix("Alice Johnson"), "Alice Johnson");
+        assert_eq!(strip_dblp_suffix("Bob"), "Bob");
+        assert_eq!(strip_dblp_suffix(""), "");
+    }
+
+    #[test]
+    fn strip_suffix_ignores_non_4_digit_patterns() {
+        // 3 digits — not a DBLP suffix
+        assert_eq!(strip_dblp_suffix("Name 123"), "Name 123");
+        // 5 digits — not a DBLP suffix
+        assert_eq!(strip_dblp_suffix("Name 12345"), "Name 12345");
+        // No space before digits
+        assert_eq!(strip_dblp_suffix("Name0001"), "Name0001");
+    }
+
+    #[test]
+    fn strip_suffix_handles_whitespace() {
+        assert_eq!(strip_dblp_suffix("  Nuno Santos 0001  "), "Nuno Santos");
+        assert_eq!(strip_dblp_suffix("  Alice  "), "Alice");
     }
 }

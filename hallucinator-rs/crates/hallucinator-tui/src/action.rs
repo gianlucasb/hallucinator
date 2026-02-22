@@ -27,6 +27,7 @@ pub enum Action {
     #[allow(dead_code)] // planned feature: remove paper from queue
     RemovePaper,
     CopyToClipboard,
+    OpenPdf,
     OpenConfig,
     ToggleActivityPanel,
     SaveConfig,

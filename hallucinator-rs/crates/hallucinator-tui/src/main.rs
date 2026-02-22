@@ -766,7 +766,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Main event loop
-    let tick_rate = Duration::from_millis(1000 / app.config_state.fps.max(1) as u64);
+    let mut active_fps = app.config_state.fps;
+    let tick_rate = Duration::from_millis(1000 / active_fps.max(1) as u64);
     let mut tick_timer = tokio::time::interval(tick_rate);
     tick_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tick_timer.tick().await; // consume first immediate tick
@@ -836,6 +837,15 @@ async fn main() -> anyhow::Result<()> {
                 app.tip_index = (app.tip_index + 1) % tip_count;
                 app.tip_change_tick = app.tick;
             }
+        }
+
+        // Detect FPS change from config and recreate the tick timer
+        if app.config_state.fps != active_fps {
+            active_fps = app.config_state.fps;
+            let new_rate = Duration::from_millis(1000 / active_fps.max(1) as u64);
+            tick_timer = tokio::time::interval(new_rate);
+            tick_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick_timer.tick().await; // consume first immediate tick
         }
 
         // 3. Process tick and draw.
