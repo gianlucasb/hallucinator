@@ -47,6 +47,7 @@ pub(crate) static COMPOUND_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| 
         "agent",
         "site",
         "throughput", // e.g., "high-throughput"
+        "flow",       // e.g., "information-flow", "data-flow"
     ]
     .into_iter()
     .collect()
@@ -173,9 +174,11 @@ mod tests {
         assert_eq!(fix_hyphenation("data- driven"), "data-driven");
         assert_eq!(fix_hyphenation("task- agnostic"), "task-agnostic");
         assert_eq!(fix_hyphenation("fine- grained"), "fine-grained");
-        // New suffixes: directed, throughput
+        // New suffixes: directed, throughput, flow
         assert_eq!(fix_hyphenation("coverage- directed"), "coverage-directed");
         assert_eq!(fix_hyphenation("high- throughput"), "high-throughput");
+        assert_eq!(fix_hyphenation("information-\nflow"), "information-flow");
+        assert_eq!(fix_hyphenation("data- flow"), "data-flow");
     }
 
     #[test]
