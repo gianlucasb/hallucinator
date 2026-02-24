@@ -188,18 +188,16 @@ impl PdfBackend for MupdfBackend {
                 }
 
                 // Skip blocks entirely within the fixed-ratio header region.
-                if let Some(threshold) = header_threshold {
-                    if block.y1 <= threshold {
+                if let Some(threshold) = header_threshold
+                    && block.y1 <= threshold {
                         continue;
                     }
-                }
 
                 // Skip blocks whose top edge is in the fixed-ratio footer region.
-                if let Some(threshold) = footer_threshold {
-                    if block.y0 >= threshold {
+                if let Some(threshold) = footer_threshold
+                    && block.y0 >= threshold {
                         continue;
                     }
-                }
 
                 for line in &block.lines {
                     page_text.push_str(line);
