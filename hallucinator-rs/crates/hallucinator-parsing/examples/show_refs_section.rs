@@ -51,22 +51,24 @@ fn main() -> Result<()> {
 
 fn extract_text_from_pdf(path: &Path) -> Result<String> {
     let doc = Document::open(path.to_str().unwrap()).context("Failed to open PDF")?;
-    let mut text = String::new();
+    let mut pages_text = Vec::new();
     for page_num in 0..doc.page_count()? {
         if let Ok(page) = doc.load_page(page_num)
             && let Ok(text_page) = page.to_text_page(mupdf::TextPageFlags::empty())
         {
+            let mut page_text = String::new();
             for block in text_page.blocks() {
                 for line in block.lines() {
-                    for ch in line.chars() {
-                        if let Some(c) = ch.char() {
-                            text.push(c);
-                        }
-                    }
+                    let line_text: String = line
+                        .chars()
+                        .map(|c| c.char().unwrap_or('\u{FFFD}'))
+                        .collect();
+                    page_text.push_str(&line_text);
+                    page_text.push('\n');
                 }
-                text.push('\n');
             }
+            pages_text.push(page_text);
         }
     }
-    Ok(text)
+    Ok(pages_text.join("\n"))
 }

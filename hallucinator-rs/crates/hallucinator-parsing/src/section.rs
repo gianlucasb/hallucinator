@@ -70,10 +70,11 @@ pub(crate) fn find_references_section_with_config(
             // - Explicit section headers: Appendix, Acknowledgments, etc.
             // - Single-letter appendix sections: "A\nAppendix", "A\nTechnical Lemmas" (common in NeurIPS)
             // - Conference checklists: "NeurIPS Paper Checklist", "ICML Checklist", etc.
+            // - Mathematical proof sections with equation numbers
             //
             // IMPORTANT: "Appendix" must be followed by whitespace, letter/number, or end-of-line.
             // NOT followed by a colon (e.g., "Artifact Appendix: Title" in a reference).
-            Regex::new(r"(?i)\n\s*(?:Appendix(?:\s+[A-Z0-9]|\s*\n|\s*$)|Acknowledgments|Acknowledgements|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|(?:\w+\s+)?(?:Paper\s+)?Checklist|[A-Z]\n\s*(?:Appendix|Technical|Proofs?|Additional|Extended|Experimental|Derivations?|Algorithms?|Details?|Implementation))")
+            Regex::new(r"(?i)\n\s*(?:Appendix(?:\s+[A-Z0-9]|\s*\n|\s*$)|Acknowledgments|Acknowledgements|Supplementary|Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|(?:\w+\s+)?(?:Paper\s+)?Checklist|[A-Z]\n\s*(?:Appendix|Technical|Proofs?|Additional|Extended|Experimental|Derivations?|Algorithms?|Detailed?|Implementation|Analysis|Benchmark|Datasets?|Ablation|Hyperparameters?))")
                 .unwrap()
         });
 
@@ -647,6 +648,27 @@ mod tests {
         let section = find_references_section(text).unwrap();
         assert!(section.contains("[1] Ref one."));
         assert!(!section.contains("Extra stuff"));
+    }
+
+    #[test]
+    fn test_find_references_section_with_analysis_appendix() {
+        // Test "A\nANALYSIS" pattern (common in NeurIPS/ICLR papers)
+        let text = "Body.\n\nReferences\n\n[1] Ref one.\n[2] Ref two.\n\nA\nANALYSIS OF GRADIENTS\n\nMath stuff.";
+        let section = find_references_section(text).unwrap();
+        assert!(section.contains("[1] Ref one."));
+        assert!(section.contains("[2] Ref two."));
+        assert!(!section.contains("ANALYSIS"), "Should truncate at A\\nANALYSIS boundary");
+        assert!(!section.contains("Math stuff"));
+    }
+
+    #[test]
+    fn test_find_references_section_with_detailed_appendix() {
+        // Test "A\nDetailed" pattern
+        let text = "Body.\n\nReferences\n\n[1] Ref one.\n\nA\nDetailed Benchmark Results\n\nTables here.";
+        let section = find_references_section(text).unwrap();
+        assert!(section.contains("[1] Ref one."));
+        assert!(!section.contains("Detailed"), "Should truncate at A\\nDetailed boundary");
+        assert!(!section.contains("Tables here"));
     }
 
     #[test]
