@@ -193,8 +193,9 @@ fn strip_page_headers(text: &str) -> String {
     //   • Even-page:   "Proceedings on Privacy Enhancing Technologies 2026(1)"  (no prefix)
     static POPETS_HEADER: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?:[A-Z][^\[.]*?)?Proceedings on Privacy Enhancing Technologies\s+\d{4}\(\d+\)"
-        ).unwrap()
+            r"(?:[A-Z][^\[.]*?)?Proceedings on Privacy Enhancing Technologies\s+\d{4}\(\d+\)",
+        )
+        .unwrap()
     });
 
     let mut result = USENIX_HEADER.replace_all(text, "\n").to_string();
