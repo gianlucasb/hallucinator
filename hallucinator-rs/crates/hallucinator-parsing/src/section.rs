@@ -163,6 +163,42 @@ fn strip_page_headers(text: &str) -> String {
         ).unwrap()
     });
 
+    // PoPETs (Proceedings on Privacy Enhancing Technologies) running headers.
+    //
+    // PoPETs uses two running-header formats, one per page side:
+    //
+    //   Even page (left):  "Proceedings on Privacy Enhancing Technologies 2026(1)"
+    //                      (journal name + year/issue, no title, no page number)
+    //
+    //   Odd page (right):  "QUICstep: Evaluating … circumvention
+    //                       Proceedings on Privacy Enhancing Technologies 2026(1)"
+    //                      (paper title preceding the journal name + year/issue)
+    //
+    // The KEY distinguishing marker is that the year/issue follows the journal
+    // name with NO comma — i.e.:
+    //   Header:   "Proceedings on Privacy Enhancing Technologies 2026(1)"
+    //   Citation: "Proceedings on Privacy Enhancing Technologies, 2017(4)"
+    //                                                           ^--- comma
+    //
+    // Pattern: optionally consume a preceding capital-letter title fragment,
+    // then match the journal name followed by year(issue) with whitespace (not comma).
+    //
+    // `[^\[.]*?` allows the prefix to span newlines (for wrapped titles) while
+    // still stopping at:
+    //   - `.` (periods)  → prevents crossing sentence boundaries in citation text
+    //   - `[` (brackets) → prevents matching across IEEE reference markers like [1]
+    //
+    // This correctly handles:
+    //   • Same-line:   "QUICstep: … circumvention Proceedings on Privacy … 2026(1)"
+    //   • Multi-line:  "QUICstep: … circumvention\nProceedings on Privacy … 2026(1)"
+    //   • Even-page:   "Proceedings on Privacy Enhancing Technologies 2026(1)"  (no prefix)
+    static POPETS_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?:[A-Z][^\[.]*?)?Proceedings on Privacy Enhancing Technologies\s+\d{4}\(\d+\)",
+        )
+        .unwrap()
+    });
+
     let mut result = USENIX_HEADER.replace_all(text, "\n").to_string();
     result = USENIX_ASSOC_ONLY.replace_all(&result, "\n").to_string();
     result = IEEE_HEADER.replace_all(&result, "\n").to_string();
@@ -170,6 +206,7 @@ fn strip_page_headers(text: &str) -> String {
     result = CCS_HEADER.replace_all(&result, "\n").to_string();
     result = ACM_CONF_HEADER.replace_all(&result, "\n").to_string();
     result = ACM_AUTHOR_HEADER.replace_all(&result, "\n").to_string();
+    result = POPETS_HEADER.replace_all(&result, "\n").to_string();
 
     result
 }
@@ -925,6 +962,121 @@ mod tests {
         );
         assert!(stripped.contains("some text before"));
         assert!(stripped.contains("some text after"));
+    }
+
+    #[test]
+    fn test_strip_page_headers_popets_odd_page() {
+        // Odd page header: title line + journal-name line (two lines, as extracted from the PDF)
+        // MuPDF extracts each printed text line separately, so the title and journal
+        // are on adjacent lines:
+        //   "QUICstep: Evaluating connection migration based QUIC censorship circumvention"
+        //   "Proceedings on Privacy Enhancing Technologies 2026(1)"
+        let header = "QUICstep: Evaluating connection migration based QUIC censorship circumvention\nProceedings on Privacy Enhancing Technologies 2026(1)";
+        let text = format!("some text before\n{header}\nsome text after");
+        let stripped = strip_page_headers(&text);
+        assert!(
+            !stripped.contains("QUICstep: Evaluating"),
+            "Should strip PoPETs title fragment from odd-page header: {stripped}"
+        );
+        assert!(
+            !stripped.contains("Proceedings on Privacy Enhancing Technologies 2026"),
+            "Should strip PoPETs journal+year from odd-page header: {stripped}"
+        );
+        assert!(stripped.contains("some text before"));
+        assert!(stripped.contains("some text after"));
+    }
+
+    #[test]
+    fn test_strip_page_headers_popets_odd_page_same_line() {
+        // Odd page header: title and journal name on the SAME line
+        // (also valid — some PDF layouts produce this)
+        let header = "QUICstep: Evaluating connection migration based QUIC censorship circumvention Proceedings on Privacy Enhancing Technologies 2026(1)";
+        let text = format!("some text before\n{header}\nsome text after");
+        let stripped = strip_page_headers(&text);
+        assert!(
+            !stripped.contains("QUICstep: Evaluating"),
+            "Should strip same-line PoPETs header: {stripped}"
+        );
+        assert!(
+            !stripped.contains("Proceedings on Privacy Enhancing Technologies 2026"),
+            "Should strip journal+year from same-line PoPETs header: {stripped}"
+        );
+        assert!(stripped.contains("some text before"));
+        assert!(stripped.contains("some text after"));
+    }
+
+    #[test]
+    fn test_strip_page_headers_popets_even_page() {
+        // Even page header: just "Proceedings on Privacy Enhancing Technologies <year>(<issue>)"
+        // (no page number, no title — appears as a standalone fragment between references)
+        let text = "...USENIX, 2020. Proceedings on Privacy Enhancing Technologies 2026(1) Next author et al.";
+        let stripped = strip_page_headers(text);
+        assert!(
+            !stripped.contains("Proceedings on Privacy Enhancing Technologies 2026"),
+            "Should strip PoPETs journal+year from even-page header: {stripped}"
+        );
+        assert!(stripped.contains("USENIX, 2020."));
+        assert!(stripped.contains("Next author et al."));
+    }
+
+    #[test]
+    fn test_strip_page_headers_popets_preserves_references() {
+        // Citations to PoPETs papers use a comma after the journal name — must NOT be stripped.
+        let text = concat!(
+            "Barradas et al. DeltaShaper: Enabling unobservable TCP tunneling. ",
+            "Proceedings on Privacy Enhancing Technologies, 2017(4):1–20.\n",
+            "Fifield et al. Blocking-resistant communication through domain fronting. ",
+            "Proceedings on Privacy Enhancing Technologies, 2015(2).\n",
+        );
+        let stripped = strip_page_headers(text);
+        assert!(
+            stripped.contains("DeltaShaper"),
+            "Should preserve citations to PoPETs papers: {stripped}"
+        );
+        assert!(
+            stripped.contains("Blocking-resistant communication"),
+            "Should preserve citations to PoPETs papers: {stripped}"
+        );
+        assert!(
+            stripped.contains("Proceedings on Privacy Enhancing Technologies, 2017"),
+            "Journal name in citations must be preserved: {stripped}"
+        );
+    }
+
+    #[test]
+    fn test_segment_ieee_with_popets_page_header() {
+        // Simulates a PoPETs paper where the running page header appears between references.
+        // Odd-page format: "<paper_title> Proceedings on Privacy Enhancing Technologies <year>(<issue>)"
+        // (no leading page number — confirmed by inspecting popets-2026-0014.pdf)
+        let text = concat!(
+            "[1] First reference with a long enough title here.\n",
+            "[2] Second reference also with sufficient content.\n",
+            "[3] Third reference ends before the page break.\n",
+            "QUICstep: Evaluating connection migration based QUIC censorship circumvention ",
+            "Proceedings on Privacy Enhancing Technologies 2026(1)\n",
+            "[4] Fourth reference starts new page content here.\n",
+            "[5] Fifth reference continues normally with text.\n",
+            "[6] Sixth reference completes the section here.\n",
+        );
+        let refs = segment_references(text);
+        assert_eq!(
+            refs.len(),
+            6,
+            "Should find 6 IEEE refs after stripping PoPETs header: {:?}",
+            refs
+        );
+        assert!(refs[0].contains("First reference"));
+        assert!(refs[3].contains("Fourth reference"));
+        assert!(
+            !refs.iter().any(|r| r.contains("QUICstep")),
+            "PoPETs page-number+title must not appear in any reference"
+        );
+        assert!(
+            !refs
+                .iter()
+                .any(|r| r.contains("Proceedings on Privacy Enhancing Technologies 2026")),
+            "PoPETs journal+year header must not appear in any reference"
+        );
     }
 
     #[test]
