@@ -657,17 +657,24 @@ mod tests {
         let section = find_references_section(text).unwrap();
         assert!(section.contains("[1] Ref one."));
         assert!(section.contains("[2] Ref two."));
-        assert!(!section.contains("ANALYSIS"), "Should truncate at A\\nANALYSIS boundary");
+        assert!(
+            !section.contains("ANALYSIS"),
+            "Should truncate at A\\nANALYSIS boundary"
+        );
         assert!(!section.contains("Math stuff"));
     }
 
     #[test]
     fn test_find_references_section_with_detailed_appendix() {
         // Test "A\nDetailed" pattern
-        let text = "Body.\n\nReferences\n\n[1] Ref one.\n\nA\nDetailed Benchmark Results\n\nTables here.";
+        let text =
+            "Body.\n\nReferences\n\n[1] Ref one.\n\nA\nDetailed Benchmark Results\n\nTables here.";
         let section = find_references_section(text).unwrap();
         assert!(section.contains("[1] Ref one."));
-        assert!(!section.contains("Detailed"), "Should truncate at A\\nDetailed boundary");
+        assert!(
+            !section.contains("Detailed"),
+            "Should truncate at A\\nDetailed boundary"
+        );
         assert!(!section.contains("Tables here"));
     }
 
