@@ -1041,7 +1041,7 @@ fn dry_run_pdf(
     use owo_colors::OwoColorize;
 
     use hallucinator_core::PdfBackend as _;
-    let text = hallucinator_pdf_mupdf::MupdfBackend
+    let text = hallucinator_pdf_mupdf::MupdfBackend::default()
         .extract_text(file_path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let ref_section = hallucinator_parsing::section::find_references_section(&text)
