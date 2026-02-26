@@ -1749,6 +1749,11 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
     // - Spacing Modifier Letters: U+02B0-U+02FF (for names like "P˘as˘areanu" with U+02D8)
     static AUTHOR_AFTER: Lazy<Vec<Regex>> = Lazy::new(|| {
         let sc = r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}\u{2018}\u{2019}]"; // surname chars (incl. curly quotes)
+        // Uppercase character class including Latin Extended (for names like Łukasz, Øystein, Ñoño)
+        // - ASCII: A-Z
+        // - Latin-1 Supplement uppercase: À-Ö (U+00C0-U+00D6), Ø-Þ (U+00D8-U+00DE)
+        // - Latin Extended-A uppercase: Ā-Ł-Ń-Ő-Ű etc. (even code points in U+0100-U+0178)
+        let uc = r"[A-Z\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0100}-\u{0178}]";
         vec![
             // Surname followed by comma + initial: "Chung, E." or "Chandrasekaran, D."
             // The key pattern is: surname + comma + single capital + period (an initial)
@@ -1835,17 +1840,20 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             ))
             .unwrap(),
             // Surname, Firstname, (inverted format with single first name)
-            // Handles "Jordan, Qijun," in author list
-            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*[A-Z]{}{{2,}}\s*,", sc, sc)).unwrap(),
+            // Handles "Jordan, Qijun," or "Gomez, Łukasz," in author list
+            Regex::new(&format!(r"^({}{}+)\s*,\s*{}{}{{2,}}\s*,", uc, sc, uc, sc)).unwrap(),
+            // Surname, Firstname Lastname, and Firstname (inverted format with full names)
+            // Handles "Gomez, Łukasz Kaiser, and Illia" after split at "N."
+            Regex::new(&format!(r"^({}{}+)\s*,\s*{}{}+\s+{}{}+\s*,\s*and\s+{}", uc, sc, uc, sc, uc, sc, uc)).unwrap(),
             // Surname, et al (inverted format with et al)
             // Handles "Fowl, et al" after split at "H."
-            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*et\s+al", sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}+)\s*,\s*et\s+al", uc, sc)).unwrap(),
             // Surname, Initial Surname (inverted format with initial without period)
             // Handles "Garrido-Merchán, J L Arroyo-Barrigüete" after split at "C."
-            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*[A-Z]\s+[A-Z]", sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}+)\s*,\s*[A-Z]\s+{}", uc, sc, uc)).unwrap(),
             // Surname, and Firstname (inverted format starting with "and")
             // Handles "MacQueen, and Emily E. Namey" after split at "M."
-            Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*and\s+[A-Z]", sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}+)\s*,\s*and\s+{}", uc, sc, uc)).unwrap(),
             // Surname, and . (PDF extraction artifact where initial moved after name)
             // Handles "Kruegel, and . Vigna G." where "G. Vigna" became ". Vigna G."
             Regex::new(&format!(r"^([A-Z]{}+)\s*,\s*and\s+\.", sc)).unwrap(),
@@ -1858,31 +1866,31 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             .unwrap(),
             // Middle name + Surname + "and": "J. Zico Kolter, and Matt Fredrikson"
             // Matches "Zico Kolter, and M" where Zico is middle name, Kolter is surname
-            Regex::new(&format!(r"^([A-Z]{}+)\s+([A-Z]{}+),\s+and\s+[A-Z]", sc, sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}+)\s+({}{}+),\s+and\s+{}", uc, sc, uc, sc, uc)).unwrap(),
             // Firstname Lastname + comma (not already covered): "Zico Kolter,"
             // This is more permissive - any CapWord CapWord, pattern after initial
-            Regex::new(&format!(r"^([A-Z]{}{{2,}})\s+([A-Z]{}{{2,}})\s*,", sc, sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}{{2,}})\s+({}{}{{2,}})\s*,", uc, sc, uc, sc)).unwrap(),
             // Middlename Surname + period: "Alex Halderman." after initial "J."
             // Handles single-author refs with middle name: "J. Alex Halderman. Title"
-            Regex::new(&format!(r"^([A-Z]{}{{2,}})\s+([A-Z]{}{{2,}})\.", sc, sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}{{2,}})\s+({}{}{{2,}})\.", uc, sc, uc, sc)).unwrap(),
             // Multiple consecutive capitalized words (3+): "Jordan Qijun Gu Trevor"
             // This handles malformed author lists without punctuation between names
-            // Require a 4th capitalized word OR a comma/initial after to avoid matching
-            // short title phrases like "Three Word Title" at end of text
+            // Require a comma OR a 4th word that looks like an initial (single cap + period)
+            // to avoid matching title phrases like "Bilateral Unknown KeyShare Attacks"
             // Use {1,} to match 2+ char names like "Gu" ([A-Z] + at least 1 more char)
             Regex::new(&format!(
-                r"^([A-Z]{}{{1,}})\s+([A-Z]{}{{1,}})\s+([A-Z]{}{{1,}})\s+(?:[A-Z]|,)",
-                sc, sc, sc
+                r"^({}{}{{1,}})\s+({}{}{{1,}})\s+({}{}{{1,}})\s+(?:[A-Z]\.|,)",
+                uc, sc, uc, sc, uc, sc
             ))
             .unwrap(),
             // Surname followed by title in braces/brackets: "Apostolaki. {TANGO}:"
             // This handles cases where the title starts with special punctuation
             // After initial "M.", text "Apostolaki. {TANGO}" should continue (not split at M.)
-            Regex::new(&format!(r"^([A-Z]{}{{3,}})\.\s*[\[{{\u{{201c}}]", sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}{{3,}})\.\s*[\[{{\u{{201c}}]", uc, sc)).unwrap(),
             // Surname + period + Capital (no space) - PDF extraction lost space
             // "Chua.Influence" after initial "L." should keep L. with Chua
             // This recognizes Surname.TitleStart as author ending (Surname is followed by title)
-            Regex::new(&format!(r"^([A-Z]{}{{2,}})\.[A-Z]", sc)).unwrap(),
+            Regex::new(&format!(r"^({}{}{{2,}})\.[A-Z]", uc, sc)).unwrap(),
         ]
     });
 
@@ -3920,4 +3928,44 @@ fn test_new_edge_cases() {
     }
 
     assert!(failures.is_empty(), "Failed cases: {:?}", failures);
+}
+
+#[test]
+fn test_issue_239_dash_in_venue_name() {
+    // Issue #239: dash in venue name causes misparse
+    // "JUCS - Journal of Universal Computer Science" is the journal, not the title
+    // The pattern "CapWord CapWord CapWord CapLetter" was matching "Bilateral Unknown KeyShare Attacks"
+    // as an author list, preventing the sentence split at "Tang."
+    let ref_text = "Liqun Chen and Qiang Tang. Bilateral Unknown KeyShare Attacks in Key Agreement Protocols. JUCS - Journal of Universal Computer Science, 14(3):416–440, 2008";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.contains("Bilateral Unknown KeyShare Attacks"),
+        "Title should be 'Bilateral Unknown KeyShare Attacks in Key Agreement Protocols', got: '{}'",
+        title
+    );
+    assert!(
+        !title.contains("JUCS"),
+        "Title should NOT contain 'JUCS' (journal name), got: '{}'",
+        title
+    );
+}
+
+#[test]
+fn test_issue_236_slashed_l_in_author_name() {
+    // Issue #236: slashed L (Ł) in author name causes misparse
+    // "Łukasz Kaiser" has Polish Ł which was not recognized as an uppercase letter,
+    // causing the sentence splitter to not recognize "Gomez, Łukasz Kaiser, and Illia"
+    // as author continuation after the initial "N."
+    let ref_text = "Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Proceedings of the 31st International Conference on Neural Information Processing Systems, 2017";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.contains("Attention is all you need"),
+        "Title should be 'Attention is all you need', got: '{}'",
+        title
+    );
+    assert!(
+        !title.contains("Gomez"),
+        "Title should NOT contain author name 'Gomez', got: '{}'",
+        title
+    );
 }
