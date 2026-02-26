@@ -124,6 +124,8 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         // Additional patterns found in testing
         "mentation", "putation", "mization", "tication", "rization",
         "tation", "cation", "sation", "nation",
+        // -ilities suffixes (capabilities, vulnerabilities, possibilities, etc.)
+        "bilities", "ilities",
     ]
     .into_iter()
     .collect()
@@ -143,7 +145,7 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
         // Match: lowercase letter, hyphen (no space), then common syllable suffixes,
         // followed by punctuation, space, or end of string
         // NOTE: rust regex doesn't support look-ahead, so we capture the trailing char too
-        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting)([.\s,;:?!]|$)").unwrap()
+        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting)([.\s,;:?!]|$)").unwrap()
     });
 
     // Resolve compound suffixes: convert defaults to owned Strings for uniform handling
@@ -346,6 +348,11 @@ mod tests {
         // Additional suffixes: -cient, -curity
         assert_eq!(fix_hyphenation("effi-cient"), "efficient");
         assert_eq!(fix_hyphenation("se-curity"), "security");
+        // Issue #233: -bilities/-ilities suffixes (vulnerabilities, capabilities, etc.)
+        assert_eq!(fix_hyphenation("vulnera-bilities"), "vulnerabilities");
+        assert_eq!(fix_hyphenation("capa-bilities"), "capabilities");
+        assert_eq!(fix_hyphenation("possi-bilities"), "possibilities");
+        assert_eq!(fix_hyphenation("fac-ilities"), "facilities");
         // But keep valid compound words
         assert_eq!(fix_hyphenation("data-driven"), "data-driven");
         assert_eq!(fix_hyphenation("task-agnostic"), "task-agnostic");
@@ -427,6 +434,10 @@ mod tests {
         assert_eq!(fix_hyphenation("opti- mization"), "optimization");
         assert_eq!(fix_hyphenation("authen- tication"), "authentication");
         assert_eq!(fix_hyphenation("veri- fication"), "verification");
+        // Issue #233: -bilities/-ilities suffixes with space
+        assert_eq!(fix_hyphenation("vulnera- bilities"), "vulnerabilities");
+        assert_eq!(fix_hyphenation("capa- bilities"), "capabilities");
+        assert_eq!(fix_hyphenation("fac- ilities"), "facilities");
     }
 
     #[test]
@@ -443,6 +454,15 @@ mod tests {
         let input3 = "LLM- Assisted Self- Supervised Pre- training";
         let expected3 = "LLM-Assisted Self-Supervised Pre-training";
         assert_eq!(fix_hyphenation(input3), expected3);
+    }
+
+    #[test]
+    fn test_fix_hyphenation_issue_233_vulnerabilities() {
+        // Issue #233: "vulnera-bilities" should become "vulnerabilities"
+        // Exact title from the issue
+        let input = "MVP: Detecting vulnera-bilities using Patch-Enhanced vulnerability signatures";
+        let expected = "MVP: Detecting vulnerabilities using Patch-Enhanced vulnerability signatures";
+        assert_eq!(fix_hyphenation(input), expected);
     }
 
     #[test]
