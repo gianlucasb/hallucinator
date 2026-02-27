@@ -62,27 +62,6 @@ See **[hallucinator-rs/PYTHON_BINDINGS.md](hallucinator-rs/PYTHON_BINDINGS.md)**
 
 ---
 
-## Python Quick Start (Legacy)
-
-The original pure-Python implementation lives in the `legacy/` directory.
-
-```bash
-# 1. Clone and setup
-git clone https://github.com/idramalab/hallucinator.git
-cd hallucinator
-python -m venv venv
-venv\Scripts\activate      # Windows
-source venv/bin/activate   # Linux/Mac
-pip install -r legacy/requirements.txt
-
-# 2. Run it
-python legacy/check_hallucinated_references.py your_paper.pdf
-```
-
-That's it. You'll see which references check out and which don't exist in any database.
-
----
-
 ## What It Checks
 
 The tool queries these databases simultaneously:
@@ -102,74 +81,7 @@ The tool queries these databases simultaneously:
 
 ~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
 
-We **strongly recommend** to download the latest **DBLP database** and query it locally, due to their aggressive rate limiting of online queries (see the "Offline DBLP database" section below).
-
----
-
-## Command Line Usage (Legacy Python)
-
-```bash
-# Basic - just check a PDF
-python legacy/check_hallucinated_references.py paper.pdf
-
-# With API keys (recommended - better coverage, fewer rate limits)
-python legacy/check_hallucinated_references.py --openalex-key=YOUR_KEY --s2-api-key=YOUR_KEY paper.pdf
-
-# Save output to file
-python legacy/check_hallucinated_references.py --output results.txt paper.pdf
-
-# No colors (for logs/piping)
-python legacy/check_hallucinated_references.py --no-color paper.pdf
-
-# Use offline DBLP database (avoids rate limits)
-python legacy/check_hallucinated_references.py --dblp-offline=dblp.db paper.pdf
-```
-
-### Command Line Options
-
-| Option | What it does |
-|--------|--------------|
-| `--openalex-key=KEY` | OpenAlex API key. Get one free: https://openalex.org/settings/api |
-| `--s2-api-key=KEY` | Semantic Scholar API key. Request here: https://www.semanticscholar.org/product/api |
-| `--output=FILE` | Write output to a file instead of terminal |
-| `--no-color` | Disable colored output |
-| `--dblp-offline=PATH` | Use offline DBLP database instead of API |
-| `--update-dblp=PATH` | Download DBLP dump and build offline database |
-| `--check-openalex-authors` | Flag author mismatches from OpenAlex (off by default due to false positives) |
-
----
-
-## Web Interface (Legacy Python)
-
-```bash
-python legacy/app.py
-# Open http://localhost:5001
-```
-
-Upload a PDF (or ZIP/tar.gz of multiple PDFs), optionally enter API keys, click Analyze. Watch results stream in real-time.
-
-### Web Interface Features
-
-**Retry Failed Queries**
-If a database times out during analysis, a "Retry" button appears next to the affected reference. Click it to retry those specific databases with a longer timeout.
-
-**Mark as Safe**
-False positive? Click "Mark as safe" on any flagged reference to move it to the verified list. This updates the summary counts and is useful for references that exist but aren't indexed (technical reports, books, etc.).
-
-**Download Report**
-After analysis, download a report of problematic references in HTML or plain text format. The report includes:
-- The analyzed filename
-- Summary statistics
-- All problematic references with details
-- Author comparisons for mismatches
-
-### Docker
-
-```bash
-docker build -t hallucinator legacy/
-docker run -p 5001:5001 hallucinator
-# Open http://localhost:5001
-```
+We **strongly recommend** downloading the **DBLP** and **ACL Anthology** databases for local querying—DBLP in particular rate-limits online requests aggressively. See the "Offline Databases" section below.
 
 ---
 
@@ -190,37 +102,62 @@ API keys are optional but recommended. They improve coverage and reduce rate lim
 
 ---
 
-## Offline DBLP Database
+## Offline Databases
 
-DBLP aggressively rate-limits API requests. For heavy usage, you can download their full database (~4.6GB) and query it locally.
-
-### Setup (one-time, takes 20-30 minutes)
+Three databases can be downloaded for local querying. Offline databases are faster than online APIs and avoid rate limits.
 
 ```bash
-python legacy/check_hallucinated_references.py --update-dblp=dblp.db
+# Build all three (run once, refresh periodically)
+hallucinator-cli update-dblp dblp.db
+hallucinator-cli update-acl acl.db
+hallucinator-cli update-openalex openalex.idx
+
+# Use them
+hallucinator-cli check --dblp-offline=dblp.db --acl-offline=acl.db --openalex-offline=openalex.idx paper.pdf
 ```
 
-This downloads the latest [DBLP N-Triples dump](https://dblp.org/rdf/) and builds a SQLite database with ~6M publications.
+If you place the databases in `~/.local/share/hallucinator/`, they're detected automatically—no flags needed.
 
-### Usage
+### DBLP (strongly recommended)
+
+DBLP aggressively rate-limits API requests. Download their full database (~4.6GB) and query it locally:
 
 ```bash
-# CLI
-python legacy/check_hallucinated_references.py --dblp-offline=dblp.db paper.pdf
-
-# Web app (set environment variable)
-DBLP_OFFLINE_PATH=dblp.db python legacy/app.py
+hallucinator-cli update-dblp dblp.db
 ```
 
-### Keeping it fresh
+This downloads the latest [DBLP N-Triples dump](https://dblp.org/rdf/) and builds a SQLite database with ~6M publications. Takes 20-30 minutes.
 
-The database is a snapshot. If it's more than 30 days old, you'll see a warning:
+### ACL Anthology
 
+Downloads the full ACL Anthology and builds a local SQLite database:
+
+```bash
+hallucinator-cli update-acl acl.db
 ```
-Warning: Your DBLP database is 47 days old. Run with --update-dblp to refresh.
+
+### OpenAlex
+
+> **Warning:** The full OpenAlex snapshot is very large. OpenAlex records are regularly updated with citation counts, metadata corrections, and new works—so a local snapshot goes stale quickly. **For most users, the online API with a free API key (see above) is the better choice.** Only build a local index if you have a specific need for fully offline operation or are hitting rate limits you can't solve with an API key.
+
+```bash
+# Full build (large download — expect many gigabytes and hours of indexing)
+hallucinator-cli update-openalex openalex.idx
+
+# Only works published 2020 or later (smaller, faster)
+hallucinator-cli update-openalex openalex.idx --min-year 2020
+
+# Incremental update — only download partitions newer than a date
+hallucinator-cli update-openalex openalex.idx --since 2026-01-01
 ```
 
-Re-run `--update-dblp` to download the latest dump. DBLP publishes daily updates but there's no incremental download—you'll need to re-download the full 4.6GB each time.
+The local index uses Tantivy (full-text search). Use `--min-year` to limit scope and `--since` for incremental refreshes.
+
+### Keeping databases fresh
+
+All offline databases are snapshots. If any database is more than 30 days old, the tool shows a staleness warning with instructions to refresh. Re-run the corresponding `update-*` command to rebuild.
+
+See **[hallucinator-rs/README.md](hallucinator-rs/README.md)** for config file options, auto-detection paths, and more details.
 
 ---
 
@@ -326,7 +263,7 @@ If something is flagged as "not found," verify manually with Google Scholar befo
 
 ## How It Works
 
-1. **Extract text** from PDF using PyMuPDF
+1. **Extract text** from PDF (MuPDF)
 2. **Find references section** (looks for "References" or "Bibliography")
 3. **Parse each reference** - extracts title and authors
 4. **Query all databases in parallel** - 4 references at a time, all DBs simultaneously
