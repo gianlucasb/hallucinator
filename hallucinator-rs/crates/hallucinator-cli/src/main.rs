@@ -341,10 +341,21 @@ fn build_report_data(
         ..Default::default()
     };
     for result in results_vec.iter().flatten() {
-        match result.status {
+        match &result.status {
             hallucinator_core::Status::Verified => stats.verified += 1,
             hallucinator_core::Status::NotFound => stats.not_found += 1,
-            hallucinator_core::Status::AuthorMismatch => stats.author_mismatch += 1,
+            hallucinator_core::Status::Mismatch(kind) => {
+                stats.mismatch += 1;
+                if kind.contains(hallucinator_core::MismatchKind::AUTHOR) {
+                    stats.author_mismatch += 1;
+                }
+                if kind.contains(hallucinator_core::MismatchKind::DOI) {
+                    stats.doi_mismatch += 1;
+                }
+                if kind.contains(hallucinator_core::MismatchKind::ARXIV_ID) {
+                    stats.arxiv_mismatch += 1;
+                }
+            }
         }
         if result
             .retraction_info

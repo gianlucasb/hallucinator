@@ -1,4 +1,4 @@
-use hallucinator_core::{CheckStats, Status};
+use hallucinator_core::{CheckStats, MismatchKind, Status};
 
 pub use hallucinator_reporting::PaperVerdict;
 
@@ -89,11 +89,20 @@ impl PaperState {
 
         // Decrement old counters if replacing
         if let Some(old) = &self.results[index] {
-            match old.status {
+            match &old.status {
                 Status::Verified => self.stats.verified = self.stats.verified.saturating_sub(1),
                 Status::NotFound => self.stats.not_found = self.stats.not_found.saturating_sub(1),
-                Status::AuthorMismatch => {
-                    self.stats.author_mismatch = self.stats.author_mismatch.saturating_sub(1)
+                Status::Mismatch(kind) => {
+                    self.stats.mismatch = self.stats.mismatch.saturating_sub(1);
+                    if kind.contains(MismatchKind::AUTHOR) {
+                        self.stats.author_mismatch = self.stats.author_mismatch.saturating_sub(1);
+                    }
+                    if kind.contains(MismatchKind::DOI) {
+                        self.stats.doi_mismatch = self.stats.doi_mismatch.saturating_sub(1);
+                    }
+                    if kind.contains(MismatchKind::ARXIV_ID) {
+                        self.stats.arxiv_mismatch = self.stats.arxiv_mismatch.saturating_sub(1);
+                    }
                 }
             }
             if old.is_retracted {
@@ -102,10 +111,21 @@ impl PaperState {
         }
 
         // Increment new counters
-        match status {
+        match &status {
             Status::Verified => self.stats.verified += 1,
             Status::NotFound => self.stats.not_found += 1,
-            Status::AuthorMismatch => self.stats.author_mismatch += 1,
+            Status::Mismatch(kind) => {
+                self.stats.mismatch += 1;
+                if kind.contains(MismatchKind::AUTHOR) {
+                    self.stats.author_mismatch += 1;
+                }
+                if kind.contains(MismatchKind::DOI) {
+                    self.stats.doi_mismatch += 1;
+                }
+                if kind.contains(MismatchKind::ARXIV_ID) {
+                    self.stats.arxiv_mismatch += 1;
+                }
+            }
         }
         if is_retracted {
             self.stats.retracted += 1;
@@ -122,9 +142,9 @@ impl PaperState {
         self.results.iter().filter(|r| r.is_some()).count()
     }
 
-    /// Number of problems (not_found + author_mismatch + retracted).
+    /// Number of problems (not_found + mismatch + retracted).
     pub fn problems(&self) -> usize {
-        self.stats.not_found + self.stats.author_mismatch + self.stats.retracted
+        self.stats.not_found + self.stats.mismatch + self.stats.retracted
     }
 
     /// Percentage of references that are problematic (0.0 - 100.0).

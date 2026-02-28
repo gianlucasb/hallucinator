@@ -61,6 +61,10 @@ impl DbQueryResult {
 pub type DoiQueryResult<'a> =
     Pin<Box<dyn Future<Output = Option<Result<DbQueryResult, DbQueryError>>> + Send + 'a>>;
 
+/// Result type for `query_arxiv_id`: `None` means the backend doesn't handle arXiv ID queries.
+pub type ArxivIdQueryResult<'a> =
+    Pin<Box<dyn Future<Output = Option<Result<DbQueryResult, DbQueryError>>> + Send + 'a>>;
+
 /// A database backend that can search for papers by title.
 pub trait DatabaseBackend: Send + Sync {
     /// The canonical name of this database (e.g., "CrossRef", "arXiv").
@@ -97,6 +101,21 @@ pub trait DatabaseBackend: Send + Sync {
         _client: &'a reqwest::Client,
         _timeout: std::time::Duration,
     ) -> DoiQueryResult<'a> {
+        Box::pin(async { None })
+    }
+
+    /// Query the database using an arXiv ID for direct lookup.
+    ///
+    /// Returns `None` if this backend doesn't support arXiv ID queries (default).
+    /// Returns `Some(result)` when the backend handled the query via arXiv ID.
+    fn query_arxiv_id<'a>(
+        &'a self,
+        _arxiv_id: &'a str,
+        _title: &'a str,
+        _authors: &'a [String],
+        _client: &'a reqwest::Client,
+        _timeout: std::time::Duration,
+    ) -> ArxivIdQueryResult<'a> {
         Box::pin(async { None })
     }
 }

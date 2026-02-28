@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use hallucinator_core::{
-    ArxivInfo, DbResult, DbStatus, DoiInfo, RetractionInfo, Status, ValidationResult,
+    ArxivInfo, DbResult, DbStatus, DoiInfo, MismatchKind, RetractionInfo, Status, ValidationResult,
 };
 
 use crate::model::paper::{FpReason, RefPhase, RefState};
@@ -96,7 +96,26 @@ fn parse_status(s: &str) -> Option<Status> {
     match s {
         "verified" => Some(Status::Verified),
         "not_found" => Some(Status::NotFound),
-        "author_mismatch" => Some(Status::AuthorMismatch),
+        // Handle both old and new mismatch formats
+        "author_mismatch" => Some(Status::Mismatch(MismatchKind::AUTHOR)),
+        "mismatch" => Some(Status::Mismatch(MismatchKind::AUTHOR)), // Default to author for generic mismatch
+        s if s.starts_with("mismatch_") => {
+            // Parse "mismatch_author", "mismatch_doi", "mismatch_arxiv_id", etc.
+            let mut kind = MismatchKind::empty();
+            if s.contains("author") {
+                kind |= MismatchKind::AUTHOR;
+            }
+            if s.contains("doi") {
+                kind |= MismatchKind::DOI;
+            }
+            if s.contains("arxiv") {
+                kind |= MismatchKind::ARXIV_ID;
+            }
+            if kind.is_empty() {
+                kind = MismatchKind::AUTHOR; // Default
+            }
+            Some(Status::Mismatch(kind))
+        }
         _ => None, // "pending", "skipped", or unknown
     }
 }

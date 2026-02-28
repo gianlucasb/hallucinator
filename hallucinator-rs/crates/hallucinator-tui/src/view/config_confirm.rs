@@ -45,7 +45,7 @@ pub fn render(f: &mut Frame, theme: &Theme) {
     let paragraph = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.author_mismatch))
+            .border_style(Style::default().fg(theme.mismatch))
             .title(" Unsaved Changes "),
     );
 

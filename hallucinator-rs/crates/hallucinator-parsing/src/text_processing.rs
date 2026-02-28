@@ -126,6 +126,11 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "tation", "cation", "sation", "nation",
         // -ilities suffixes (capabilities, vulnerabilities, possibilities, etc.)
         "bilities", "ilities",
+        // Common -ing syllable breaks (e.g., "program-ming", "begin-ning")
+        "ming", "ning", "ring", "ping", "ting", "king", "ding", "sing", "bing",
+        "cing", "ging", "ling", "ving", "wing", "zing",
+        // Common -ist/-alist/-ism syllable breaks (e.g., "gener-alist", "special-ist")
+        "alist", "elist", "ilist", "olist", "ulist",
     ]
     .into_iter()
     .collect()
@@ -474,5 +479,28 @@ mod tests {
         // But if explicitly in COMPOUND_SUFFIXES, keep hyphen
         assert_eq!(fix_hyphenation("real- time"), "real-time"); // "time" is in suffixes
         assert_eq!(fix_hyphenation("zero- shot"), "zero-shot"); // "shot" is in suffixes
+    }
+
+    #[test]
+    fn test_fix_hyphenation_ing_syllable_breaks() {
+        // Common -ing syllable breaks (issue: "Program-ming" should become "Programming")
+        assert_eq!(fix_hyphenation("Program- ming"), "Programming");
+        assert_eq!(fix_hyphenation("Plan- ning"), "Planning");
+        assert_eq!(fix_hyphenation("begin- ning"), "beginning");
+        assert_eq!(fix_hyphenation("learn- ing"), "learning");
+        assert_eq!(fix_hyphenation("train- ing"), "training");
+        assert_eq!(fix_hyphenation("process- ing"), "processing");
+        assert_eq!(fix_hyphenation("comput- ing"), "computing");
+        assert_eq!(fix_hyphenation("reason- ing"), "reasoning");
+        // But keep valid compound words with -ing suffixes that are in COMPOUND_SUFFIXES
+        assert_eq!(fix_hyphenation("pre- training"), "pre-training"); // "training" is a compound suffix
+    }
+
+    #[test]
+    fn test_fix_hyphenation_alist_syllable_breaks() {
+        // Common -alist/-ist syllable breaks (e.g., "gener-alist" should become "generalist")
+        assert_eq!(fix_hyphenation("gener- alist"), "generalist");
+        assert_eq!(fix_hyphenation("special- ist"), "specialist");
+        assert_eq!(fix_hyphenation("minim- alist"), "minimalist");
     }
 }

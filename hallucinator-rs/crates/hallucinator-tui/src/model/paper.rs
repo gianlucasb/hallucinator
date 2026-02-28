@@ -91,7 +91,7 @@ impl RefState {
                     }
                 }
                 Status::NotFound => "\u{2717} Not Found".to_string(),
-                Status::AuthorMismatch => "\u{26A0} Mismatch".to_string(),
+                Status::Mismatch(_) => "\u{26A0} Mismatch".to_string(),
             },
         }
     }

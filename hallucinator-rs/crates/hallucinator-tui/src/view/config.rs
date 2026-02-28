@@ -364,7 +364,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     let cursor = if config.item_cursor == 5 { "> " } else { "  " };
     let btn_style = if config.item_cursor == 5 {
         Style::default()
-            .fg(theme.author_mismatch)
+            .fg(theme.mismatch)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.dim)

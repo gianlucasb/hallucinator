@@ -6,8 +6,8 @@ use crate::orchestrator::query_all_databases;
 use crate::pool::{RefJob, ValidationPool};
 use crate::retraction::check_retraction;
 use crate::{
-    Config, DbResult, DbStatus, DoiInfo, ProgressEvent, Reference, RetractionInfo, Status,
-    ValidationResult,
+    Config, DbResult, DbStatus, DoiInfo, MismatchKind, ProgressEvent, Reference, RetractionInfo,
+    Status, ValidationResult,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -197,7 +197,7 @@ pub async fn check_single_reference(
                     title: title.to_string(),
                     raw_citation: reference.raw_citation.clone(),
                     ref_authors: reference.authors.clone(),
-                    status: Status::AuthorMismatch,
+                    status: Status::Mismatch(MismatchKind::AUTHOR),
                     source: Some("DOI".into()),
                     found_authors: doi_authors,
                     paper_url: Some(format!("https://doi.org/{}", doi)),

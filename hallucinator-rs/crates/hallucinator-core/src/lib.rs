@@ -4,6 +4,44 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+use bitflags::bitflags;
+
+bitflags! {
+    /// Kinds of mismatches detected during reference validation.
+    ///
+    /// Multiple mismatch types can be combined (e.g., author mismatch AND invalid DOI).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct MismatchKind: u8 {
+        /// Authors in the reference don't match authors in the database.
+        const AUTHOR = 0b0001;
+        /// DOI in the reference doesn't resolve or points to a different paper.
+        const DOI = 0b0010;
+        /// arXiv ID in the reference doesn't resolve or points to a different paper.
+        const ARXIV_ID = 0b0100;
+    }
+}
+
+impl MismatchKind {
+    /// Returns a human-readable description of the mismatch types.
+    pub fn description(&self) -> String {
+        let mut parts = Vec::new();
+        if self.contains(MismatchKind::AUTHOR) {
+            parts.push("author");
+        }
+        if self.contains(MismatchKind::DOI) {
+            parts.push("DOI");
+        }
+        if self.contains(MismatchKind::ARXIV_ID) {
+            parts.push("arXiv ID");
+        }
+        if parts.is_empty() {
+            "unknown".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
 pub mod authors;
 pub mod backend;
 pub mod cache;
@@ -99,7 +137,23 @@ pub enum CoreError {
 pub enum Status {
     Verified,
     NotFound,
-    AuthorMismatch,
+    /// One or more mismatches detected (author, DOI, arXiv ID, or combinations).
+    Mismatch(MismatchKind),
+}
+
+impl Status {
+    /// Returns true if this status contains any kind of mismatch.
+    pub fn is_mismatch(&self) -> bool {
+        matches!(self, Status::Mismatch(_))
+    }
+
+    /// Returns the mismatch kinds if this is a Mismatch status.
+    pub fn mismatch_kind(&self) -> Option<MismatchKind> {
+        match self {
+            Status::Mismatch(kind) => Some(*kind),
+            _ => None,
+        }
+    }
 }
 
 /// Information about a DOI lookup.
@@ -198,7 +252,14 @@ pub struct CheckStats {
     pub total: usize,
     pub verified: usize,
     pub not_found: usize,
+    /// References with any kind of mismatch (author, DOI, arXiv ID).
+    pub mismatch: usize,
+    /// References with author mismatches specifically.
     pub author_mismatch: usize,
+    /// References with invalid DOIs specifically.
+    pub doi_mismatch: usize,
+    /// References with invalid arXiv IDs specifically.
+    pub arxiv_mismatch: usize,
     pub retracted: usize,
     pub skipped: usize,
 }

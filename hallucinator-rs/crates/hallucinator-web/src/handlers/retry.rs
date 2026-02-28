@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use std::sync::Arc;
 
-use hallucinator_core::{Config, Status};
+use hallucinator_core::{Config, MismatchKind, Status};
 
 use crate::models::{RetryRequest, RetryResponse};
 use crate::state::AppState;
@@ -51,15 +51,15 @@ pub async fn retry(
     )
     .await;
 
-    let status_str = match result.status {
+    let status_str = match &result.status {
         Status::Verified => "verified",
         Status::NotFound => "not_found",
-        Status::AuthorMismatch => "author_mismatch",
+        Status::Mismatch(_) => "mismatch",
     };
 
-    let error_type = match result.status {
+    let error_type = match &result.status {
         Status::NotFound => Some("not_found".to_string()),
-        Status::AuthorMismatch => Some("author_mismatch".to_string()),
+        Status::Mismatch(kind) => Some(format!("mismatch_{}", kind.description())),
         Status::Verified => None,
     };
 

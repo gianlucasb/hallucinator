@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use hallucinator_core::{DbStatus, Status};
+use hallucinator_core::{DbStatus, MismatchKind, Status};
 
 use crate::app::App;
 use crate::model::paper::RefPhase;
@@ -153,12 +153,14 @@ pub fn render_in(
             .as_ref()
             .is_some_and(|ri| ri.is_retracted)
         {
-            ("\u{2620} RETRACTED", theme.retracted)
+            ("\u{2620} RETRACTED".to_string(), theme.retracted)
         } else {
-            match result.status {
-                Status::Verified => ("\u{2713} Verified", theme.verified),
-                Status::NotFound => ("\u{2717} Not Found", theme.not_found),
-                Status::AuthorMismatch => ("\u{26A0} Author Mismatch", theme.author_mismatch),
+            match &result.status {
+                Status::Verified => ("\u{2713} Verified".to_string(), theme.verified),
+                Status::NotFound => ("\u{2717} Not Found".to_string(), theme.not_found),
+                Status::Mismatch(kind) => {
+                    (format!("\u{26A0} Mismatch ({})", kind.description()), theme.mismatch)
+                }
             }
         };
 
@@ -176,7 +178,11 @@ pub fn render_in(
             labeled_line(&mut lines, "Source", source, theme);
         }
         // Author comparison for mismatches: always show both rows
-        if result.status == Status::AuthorMismatch {
+        let is_author_mismatch = result
+            .status
+            .mismatch_kind()
+            .is_some_and(|k| k.contains(MismatchKind::AUTHOR));
+        if is_author_mismatch {
             // PDF Authors (what was extracted from the paper)
             if !result.ref_authors.is_empty() {
                 labeled_line(
@@ -255,12 +261,12 @@ pub fn render_in(
                     DbStatus::Match => ("\u{2713} match".to_string(), theme.verified),
                     DbStatus::NoMatch => ("no match".to_string(), theme.dim),
                     DbStatus::AuthorMismatch => {
-                        ("\u{26A0} mismatch".to_string(), theme.author_mismatch)
+                        ("\u{26A0} mismatch".to_string(), theme.mismatch)
                     }
                     DbStatus::Timeout => ("timeout".to_string(), theme.not_found),
                     DbStatus::RateLimited => (
                         "\u{2717} 429 rate limited".to_string(),
-                        theme.author_mismatch,
+                        theme.mismatch,
                     ),
                     DbStatus::Error => {
                         let msg = db_result.error_message.as_deref().unwrap_or("error");

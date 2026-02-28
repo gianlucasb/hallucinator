@@ -1,4 +1,4 @@
-use super::{DatabaseBackend, DbQueryError, DbQueryResult};
+use super::{ArxivIdQueryResult, DatabaseBackend, DbQueryError, DbQueryResult};
 use crate::matching::titles_match;
 use crate::text_utils::get_query_words;
 use std::future::Future;
@@ -22,7 +22,7 @@ impl DatabaseBackend for Arxiv {
             let words = get_query_words(title, 6);
             let query = words.join(" ");
             let url = format!(
-                "http://export.arxiv.org/api/query?search_query=all:{}&start=0&max_results=5",
+                "https://export.arxiv.org/api/query?search_query=all:{}&start=0&max_results=5",
                 urlencoding::encode(&query)
             );
 
@@ -44,6 +44,40 @@ impl DatabaseBackend for Arxiv {
 
             // Parse Atom XML feed
             parse_arxiv_response(&body, title)
+        })
+    }
+
+    fn query_arxiv_id<'a>(
+        &'a self,
+        arxiv_id: &'a str,
+        title: &'a str,
+        _authors: &'a [String],
+        client: &'a reqwest::Client,
+        timeout: Duration,
+    ) -> ArxivIdQueryResult<'a> {
+        Box::pin(async move {
+            // Use id_list parameter for direct lookup by arXiv ID
+            let url = format!(
+                "https://export.arxiv.org/api/query?id_list={}&max_results=1",
+                urlencoding::encode(arxiv_id)
+            );
+
+            let resp = match client.get(&url).timeout(timeout).send().await {
+                Ok(r) => r,
+                Err(e) => return Some(Err(DbQueryError::Other(e.to_string()))),
+            };
+
+            if !resp.status().is_success() {
+                return Some(Err(DbQueryError::Other(format!("HTTP {}", resp.status()))));
+            }
+
+            let body = match resp.text().await {
+                Ok(b) => b,
+                Err(e) => return Some(Err(DbQueryError::Other(e.to_string()))),
+            };
+
+            // Parse Atom XML feed with title validation
+            Some(parse_arxiv_response(&body, title))
         })
     }
 }

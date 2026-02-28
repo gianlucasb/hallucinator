@@ -363,9 +363,9 @@ pub(super) fn verdict_sort_key(rs: &RefState) -> u8 {
             if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
                 0
             } else {
-                match r.status {
+                match &r.status {
                     hallucinator_core::Status::NotFound => 1,
-                    hallucinator_core::Status::AuthorMismatch => 2,
+                    hallucinator_core::Status::Mismatch(_) => 2,
                     hallucinator_core::Status::Verified => 3,
                 }
             }
