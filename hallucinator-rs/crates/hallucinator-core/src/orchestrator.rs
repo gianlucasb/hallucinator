@@ -1,7 +1,7 @@
 use crate::authors::validate_authors;
 use crate::db::DatabaseBackend;
 use crate::rate_limit;
-use crate::{Config, DbResult, DbStatus, Status};
+use crate::{Config, DbResult, DbStatus, MismatchKind, Status};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -202,7 +202,7 @@ pub async fn query_remote_databases(
 
     // Carry forward state from local phase
     let mut first_mismatch: Option<DbSearchResult> =
-        if local_result.status == Status::AuthorMismatch {
+        if local_result.status == Status::Mismatch(MismatchKind::AUTHOR) {
             Some(DbSearchResult {
                 db_results: vec![], // filled in at return
                 ..local_result.clone()
@@ -434,7 +434,7 @@ fn process_query_result(
 
                 if first_mismatch.is_none() && (name != "OpenAlex" || check_openalex_authors) {
                     *first_mismatch = Some(DbSearchResult {
-                        status: Status::AuthorMismatch,
+                        status: Status::Mismatch(MismatchKind::AUTHOR),
                         source: Some(name),
                         found_authors,
                         paper_url,
@@ -771,7 +771,7 @@ mod tests {
             },
         ));
         let result = query_single_mock_db(mock, &["CompletelyDifferentAuthor".into()]).await;
-        assert_eq!(result.status, Status::AuthorMismatch);
+        assert_eq!(result.status, Status::Mismatch(MismatchKind::AUTHOR));
     }
 
     #[tokio::test]

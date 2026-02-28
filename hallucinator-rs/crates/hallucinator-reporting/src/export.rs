@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use hallucinator_core::{CheckStats, DbStatus, Status, ValidationResult};
+use hallucinator_core::{CheckStats, DbStatus, MismatchKind, Status, ValidationResult};
 
 use crate::types::{ExportFormat, FpReason, PaperVerdict, ReportPaper, ReportRef};
 
@@ -35,9 +35,10 @@ fn status_str(s: &Status) -> &'static str {
     match s {
         Status::Verified => "verified",
         Status::NotFound => "not_found",
-        Status::AuthorMismatch => "author_mismatch",
+        Status::Mismatch(_) => "mismatch",
     }
 }
+
 
 fn verdict_str(v: Option<PaperVerdict>) -> &'static str {
     match v {
@@ -72,7 +73,7 @@ fn export_sort_key(r: &ValidationResult, fp: Option<FpReason>) -> u8 {
     }
     match r.status {
         Status::NotFound => 1,
-        Status::AuthorMismatch => 2,
+        Status::Mismatch(_) => 2,
         Status::Verified => {
             if has_doi_arxiv_issue(r) {
                 3
@@ -134,13 +135,22 @@ fn adjusted_stats(paper: &ReportPaper<'_>, refs: &[ReportRef]) -> CheckStats {
         if let Some(r) = result
             && refs.get(ri).and_then(|rs| rs.fp_reason).is_some()
         {
-            match r.status {
+            match &r.status {
                 Status::NotFound => {
                     s.not_found = s.not_found.saturating_sub(1);
                     s.verified += 1;
                 }
-                Status::AuthorMismatch => {
-                    s.author_mismatch = s.author_mismatch.saturating_sub(1);
+                Status::Mismatch(kind) => {
+                    s.mismatch = s.mismatch.saturating_sub(1);
+                    if kind.contains(MismatchKind::AUTHOR) {
+                        s.author_mismatch = s.author_mismatch.saturating_sub(1);
+                    }
+                    if kind.contains(MismatchKind::DOI) {
+                        s.doi_mismatch = s.doi_mismatch.saturating_sub(1);
+                    }
+                    if kind.contains(MismatchKind::ARXIV_ID) {
+                        s.arxiv_mismatch = s.arxiv_mismatch.saturating_sub(1);
+                    }
                     s.verified += 1;
                 }
                 Status::Verified => {}
@@ -226,10 +236,10 @@ pub fn export_json(
             let effective = if sref.fp.is_some() {
                 "\"verified\""
             } else {
-                match r.status {
+                match &r.status {
                     Status::Verified => "\"verified\"",
                     Status::NotFound => "\"not_found\"",
-                    Status::AuthorMismatch => "\"author_mismatch\"",
+                    Status::Mismatch(_) => "\"mismatch\"",
                 }
             };
             let mut entry = String::new();
@@ -614,12 +624,14 @@ fn export_markdown(
 
 fn write_md_ref(out: &mut String, ref_num: usize, r: &ValidationResult) {
     let status_icon = if is_retracted(r) {
-        "\u{2620}\u{fe0f} RETRACTED"
+        "\u{2620}\u{fe0f} RETRACTED".to_string()
     } else {
-        match r.status {
-            Status::NotFound => "\u{2717} Not Found",
-            Status::AuthorMismatch => "\u{26a0}\u{fe0f} Author Mismatch",
-            Status::Verified => "\u{2713} Verified",
+        match &r.status {
+            Status::NotFound => "\u{2717} Not Found".to_string(),
+            Status::Mismatch(kind) => {
+                format!("\u{26a0}\u{fe0f} Mismatch ({})", kind.description())
+            }
+            Status::Verified => "\u{2713} Verified".to_string(),
         }
     };
 
@@ -631,20 +643,22 @@ fn write_md_ref(out: &mut String, ref_num: usize, r: &ValidationResult) {
     ));
 
     // Author comparison for mismatches
-    if r.status == Status::AuthorMismatch {
-        if !r.ref_authors.is_empty() {
-            out.push_str(&format!(
-                "- **PDF authors:** {}\n",
-                r.ref_authors.join(", ")
-            ));
-        }
-        if !r.found_authors.is_empty() {
-            out.push_str(&format!(
-                "- **DB authors:** {}\n",
-                r.found_authors.join(", ")
-            ));
-        } else {
-            out.push_str("- **DB authors:** *(no authors returned)*\n");
+    if let Status::Mismatch(kind) = &r.status {
+        if kind.contains(MismatchKind::AUTHOR) {
+            if !r.ref_authors.is_empty() {
+                out.push_str(&format!(
+                    "- **PDF authors:** {}\n",
+                    r.ref_authors.join(", ")
+                ));
+            }
+            if !r.found_authors.is_empty() {
+                out.push_str(&format!(
+                    "- **DB authors:** {}\n",
+                    r.found_authors.join(", ")
+                ));
+            } else {
+                out.push_str("- **DB authors:** *(no authors returned)*\n");
+            }
         }
         if let Some(src) = &r.source {
             out.push_str(&format!("- **Source:** {}\n", src));
@@ -740,10 +754,10 @@ fn export_text(
             } else if is_retracted(r) {
                 "RETRACTED".to_string()
             } else {
-                match r.status {
+                match &r.status {
                     Status::Verified => "Verified".to_string(),
                     Status::NotFound => "NOT FOUND".to_string(),
-                    Status::AuthorMismatch => "Author Mismatch".to_string(),
+                    Status::Mismatch(kind) => format!("Mismatch ({})", kind.description()),
                 }
             };
             // When FP is set, status already shows "Verified (FP: ...)",
@@ -766,14 +780,16 @@ fn export_text(
                     r.ref_authors.join(", ")
                 ));
             }
-            if r.status == Status::AuthorMismatch {
-                if !r.found_authors.is_empty() {
-                    out.push_str(&format!(
-                        "       Authors (DB):  {}\n",
-                        r.found_authors.join(", ")
-                    ));
-                } else {
-                    out.push_str("       Authors (DB):  (no authors returned)\n");
+            if let Status::Mismatch(kind) = &r.status {
+                if kind.contains(MismatchKind::AUTHOR) {
+                    if !r.found_authors.is_empty() {
+                        out.push_str(&format!(
+                            "       Authors (DB):  {}\n",
+                            r.found_authors.join(", ")
+                        ));
+                    } else {
+                        out.push_str("       Authors (DB):  (no authors returned)\n");
+                    }
                 }
             }
 
@@ -1215,14 +1231,16 @@ fn write_stat_card(out: &mut String, class: &str, value: usize, label: &str) {
 fn write_html_ref(out: &mut String, ref_num: usize, r: &ValidationResult, fp: Option<FpReason>) {
     let retracted = is_retracted(r);
     let (badge_class, badge_text) = if fp.is_some() {
-        ("verified", "Verified")
+        ("verified".to_string(), "Verified".to_string())
     } else if retracted {
-        ("retracted", "RETRACTED")
+        ("retracted".to_string(), "RETRACTED".to_string())
     } else {
-        match r.status {
-            Status::Verified => ("verified", "Verified"),
-            Status::NotFound => ("not-found", "Not Found"),
-            Status::AuthorMismatch => ("mismatch", "Author Mismatch"),
+        match &r.status {
+            Status::Verified => ("verified".to_string(), "Verified".to_string()),
+            Status::NotFound => ("not-found".to_string(), "Not Found".to_string()),
+            Status::Mismatch(kind) => {
+                ("mismatch".to_string(), format!("Mismatch ({})", kind.description()))
+            }
         }
     };
 
@@ -1257,22 +1275,24 @@ fn write_html_ref(out: &mut String, ref_num: usize, r: &ValidationResult, fp: Op
     }
 
     // Author comparison for mismatches
-    if r.status == Status::AuthorMismatch {
-        out.push_str("<div class=\"author-compare\">\n");
-        out.push_str(&format!(
-            "<div class=\"pdf-authors\"><strong>PDF:</strong> {}</div>\n",
-            html_escape(&r.ref_authors.join(", "))
-        ));
-        let db_authors_text = if r.found_authors.is_empty() {
-            "<em>(no authors returned)</em>".to_string()
-        } else {
-            html_escape(&r.found_authors.join(", "))
-        };
-        out.push_str(&format!(
-            "<div class=\"db-authors\"><strong>DB:</strong> {}</div>\n",
-            db_authors_text
-        ));
-        out.push_str("</div>\n");
+    if let Status::Mismatch(kind) = &r.status {
+        if kind.contains(MismatchKind::AUTHOR) {
+            out.push_str("<div class=\"author-compare\">\n");
+            out.push_str(&format!(
+                "<div class=\"pdf-authors\"><strong>PDF:</strong> {}</div>\n",
+                html_escape(&r.ref_authors.join(", "))
+            ));
+            let db_authors_text = if r.found_authors.is_empty() {
+                "<em>(no authors returned)</em>".to_string()
+            } else {
+                html_escape(&r.found_authors.join(", "))
+            };
+            out.push_str(&format!(
+                "<div class=\"db-authors\"><strong>DB:</strong> {}</div>\n",
+                db_authors_text
+            ));
+            out.push_str("</div>\n");
+        }
     }
 
     // DOI / arXiv
@@ -1537,9 +1557,7 @@ mod tests {
             total: 5,
             verified: 0,
             not_found: 0,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 5,
+            ..Default::default()
         };
         assert_eq!(problematic_pct(&stats), 0.0);
     }
@@ -1550,9 +1568,7 @@ mod tests {
             total: 10,
             verified: 8,
             not_found: 2,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         assert!((problematic_pct(&stats) - 20.0).abs() < f64::EPSILON);
     }
@@ -1563,9 +1579,7 @@ mod tests {
             total: 3,
             verified: 1,
             not_found: 2,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results: Vec<Option<ValidationResult>> = vec![
             Some(make_result("A", Status::Verified)),
@@ -1589,13 +1603,13 @@ mod tests {
             total: 2,
             verified: 1,
             not_found: 0,
+            mismatch: 1,
             author_mismatch: 1,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results: Vec<Option<ValidationResult>> = vec![
             Some(make_result("A", Status::Verified)),
-            Some(make_result("B", Status::AuthorMismatch)),
+            Some(make_result("B", Status::Mismatch(MismatchKind::AUTHOR))),
         ];
         let paper = make_paper("test.pdf", &stats, &results);
         let refs = vec![
@@ -1613,9 +1627,7 @@ mod tests {
             total: 1,
             verified: 1,
             not_found: 0,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results: Vec<Option<ValidationResult>> = vec![Some(make_result("A", Status::Verified))];
         let paper = make_paper("test.pdf", &stats, &results);
@@ -1632,9 +1644,8 @@ mod tests {
             total: 1,
             verified: 1,
             not_found: 0,
-            author_mismatch: 0,
             retracted: 1,
-            skipped: 0,
+            ..Default::default()
         };
         let results: Vec<Option<ValidationResult>> = vec![Some(make_retracted("A"))];
         let paper = make_paper("test.pdf", &stats, &results);
@@ -1659,7 +1670,7 @@ mod tests {
             Some(make_result("Verified", Status::Verified)), // bucket 5
             Some(make_result("Not Found", Status::NotFound)), // bucket 1
             Some(retracted),                                 // bucket 0
-            Some(make_result("Mismatch", Status::AuthorMismatch)), // bucket 2
+            Some(make_result("Mismatch", Status::Mismatch(MismatchKind::AUTHOR))), // bucket 2
             Some(make_result("FP Paper", Status::NotFound)), // bucket 4 (FP)
             Some(doi_issue),                                 // bucket 3
         ];
@@ -1709,7 +1720,7 @@ mod tests {
     #[test]
     fn test_export_sort_key_fp_precedence() {
         let nf = make_result("A", Status::NotFound);
-        let mm = make_result("B", Status::AuthorMismatch);
+        let mm = make_result("B", Status::Mismatch(MismatchKind::AUTHOR));
         let v = make_result("C", Status::Verified);
         // All should return 4 when FP is set, regardless of status
         assert_eq!(export_sort_key(&nf, Some(FpReason::BrokenParse)), 4);
@@ -1790,9 +1801,7 @@ mod tests {
             total: 1,
             verified: 1,
             not_found: 0,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![Some(make_result("Good Paper", Status::Verified))];
         let paper = make_paper("test.pdf", &stats, &results);
@@ -1812,11 +1821,8 @@ mod tests {
     fn test_json_skipped_ref() {
         let stats = CheckStats {
             total: 1,
-            verified: 0,
-            not_found: 0,
-            author_mismatch: 0,
-            retracted: 0,
             skipped: 1,
+            ..Default::default()
         };
         let results: Vec<Option<ValidationResult>> = vec![];
         let paper = make_paper("test.pdf", &stats, &results);
@@ -1833,9 +1839,7 @@ mod tests {
             total: 1,
             verified: 0,
             not_found: 1,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![Some(make_result("FP Ref", Status::NotFound))];
         let paper = make_paper("test.pdf", &stats, &results);
@@ -1863,9 +1867,7 @@ mod tests {
             total: 1,
             verified: 1,
             not_found: 0,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![Some(make_result("My Paper", Status::Verified))];
         let paper = make_paper("test.pdf", &stats, &results);
@@ -1884,9 +1886,7 @@ mod tests {
             total: 2,
             verified: 1,
             not_found: 1,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![
             Some(make_result("Good", Status::Verified)),
@@ -1909,9 +1909,7 @@ mod tests {
             total: 1,
             verified: 1,
             not_found: 0,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![Some(make_result("Paper", Status::Verified))];
         let paper = make_paper("f.pdf", &stats, &results);
@@ -1930,9 +1928,7 @@ mod tests {
             total: 1,
             verified: 1,
             not_found: 0,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![Some(make_result("Paper", Status::Verified))];
         let paper = make_paper("f.pdf", &stats, &results);
@@ -1969,9 +1965,8 @@ mod tests {
             total: 5,
             verified: 3,
             not_found: 1,
-            author_mismatch: 0,
-            retracted: 0,
             skipped: 1,
+            ..Default::default()
         };
         // Verified ref with an invalid arXiv ID (sort key 3 — still verified, not problematic)
         let mut arxiv_ref = make_result("Arxiv Paper", Status::Verified);
@@ -2016,9 +2011,7 @@ mod tests {
             total: 2,
             verified: 1,
             not_found: 1,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![
             Some(make_result("Good", Status::Verified)),
@@ -2040,9 +2033,7 @@ mod tests {
             total: 2,
             verified: 1,
             not_found: 1,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![
             Some(make_result("Good", Status::Verified)),
@@ -2062,9 +2053,7 @@ mod tests {
             total: 2,
             verified: 1,
             not_found: 1,
-            author_mismatch: 0,
-            retracted: 0,
-            skipped: 0,
+            ..Default::default()
         };
         let results = vec![
             Some(make_result("Good", Status::Verified)),
@@ -2084,9 +2073,8 @@ mod tests {
             total: 5,
             verified: 3,
             not_found: 1,
-            author_mismatch: 0,
-            retracted: 0,
             skipped: 1,
+            ..Default::default()
         };
         // Verified ref with invalid arXiv (sort key 3 — still verified, not problematic)
         let mut arxiv_ref = make_result("Arxiv Paper", Status::Verified);

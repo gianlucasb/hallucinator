@@ -1,5 +1,5 @@
 use axum::response::sse::Event;
-use hallucinator_core::{SkipStats, Status, ValidationResult};
+use hallucinator_core::{MismatchKind, SkipStats, Status, ValidationResult};
 use serde::{Deserialize, Serialize};
 
 // ── Result JSON (matches Python's per-reference JSON shape) ─────────────
@@ -50,15 +50,15 @@ pub struct RetractionInfoJson {
 
 impl From<&ValidationResult> for ResultJson {
     fn from(r: &ValidationResult) -> Self {
-        let status_str = match r.status {
+        let status_str = match &r.status {
             Status::Verified => "verified",
             Status::NotFound => "not_found",
-            Status::AuthorMismatch => "author_mismatch",
+            Status::Mismatch(_) => "mismatch",
         };
 
-        let error_type = match r.status {
+        let error_type = match &r.status {
             Status::NotFound => Some("not_found".to_string()),
-            Status::AuthorMismatch => Some("author_mismatch".to_string()),
+            Status::Mismatch(kind) => Some(format!("mismatch_{}", kind.description())),
             Status::Verified => None,
         };
 
@@ -122,10 +122,7 @@ impl SummaryJson {
             .iter()
             .filter(|r| r.status == Status::NotFound)
             .count();
-        let mismatched = results
-            .iter()
-            .filter(|r| r.status == Status::AuthorMismatch)
-            .count();
+        let mismatched = results.iter().filter(|r| r.status.is_mismatch()).count();
 
         SummaryJson {
             total_raw: skip_stats.total_raw,

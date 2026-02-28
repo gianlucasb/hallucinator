@@ -1,8 +1,8 @@
 use pyo3::prelude::*;
 
 use hallucinator_core::{
-    ArxivInfo, CheckStats, DbResult, DbStatus, DoiInfo, ProgressEvent, RetractionInfo, Status,
-    ValidationResult,
+    ArxivInfo, CheckStats, DbResult, DbStatus, DoiInfo, MismatchKind, ProgressEvent,
+    RetractionInfo, Status, ValidationResult,
 };
 
 // ── PyValidationResult ──
@@ -46,13 +46,22 @@ impl PyValidationResult {
         self.inner.ref_authors.clone()
     }
 
-    /// Validation status: "verified", "not_found", or "author_mismatch".
+    /// Validation status: "verified", "not_found", or "mismatch".
     #[getter]
     fn status(&self) -> &str {
-        match self.inner.status {
+        match &self.inner.status {
             Status::Verified => "verified",
             Status::NotFound => "not_found",
-            Status::AuthorMismatch => "author_mismatch",
+            Status::Mismatch(_) => "mismatch",
+        }
+    }
+
+    /// Mismatch kind description (if status is "mismatch").
+    #[getter]
+    fn mismatch_kind(&self) -> Option<String> {
+        match &self.inner.status {
+            Status::Mismatch(kind) => Some(kind.description()),
+            _ => None,
         }
     }
 
@@ -539,10 +548,10 @@ impl PyProgressEvent {
                 "ProgressEvent(type='result', index={}, total={}, status={:?})",
                 index,
                 total,
-                match result.status {
+                match &result.status {
                     Status::Verified => "verified",
                     Status::NotFound => "not_found",
-                    Status::AuthorMismatch => "author_mismatch",
+                    Status::Mismatch(_) => "mismatch",
                 },
             ),
             ProgressEvent::Warning {
@@ -619,10 +628,21 @@ impl PyCheckStats {
             ..Default::default()
         };
         for r in results {
-            match r.status {
+            match &r.status {
                 Status::Verified => stats.verified += 1,
                 Status::NotFound => stats.not_found += 1,
-                Status::AuthorMismatch => stats.author_mismatch += 1,
+                Status::Mismatch(kind) => {
+                    stats.mismatch += 1;
+                    if kind.contains(MismatchKind::AUTHOR) {
+                        stats.author_mismatch += 1;
+                    }
+                    if kind.contains(MismatchKind::DOI) {
+                        stats.doi_mismatch += 1;
+                    }
+                    if kind.contains(MismatchKind::ARXIV_ID) {
+                        stats.arxiv_mismatch += 1;
+                    }
+                }
             }
             if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
                 stats.retracted += 1;

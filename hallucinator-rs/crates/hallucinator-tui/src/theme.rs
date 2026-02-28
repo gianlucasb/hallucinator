@@ -106,7 +106,7 @@ impl Theme {
         match status {
             Status::Verified => self.verified,
             Status::NotFound => self.not_found,
-            Status::AuthorMismatch => self.author_mismatch,
+            Status::Mismatch(_) => self.author_mismatch,
         }
     }
 

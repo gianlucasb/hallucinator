@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use hallucinator_core::{ProgressEvent, SkipStats, Status, ValidationResult};
+use hallucinator_core::{MismatchKind, ProgressEvent, SkipStats, Status, ValidationResult};
 use owo_colors::OwoColorize;
 
 /// Whether to use colored output.
@@ -94,19 +94,24 @@ pub fn print_progress(
                         writeln!(w, "[{}/{}] -> VERIFIED ({})", idx, total, source)?;
                     }
                 }
-                Status::AuthorMismatch => {
+                Status::Mismatch(kind) => {
                     let source = result.source.as_deref().unwrap_or("unknown");
+                    let mismatch_desc = kind.description().to_uppercase();
                     if color.enabled() {
                         writeln!(
                             w,
                             "[{}/{}] -> {} ({})",
                             idx,
                             total,
-                            "AUTHOR MISMATCH".yellow(),
+                            format!("{} MISMATCH", mismatch_desc).yellow(),
                             source
                         )?;
                     } else {
-                        writeln!(w, "[{}/{}] -> AUTHOR MISMATCH ({})", idx, total, source)?;
+                        writeln!(
+                            w,
+                            "[{}/{}] -> {} MISMATCH ({})",
+                            idx, total, mismatch_desc, source
+                        )?;
                     }
                 }
                 Status::NotFound => {
@@ -151,12 +156,12 @@ pub fn print_hallucination_report(
     color: ColorMode,
 ) -> std::io::Result<()> {
     for result in results {
-        match result.status {
+        match &result.status {
             Status::NotFound => {
                 print_not_found_block(w, result, searched_openalex, color)?;
             }
-            Status::AuthorMismatch => {
-                print_author_mismatch_block(w, result, color)?;
+            Status::Mismatch(kind) => {
+                print_mismatch_block(w, result, *kind, color)?;
             }
             Status::Verified => {}
         }
@@ -220,9 +225,10 @@ fn print_not_found_block(
     Ok(())
 }
 
-fn print_author_mismatch_block(
+fn print_mismatch_block(
     w: &mut dyn Write,
     result: &ValidationResult,
+    kind: MismatchKind,
     color: ColorMode,
 ) -> std::io::Result<()> {
     writeln!(w)?;
@@ -249,60 +255,80 @@ fn print_author_mismatch_block(
     }
     writeln!(w)?;
 
+    // Build status message based on mismatch kind
+    let status_msg = build_mismatch_status_message(result, kind, source);
     if color.enabled() {
-        writeln!(
-            w,
-            "{} Title found on {} but authors don't match",
-            "Status:".yellow(),
-            source
-        )?;
+        writeln!(w, "{} {}", "Status:".yellow(), status_msg)?;
     } else {
-        writeln!(
-            w,
-            "Status: Title found on {} but authors don't match",
-            source
-        )?;
+        writeln!(w, "Status: {}", status_msg)?;
     }
     writeln!(w)?;
 
-    // PDF Authors (from the parsed reference)
-    if !result.ref_authors.is_empty() {
+    // Show author mismatch details if applicable
+    if kind.contains(MismatchKind::AUTHOR) {
+        // PDF Authors (from the parsed reference)
+        if !result.ref_authors.is_empty() {
+            if color.enabled() {
+                writeln!(w, "{}", "PDF Authors:".bold())?;
+                for author in &result.ref_authors {
+                    writeln!(w, "  {}", format!("• {}", author).cyan())?;
+                }
+            } else {
+                writeln!(w, "PDF Authors:")?;
+                for author in &result.ref_authors {
+                    writeln!(w, "  • {}", author)?;
+                }
+            }
+            writeln!(w)?;
+        }
+
+        // DB Authors (from the database)
         if color.enabled() {
-            writeln!(w, "{}", "PDF Authors:".bold())?;
-            for author in &result.ref_authors {
-                writeln!(w, "  {}", format!("• {}", author).cyan())?;
+            writeln!(w, "{}", format!("DB Authors ({}):", source).bold())?;
+            if result.found_authors.is_empty() {
+                writeln!(w, "  {}", "(no authors returned)".dimmed())?;
+            } else {
+                for author in &result.found_authors {
+                    writeln!(w, "  {}", format!("• {}", author).magenta())?;
+                }
             }
         } else {
-            writeln!(w, "PDF Authors:")?;
-            for author in &result.ref_authors {
-                writeln!(w, "  • {}", author)?;
+            writeln!(w, "DB Authors ({}):", source)?;
+            if result.found_authors.is_empty() {
+                writeln!(w, "  (no authors returned)")?;
+            } else {
+                for author in &result.found_authors {
+                    writeln!(w, "  • {}", author)?;
+                }
             }
         }
         writeln!(w)?;
     }
 
-    // DB Authors (from the database)
-    if color.enabled() {
-        writeln!(w, "{}", format!("DB Authors ({}):", source).bold())?;
-        if result.found_authors.is_empty() {
-            writeln!(w, "  {}", "(no authors returned)".dimmed())?;
-        } else {
-            for author in &result.found_authors {
-                writeln!(w, "  {}", format!("• {}", author).magenta())?;
+    // Show DOI mismatch details if applicable
+    if kind.contains(MismatchKind::DOI) {
+        if let Some(doi_info) = &result.doi_info {
+            if color.enabled() {
+                writeln!(w, "{} {} (invalid)", "DOI:".bold(), doi_info.doi)?;
+            } else {
+                writeln!(w, "DOI: {} (invalid)", doi_info.doi)?;
             }
-        }
-    } else {
-        writeln!(w, "DB Authors ({}):", source)?;
-        if result.found_authors.is_empty() {
-            writeln!(w, "  (no authors returned)")?;
-        } else {
-            for author in &result.found_authors {
-                writeln!(w, "  • {}", author)?;
-            }
+            writeln!(w)?;
         }
     }
 
-    writeln!(w)?;
+    // Show arXiv ID mismatch details if applicable
+    if kind.contains(MismatchKind::ARXIV_ID) {
+        if let Some(arxiv_info) = &result.arxiv_info {
+            if color.enabled() {
+                writeln!(w, "{} {} (invalid)", "arXiv ID:".bold(), arxiv_info.arxiv_id)?;
+            } else {
+                writeln!(w, "arXiv ID: {} (invalid)", arxiv_info.arxiv_id)?;
+            }
+            writeln!(w)?;
+        }
+    }
+
     let dash_sep = "-".repeat(60);
     if color.enabled() {
         writeln!(w, "{}", dash_sep.bold().red())?;
@@ -311,6 +337,32 @@ fn print_author_mismatch_block(
     }
     writeln!(w)?;
     Ok(())
+}
+
+/// Build a status message describing the mismatch.
+fn build_mismatch_status_message(result: &ValidationResult, kind: MismatchKind, source: &str) -> String {
+    let mut issues = Vec::new();
+
+    if kind.contains(MismatchKind::AUTHOR) {
+        issues.push("authors don't match");
+    }
+    if kind.contains(MismatchKind::DOI) {
+        if let Some(doi_info) = &result.doi_info {
+            issues.push("DOI doesn't resolve");
+            let _ = doi_info; // use to avoid warning
+        } else {
+            issues.push("DOI is invalid");
+        }
+    }
+    if kind.contains(MismatchKind::ARXIV_ID) {
+        issues.push("arXiv ID doesn't resolve");
+    }
+
+    if issues.is_empty() {
+        format!("Mismatch detected on {}", source)
+    } else {
+        format!("Title found on {} but {}", source, issues.join(", "))
+    }
 }
 
 /// Print DOI-related issues.
@@ -436,9 +488,31 @@ pub fn print_summary(
         .iter()
         .filter(|r| r.status == Status::NotFound)
         .count();
-    let mismatched = results
+    let mismatched = results.iter().filter(|r| r.status.is_mismatch()).count();
+    // Count specific mismatch types
+    let author_mismatches = results
         .iter()
-        .filter(|r| r.status == Status::AuthorMismatch)
+        .filter(|r| {
+            r.status
+                .mismatch_kind()
+                .is_some_and(|k| k.contains(MismatchKind::AUTHOR))
+        })
+        .count();
+    let doi_mismatches = results
+        .iter()
+        .filter(|r| {
+            r.status
+                .mismatch_kind()
+                .is_some_and(|k| k.contains(MismatchKind::DOI))
+        })
+        .count();
+    let arxiv_mismatches = results
+        .iter()
+        .filter(|r| {
+            r.status
+                .mismatch_kind()
+                .is_some_and(|k| k.contains(MismatchKind::ARXIV_ID))
+        })
         .count();
     let retracted = results
         .iter()
@@ -491,9 +565,34 @@ pub fn print_summary(
     }
     if mismatched > 0 {
         if color.enabled() {
-            writeln!(w, "  {} {}", "Author mismatches:".yellow(), mismatched)?;
+            writeln!(w, "  {} {}", "Mismatches:".yellow(), mismatched)?;
         } else {
-            writeln!(w, "  Author mismatches: {}", mismatched)?;
+            writeln!(w, "  Mismatches: {}", mismatched)?;
+        }
+        // Show breakdown by type
+        if author_mismatches > 0 {
+            let msg = format!("    Author: {}", author_mismatches);
+            if color.enabled() {
+                writeln!(w, "{}", msg.dimmed())?;
+            } else {
+                writeln!(w, "{}", msg)?;
+            }
+        }
+        if doi_mismatches > 0 {
+            let msg = format!("    DOI: {}", doi_mismatches);
+            if color.enabled() {
+                writeln!(w, "{}", msg.dimmed())?;
+            } else {
+                writeln!(w, "{}", msg)?;
+            }
+        }
+        if arxiv_mismatches > 0 {
+            let msg = format!("    arXiv ID: {}", arxiv_mismatches);
+            if color.enabled() {
+                writeln!(w, "{}", msg.dimmed())?;
+            } else {
+                writeln!(w, "{}", msg)?;
+            }
         }
     }
     if not_found > 0 {

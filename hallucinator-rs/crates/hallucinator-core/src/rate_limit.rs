@@ -256,14 +256,33 @@ pub struct DoiContext<'a> {
     pub authors: &'a [String],
 }
 
-/// Execute the appropriate query for a backend, trying `query_doi` first if context is provided.
+/// Context for arXiv ID-based queries, passed to backends that support `query_arxiv_id`.
+pub struct ArxivIdContext<'a> {
+    pub arxiv_id: &'a str,
+    pub authors: &'a [String],
+}
+
+/// Execute the appropriate query for a backend, trying specialized lookups first.
+///
+/// Priority: arXiv ID lookup → DOI lookup → title-based search
 async fn execute_query(
     db: &dyn DatabaseBackend,
     title: &str,
     client: &reqwest::Client,
     timeout: Duration,
     doi_context: Option<&DoiContext<'_>>,
+    arxiv_id_context: Option<&ArxivIdContext<'_>>,
 ) -> Result<DbQueryResult, DbQueryError> {
+    // Try arXiv ID lookup first (only arXiv backend implements this)
+    if let Some(ctx) = arxiv_id_context
+        && let Some(result) = db
+            .query_arxiv_id(ctx.arxiv_id, title, ctx.authors, client, timeout)
+            .await
+    {
+        return result;
+    }
+
+    // Try DOI lookup next
     if let Some(ctx) = doi_context
         && let Some(result) = db
             .query_doi(ctx.doi, title, ctx.authors, client, timeout)
@@ -271,6 +290,8 @@ async fn execute_query(
     {
         return result;
     }
+
+    // Fall back to title-based search
     db.query(title, client, timeout).await
 }
 
@@ -282,6 +303,7 @@ pub async fn query_with_rate_limit(
     rate_limiters: &RateLimiters,
     cache: Option<&QueryCache>,
     doi_context: Option<&DoiContext<'_>>,
+    arxiv_id_context: Option<&ArxivIdContext<'_>>,
 ) -> RateLimitedResult {
     // Check cache before making any network request or waiting on the governor.
     // Skip cache for local/offline backends — they have their own SQLite DBs.
@@ -313,7 +335,8 @@ pub async fn query_with_rate_limit(
     tracing::debug!(db = db.name(), title, "query start");
     let start = Instant::now();
 
-    let result = match execute_query(db, title, client, timeout, doi_context).await {
+    let result = match execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await
+    {
         Ok(result) => Ok(result),
         Err(DbQueryError::RateLimited { retry_after }) => {
             // Adapt governor to slower rate so subsequent requests are throttled
@@ -339,7 +362,7 @@ pub async fn query_with_rate_limit(
             }
 
             // Single retry — if still 429, give up
-            execute_query(db, title, client, timeout, doi_context).await
+            execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await
         }
         Err(other) => Err(other),
     };
@@ -378,7 +401,7 @@ pub async fn query_with_retry(
     _max_retries: u32,
     cache: Option<&QueryCache>,
 ) -> RateLimitedResult {
-    query_with_rate_limit(db, title, client, timeout, rate_limiters, cache, None).await
+    query_with_rate_limit(db, title, client, timeout, rate_limiters, cache, None, None).await
 }
 
 #[cfg(test)]
@@ -568,6 +591,7 @@ mod tests {
             &limiters,
             None,
             None,
+            None,
         )
         .await;
 
@@ -596,6 +620,7 @@ mod tests {
             &limiters,
             None,
             None,
+            None,
         )
         .await;
 
@@ -616,6 +641,7 @@ mod tests {
             &client,
             Duration::from_secs(10),
             &limiters,
+            None,
             None,
             None,
         )
@@ -648,6 +674,7 @@ mod tests {
             &limiters,
             Some(&cache),
             None,
+            None,
         )
         .await;
         assert!(rl_result.result.is_ok());
@@ -663,6 +690,7 @@ mod tests {
             Duration::from_secs(10),
             &limiters,
             Some(&cache),
+            None,
             None,
         )
         .await;
@@ -688,6 +716,7 @@ mod tests {
             &limiters,
             Some(&cache),
             None,
+            None,
         )
         .await;
         assert!(rl_result.result.is_ok());
@@ -703,6 +732,7 @@ mod tests {
             Duration::from_secs(10),
             &limiters,
             Some(&cache),
+            None,
             None,
         )
         .await;
@@ -739,6 +769,7 @@ mod tests {
             &limiters,
             Some(&cache),
             None,
+            None,
         )
         .await;
         assert!(rl_result.result.is_ok());
@@ -753,6 +784,7 @@ mod tests {
             Duration::from_secs(10),
             &limiters,
             Some(&cache),
+            None,
             None,
         )
         .await;
@@ -782,6 +814,7 @@ mod tests {
             &limiters,
             Some(&cache),
             None,
+            None,
         )
         .await;
         assert!(rl_result.result.is_err());
@@ -802,6 +835,7 @@ mod tests {
             Duration::from_secs(10),
             &limiters,
             Some(&cache),
+            None,
             None,
         )
         .await;

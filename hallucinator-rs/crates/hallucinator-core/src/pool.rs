@@ -17,9 +17,10 @@ use crate::authors::validate_authors;
 use crate::db::DatabaseBackend;
 use crate::db::searxng::Searxng;
 use crate::orchestrator::{build_database_list, query_local_databases};
-use crate::rate_limit::{self, DbQueryError, DoiContext};
+use crate::rate_limit::{self, ArxivIdContext, DbQueryError, DoiContext};
 use crate::{
-    Config, DbResult, DbStatus, DoiInfo, ProgressEvent, Reference, Status, ValidationResult,
+    ArxivInfo, Config, DbResult, DbStatus, DoiInfo, MismatchKind, ProgressEvent, Reference,
+    Status, ValidationResult,
 };
 
 // ── Public API (unchanged) ──────────────────────────────────────────────
@@ -240,6 +241,17 @@ async fn drainer_loop(
             authors: &collector.reference.authors,
         });
 
+        // Build arXiv ID context if this ref has an arXiv ID (used by arXiv backend)
+        let arxiv_id_ctx =
+            collector
+                .reference
+                .arxiv_id
+                .as_deref()
+                .map(|arxiv_id| ArxivIdContext {
+                    arxiv_id,
+                    authors: &collector.reference.authors,
+                });
+
         // Query (includes cache check + governor acquire + HTTP call)
         let rl_result = rate_limit::query_with_rate_limit(
             db.as_ref(),
@@ -249,6 +261,7 @@ async fn drainer_loop(
             &rate_limiters,
             cache.as_deref(),
             doi_ctx.as_ref(),
+            arxiv_id_ctx.as_ref(),
         )
         .await;
 
@@ -443,7 +456,7 @@ async fn finalize_collector(collector: &RefCollector) {
             )
         } else if let Some(ref m) = state.first_mismatch {
             (
-                Status::AuthorMismatch,
+                Status::Mismatch(MismatchKind::AUTHOR),
                 Some(m.source.clone()),
                 m.found_authors.clone(),
                 m.paper_url.clone(),
@@ -541,6 +554,40 @@ async fn finalize_collector(collector: &RefCollector) {
         }
     });
 
+    // Build arxiv_info from reference arXiv ID + arXiv drainer result
+    let arxiv_info = collector.reference.arxiv_id.as_ref().map(|arxiv_id| {
+        let valid = all_db_results.iter().any(|r| {
+            r.db_name == "arXiv" && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch)
+        });
+        ArxivInfo {
+            arxiv_id: arxiv_id.clone(),
+            valid,
+            title: None,
+        }
+    });
+
+    // Add DOI/arXiv mismatch flags if paper is verified but identifiers are invalid
+    let status = if status == Status::Verified {
+        let mut mismatch_kind = MismatchKind::empty();
+        if let Some(ref di) = doi_info {
+            if !di.valid {
+                mismatch_kind |= MismatchKind::DOI;
+            }
+        }
+        if let Some(ref ai) = arxiv_info {
+            if !ai.valid {
+                mismatch_kind |= MismatchKind::ARXIV_ID;
+            }
+        }
+        if mismatch_kind.is_empty() {
+            Status::Verified
+        } else {
+            Status::Mismatch(mismatch_kind)
+        }
+    } else {
+        status
+    };
+
     // Retraction info: use inline data from CrossRef response (no extra API call)
     let retraction_info = if status == Status::Verified {
         inline_retraction.and_then(|r| {
@@ -569,7 +616,7 @@ async fn finalize_collector(collector: &RefCollector) {
         failed_dbs: all_failed_dbs,
         db_results: all_db_results,
         doi_info,
-        arxiv_info: None, // TODO(#124): implement arXiv ID validation
+        arxiv_info,
         retraction_info,
     };
 
@@ -954,7 +1001,7 @@ async fn coordinator_loop(
             all_db_results.extend(pre.db_results);
 
             let first_mismatch = pre.first_mismatch.or_else(|| {
-                if local_result.status == Status::AuthorMismatch {
+                if local_result.status == Status::Mismatch(MismatchKind::AUTHOR) {
                     Some(MismatchInfo {
                         source: local_result.source.clone().unwrap_or_default(),
                         found_authors: local_result.found_authors.clone(),
@@ -967,7 +1014,7 @@ async fn coordinator_loop(
 
             let (status, source, found_authors, paper_url) = if let Some(m) = first_mismatch {
                 (
-                    Status::AuthorMismatch,
+                    Status::Mismatch(MismatchKind::AUTHOR),
                     Some(m.source),
                     m.found_authors,
                     m.paper_url,
@@ -1002,7 +1049,7 @@ async fn coordinator_loop(
 
         // --- Fan out only cache-miss DBs to drainers ---
         let first_mismatch = pre.first_mismatch.or_else(|| {
-            if local_result.status == Status::AuthorMismatch {
+            if local_result.status == Status::Mismatch(MismatchKind::AUTHOR) {
                 Some(MismatchInfo {
                     source: local_result.source.clone().unwrap_or_default(),
                     found_authors: local_result.found_authors.clone(),
@@ -1068,10 +1115,10 @@ fn emit_final_events(
     total: usize,
     title: &str,
 ) {
-    let status_str = match result.status {
-        Status::Verified => "Verified",
-        Status::NotFound => "NotFound",
-        Status::AuthorMismatch => "AuthorMismatch",
+    let status_str = match &result.status {
+        Status::Verified => "Verified".to_string(),
+        Status::NotFound => "NotFound".to_string(),
+        Status::Mismatch(kind) => format!("Mismatch({})", kind.description()),
     };
     tracing::info!(
         ref_index,
@@ -1082,14 +1129,15 @@ fn emit_final_events(
     );
 
     if !result.failed_dbs.is_empty() {
-        let context = match result.status {
+        let context = match &result.status {
             Status::NotFound => "not found in other DBs".to_string(),
             Status::Verified => format!(
                 "verified via {}",
                 result.source.as_deref().unwrap_or("unknown")
             ),
-            Status::AuthorMismatch => format!(
-                "author mismatch via {}",
+            Status::Mismatch(kind) => format!(
+                "{} mismatch via {}",
+                kind.description(),
                 result.source.as_deref().unwrap_or("unknown")
             ),
         };
