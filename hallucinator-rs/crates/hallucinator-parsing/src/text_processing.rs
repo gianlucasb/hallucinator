@@ -131,6 +131,12 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "cing", "ging", "ling", "ving", "wing", "zing",
         // Common -ist/-alist/-ism syllable breaks (e.g., "gener-alist", "special-ist")
         "alist", "elist", "ilist", "olist", "ulist",
+        // Common -ral/-lar/-nar syllable breaks (e.g., "neu-ral", "singu-lar", "semi-nar")
+        "ral", "lar", "nar", "ural", "eral", "oral", "iral",
+        // Common -er family syllable breaks (e.g., "wat-er", "or-der", "num-ber", "trans-former")
+        "ber", "der", "ter", "ger", "ver", "ner", "per", "fer", "ser", "cer", "ker", "mer",
+        // Common -ar/-or syllable breaks (e.g., "simi-lar", "fac-tor")
+        "tor", "sor", "por",
     ]
     .into_iter()
     .collect()
@@ -150,7 +156,7 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
         // Match: lowercase letter, hyphen (no space), then common syllable suffixes,
         // followed by punctuation, space, or end of string
         // NOTE: rust regex doesn't support look-ahead, so we capture the trailing char too
-        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting)([.\s,;:?!]|$)").unwrap()
+        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting|ral|lar|nar|ural|eral|oral|iral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|por)([.\s,;:?!]|$)").unwrap()
     });
 
     // Resolve compound suffixes: convert defaults to owned Strings for uniform handling
@@ -208,7 +214,10 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
 
             if before_alpha_len >= 4 && after_alpha_len >= 4 {
                 // Check if after_word looks like a syllable suffix (would indicate merge)
-                if !SYLLABLE_SUFFIXES.contains(stripped) {
+                // Either exact match OR ends with a known suffix
+                let is_syllable_suffix = SYLLABLE_SUFFIXES.contains(stripped)
+                    || SYLLABLE_SUFFIXES.iter().any(|s| stripped.ends_with(s));
+                if !is_syllable_suffix {
                     return format!("{}-{}", before_word, after_word);
                 }
             }
@@ -502,5 +511,48 @@ mod tests {
         assert_eq!(fix_hyphenation("gener- alist"), "generalist");
         assert_eq!(fix_hyphenation("special- ist"), "specialist");
         assert_eq!(fix_hyphenation("minim- alist"), "minimalist");
+    }
+
+    #[test]
+    fn test_fix_hyphenation_ral_syllable_breaks() {
+        // Common -ral syllable breaks (e.g., "neu-ral" should become "neural")
+        assert_eq!(fix_hyphenation("neu- ral"), "neural");
+        assert_eq!(fix_hyphenation("Neu- ral"), "Neural");
+        assert_eq!(fix_hyphenation("plu- ral"), "plural");
+        assert_eq!(fix_hyphenation("struc- tural"), "structural");
+        assert_eq!(fix_hyphenation("tem- poral"), "temporal");
+        assert_eq!(fix_hyphenation("behav- ioral"), "behavioral");
+        // No-space variant
+        assert_eq!(fix_hyphenation("Neu-ral Networks"), "Neural Networks");
+        assert_eq!(fix_hyphenation("tempo-ral"), "temporal");
+    }
+
+    #[test]
+    fn test_fix_hyphenation_er_family_syllable_breaks() {
+        // Common -er family syllable breaks (e.g., "wat-er", "or-der", "num-ber")
+        assert_eq!(fix_hyphenation("wa- ter"), "water");
+        assert_eq!(fix_hyphenation("or- der"), "order");
+        assert_eq!(fix_hyphenation("num- ber"), "number");
+        assert_eq!(fix_hyphenation("param- eter"), "parameter");
+        assert_eq!(fix_hyphenation("trans- fer"), "transfer");
+        assert_eq!(fix_hyphenation("trans- former"), "transformer");
+        assert_eq!(fix_hyphenation("compu- ter"), "computer");
+        assert_eq!(fix_hyphenation("clus- ter"), "cluster");
+        assert_eq!(fix_hyphenation("ren- der"), "render");
+        // No-space variant
+        assert_eq!(fix_hyphenation("Trans-fer Learning"), "Transfer Learning");
+        assert_eq!(fix_hyphenation("pa-per"), "paper");
+        assert_eq!(fix_hyphenation("clus-ter"), "cluster");
+    }
+
+    #[test]
+    fn test_fix_hyphenation_tor_sor_syllable_breaks() {
+        // Common -tor/-sor syllable breaks (e.g., "fac-tor", "proces-sor")
+        assert_eq!(fix_hyphenation("fac- tor"), "factor");
+        assert_eq!(fix_hyphenation("vec- tor"), "vector");
+        assert_eq!(fix_hyphenation("predic- tor"), "predictor");
+        assert_eq!(fix_hyphenation("proces- sor"), "processor");
+        // No-space variant
+        assert_eq!(fix_hyphenation("vec-tor"), "vector");
     }
 }
