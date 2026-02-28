@@ -3,6 +3,7 @@ use regex::Regex;
 use std::collections::HashSet;
 
 use crate::config::ParsingConfig;
+use crate::dictionary::Dictionary;
 
 /// Common compound-word suffixes that should keep the hyphen.
 pub(crate) static COMPOUND_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
@@ -236,6 +237,121 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
 
     // Second pass: fix hyphenation without space (e.g., "Mod-els" -> "Models")
     // This handles PDF extraction artifacts where the newline/space was lost
+    RE_NO_SPACE.replace_all(&result, "$1$2$3").into_owned()
+}
+
+/// Fix hyphenation using a dictionary for validation.
+///
+/// This is the preferred method when a dictionary is available. It uses the
+/// dictionary to validate whether the merged word is a valid English word,
+/// providing more accurate results than suffix-based heuristics.
+///
+/// The algorithm:
+/// 1. If the merged word exists in the dictionary → remove hyphen
+/// 2. If it's a compound suffix (e.g., "data-driven") → keep hyphen
+/// 3. Fall back to suffix-based heuristics
+///
+/// # Example
+///
+/// ```
+/// use hallucinator_parsing::text_processing::fix_hyphenation_with_dict;
+/// use hallucinator_parsing::Dictionary;
+///
+/// struct MockDict;
+/// impl Dictionary for MockDict {
+///     fn contains(&self, word: &str) -> bool {
+///         word == "byzantine" || word == "identifier"
+///     }
+/// }
+///
+/// let dict = MockDict;
+/// assert_eq!(fix_hyphenation_with_dict("Byzan- tine", &dict), "Byzantine");
+/// ```
+pub fn fix_hyphenation_with_dict<D: Dictionary>(text: &str, dict: &D) -> String {
+    fix_hyphenation_with_dict_and_config(text, dict, &ParsingConfig::default())
+}
+
+/// Fix hyphenation using a dictionary and custom config.
+pub fn fix_hyphenation_with_dict_and_config<D: Dictionary>(
+    text: &str,
+    dict: &D,
+    config: &ParsingConfig,
+) -> String {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(\w+)-\s+(\w+)").unwrap()
+    });
+
+    static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting|ral|lar|nar|ural|eral|oral|iral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|por|mated|nated|rated|lated|cated|gated|pated|vated|dated|tated|sated|tine|dine|rine|zine|nine|line|mine|pine|vine|fine|fier|fiers|lier|tier|cier|sier)([.\s,;:?!]|$)").unwrap()
+    });
+
+    let default_suffixes: Vec<String> = COMPOUND_SUFFIXES.iter().map(|s| s.to_string()).collect();
+    let resolved = config.compound_suffixes.resolve(&default_suffixes);
+    let suffix_set: HashSet<String> = resolved.into_iter().collect();
+
+    let result = RE
+        .replace_all(text, |caps: &regex::Captures| {
+            let before_word = &caps[1];
+            let after_word = &caps[2];
+            let after_lower = after_word.to_lowercase();
+
+            // If the word before ends with a digit, keep the hyphen
+            if before_word.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+                return format!("{}-{}", before_word, after_word);
+            }
+
+            // DICTIONARY CHECK: If merged word is valid, remove hyphen
+            let merged = format!("{}{}", before_word, after_word);
+            if dict.contains(&merged.to_lowercase()) {
+                return merged;
+            }
+
+            // Check if the word after the hyphen is a common compound suffix
+            for suffix in suffix_set.iter() {
+                if after_lower == *suffix
+                    || after_lower.starts_with(&format!("{} ", suffix))
+                    || after_lower.starts_with(&format!("{},", suffix))
+                {
+                    return format!("{}-{}", before_word, after_word);
+                }
+            }
+
+            let stripped = after_lower.trim_end_matches(['.', ',', ';', ':']);
+            if suffix_set.contains(stripped) {
+                return format!("{}-{}", before_word, after_word);
+            }
+
+            // Connector words for compound proper nouns
+            static HYPHEN_CONNECTORS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+                [
+                    "The", "To", "Of", "In", "On", "Up", "Out", "At", "By", "For", "And", "Or",
+                    "A", "An",
+                ]
+                .into_iter()
+                .collect()
+            });
+            if HYPHEN_CONNECTORS.contains(after_word) {
+                return format!("{}-{}", before_word, after_word);
+            }
+
+            // Length heuristic fallback
+            let before_alpha_len = before_word.chars().filter(|c| c.is_alphabetic()).count();
+            let after_alpha_len = after_word.chars().filter(|c| c.is_alphabetic()).count();
+
+            if before_alpha_len >= 4 && after_alpha_len >= 4 {
+                let is_syllable_suffix = SYLLABLE_SUFFIXES.contains(stripped)
+                    || SYLLABLE_SUFFIXES.iter().any(|s| stripped.ends_with(s));
+                if !is_syllable_suffix {
+                    return format!("{}-{}", before_word, after_word);
+                }
+            }
+
+            // Default: remove hyphen (syllable break)
+            merged
+        })
+        .into_owned();
+
+    // Second pass: fix hyphenation without space
     RE_NO_SPACE.replace_all(&result, "$1$2$3").into_owned()
 }
 
@@ -603,5 +719,184 @@ mod tests {
         assert_eq!(fix_hyphenation("speci- fier"), "specifier");
         // No-space variant
         assert_eq!(fix_hyphenation("identi-fier"), "identifier");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // DICTIONARY-BASED HYPHENATION TESTS
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /// Mock dictionary for testing dictionary-based hyphenation.
+    struct MockDict {
+        words: std::collections::HashSet<String>,
+    }
+
+    impl MockDict {
+        fn new(words: &[&str]) -> Self {
+            Self {
+                words: words.iter().map(|w| w.to_lowercase()).collect(),
+            }
+        }
+    }
+
+    impl Dictionary for MockDict {
+        fn contains(&self, word: &str) -> bool {
+            self.words.contains(&word.to_lowercase())
+        }
+    }
+
+    #[test]
+    fn test_fix_hyphenation_with_dict_basic() {
+        let dict = MockDict::new(&["byzantine", "identifier", "transformer", "automated"]);
+
+        // Dictionary hits - should merge
+        assert_eq!(fix_hyphenation_with_dict("Byzan- tine", &dict), "Byzantine");
+        assert_eq!(
+            fix_hyphenation_with_dict("identi- fier", &dict),
+            "identifier"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("trans- former", &dict),
+            "transformer"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("auto- mated", &dict),
+            "automated"
+        );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_with_dict_compound_words() {
+        let dict = MockDict::new(&["data", "driven", "self", "supervised"]);
+
+        // Compound words - dictionary contains individual parts but not merged
+        // Should keep hyphen via compound suffix check
+        assert_eq!(
+            fix_hyphenation_with_dict("data- driven", &dict),
+            "data-driven"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("self- supervised", &dict),
+            "self-supervised"
+        );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_with_dict_unknown_words() {
+        let dict = MockDict::new(&["hello", "world"]);
+
+        // Unknown words - fall back to heuristics
+        // Both parts ≥4 letters and not a syllable suffix → keep hyphen
+        assert_eq!(
+            fix_hyphenation_with_dict("xyzzy- plugh", &dict),
+            "xyzzy-plugh"
+        );
+
+        // Short words (< 4 letters) still merge even without dictionary hit
+        assert_eq!(
+            fix_hyphenation_with_dict("foo- bar", &dict),
+            "foobar"
+        );
+
+        // Syllable suffix detected → merge even without dictionary hit
+        assert_eq!(
+            fix_hyphenation_with_dict("detec- tion", &dict),
+            "detection"
+        );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_with_dict_real_academic_titles() {
+        let dict = MockDict::new(&[
+            "byzantine",
+            "fault",
+            "tolerance",
+            "practical",
+            "identifier",
+            "network",
+            "access",
+            "automated",
+            "vulnerability",
+            "localization",
+        ]);
+
+        // Real paper titles
+        assert_eq!(
+            fix_hyphenation_with_dict("Practical Byzan- tine fault tolerance", &dict),
+            "Practical Byzantine fault tolerance"
+        );
+
+        assert_eq!(
+            fix_hyphenation_with_dict("The network access identi- fier", &dict),
+            "The network access identifier"
+        );
+
+        assert_eq!(
+            fix_hyphenation_with_dict("Auto- mated vulnerability localization", &dict),
+            "Automated vulnerability localization"
+        );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_with_dict_preserves_compounds() {
+        let dict = MockDict::new(&[
+            "retrieval",
+            "augmented",
+            "zero",
+            "shot",
+            "learning",
+        ]);
+
+        // Even if individual words are in dictionary, compound suffixes should
+        // keep hyphen (augmented, shot are compound suffixes)
+        assert_eq!(
+            fix_hyphenation_with_dict("retrieval- augmented", &dict),
+            "retrieval-augmented"
+        );
+
+        assert_eq!(
+            fix_hyphenation_with_dict("zero- shot learning", &dict),
+            "zero-shot learning"
+        );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_with_dict_and_config() {
+        use crate::ParsingConfigBuilder;
+
+        let dict = MockDict::new(&["neural", "network"]);
+
+        // Add a custom compound suffix
+        let config = ParsingConfigBuilder::new()
+            .add_compound_suffix("network".to_string())
+            .build()
+            .unwrap();
+
+        // "neural" is in dictionary, so "neu-ral" should merge
+        assert_eq!(
+            fix_hyphenation_with_dict_and_config("neu- ral", &dict, &config),
+            "neural"
+        );
+
+        // "network" is a compound suffix, so it should keep hyphen
+        assert_eq!(
+            fix_hyphenation_with_dict_and_config("neural- network", &dict, &config),
+            "neural-network"
+        );
+    }
+
+    #[test]
+    fn test_fix_hyphenation_with_dict_digit_suffix() {
+        let dict = MockDict::new(&["gpt4", "qwen2"]);
+
+        // Words ending with digits should keep hyphen (product names)
+        assert_eq!(
+            fix_hyphenation_with_dict("GPT4- turbo", &dict),
+            "GPT4-turbo"
+        );
+
+        assert_eq!(
+            fix_hyphenation_with_dict("Qwen2- VL", &dict),
+            "Qwen2-VL"
+        );
     }
 }

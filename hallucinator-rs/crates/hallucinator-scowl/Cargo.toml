@@ -1,0 +1,8 @@
+[package]
+name = "hallucinator-scowl"
+version = "0.1.0"
+edition = "2021"
+description = "SCOWL-based English dictionary for hallucinator"
+license = "MIT"
+
+[dependencies]
