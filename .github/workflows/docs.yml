@@ -27,6 +27,9 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+      - name: Add CNAME for custom domain
+        run: cp docs/CNAME target/book/CNAME
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
