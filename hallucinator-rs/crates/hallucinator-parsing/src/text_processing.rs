@@ -137,6 +137,9 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "ber", "der", "ter", "ger", "ver", "ner", "per", "fer", "ser", "cer", "ker", "mer",
         // Common -ar/-or syllable breaks (e.g., "simi-lar", "fac-tor")
         "tor", "sor", "por",
+        // Common -ated/-eted/-ited syllable breaks (e.g., "auto-mated", "gene-rated", "iso-lated")
+        "mated", "nated", "rated", "lated", "cated", "gated", "pated", "vated", "dated", "tated", "sated",
+        "eted", "ited", "uted", "oted",
     ]
     .into_iter()
     .collect()
@@ -156,7 +159,7 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
         // Match: lowercase letter, hyphen (no space), then common syllable suffixes,
         // followed by punctuation, space, or end of string
         // NOTE: rust regex doesn't support look-ahead, so we capture the trailing char too
-        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting|ral|lar|nar|ural|eral|oral|iral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|por)([.\s,;:?!]|$)").unwrap()
+        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting|ral|lar|nar|ural|eral|oral|iral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|por|mated|nated|rated|lated|cated|gated|pated|vated|dated|tated|sated)([.\s,;:?!]|$)").unwrap()
     });
 
     // Resolve compound suffixes: convert defaults to owned Strings for uniform handling
@@ -554,5 +557,21 @@ mod tests {
         assert_eq!(fix_hyphenation("proces- sor"), "processor");
         // No-space variant
         assert_eq!(fix_hyphenation("vec-tor"), "vector");
+    }
+
+    #[test]
+    fn test_fix_hyphenation_ated_syllable_breaks() {
+        // Common -ated syllable breaks (e.g., "auto-mated" should become "automated")
+        assert_eq!(fix_hyphenation("auto- mated"), "automated");
+        assert_eq!(fix_hyphenation("Auto- mated"), "Automated");
+        assert_eq!(fix_hyphenation("gene- rated"), "generated");
+        assert_eq!(fix_hyphenation("iso- lated"), "isolated");
+        assert_eq!(fix_hyphenation("esti- mated"), "estimated");
+        assert_eq!(fix_hyphenation("domi- nated"), "dominated");
+        assert_eq!(fix_hyphenation("regu- lated"), "regulated");
+        assert_eq!(fix_hyphenation("compli- cated"), "complicated");
+        assert_eq!(fix_hyphenation("aggre- gated"), "aggregated");
+        // No-space variant
+        assert_eq!(fix_hyphenation("auto-mated vulnerability"), "automated vulnerability");
     }
 }
