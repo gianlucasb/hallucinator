@@ -243,8 +243,8 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                     Cell::from(refs),
                     Cell::from(format!("{}", paper.stats.verified))
                         .style(Style::default().fg(theme.verified)),
-                    Cell::from(format!("{}", paper.stats.author_mismatch))
-                        .style(Style::default().fg(theme.author_mismatch)),
+                    Cell::from(format!("{}", paper.stats.mismatch))
+                        .style(Style::default().fg(theme.mismatch)),
                     Cell::from(format!("{}", paper.stats.not_found))
                         .style(Style::default().fg(theme.not_found)),
                     Cell::from(skip_text).style(Style::default().fg(theme.dim)),

@@ -566,7 +566,7 @@ impl App {
         let total_refs: usize = self.papers.iter().map(|p| p.stats.total).sum();
         let total_verified: usize = self.papers.iter().map(|p| p.stats.verified).sum();
         let total_not_found: usize = self.papers.iter().map(|p| p.stats.not_found).sum();
-        let total_mismatch: usize = self.papers.iter().map(|p| p.stats.author_mismatch).sum();
+        let total_mismatch: usize = self.papers.iter().map(|p| p.stats.mismatch).sum();
 
         let spans = vec![
             Span::styled(
@@ -583,7 +583,7 @@ impl App {
             ),
             Span::styled(
                 format!("M:{} ", total_mismatch),
-                Style::default().fg(theme.author_mismatch),
+                Style::default().fg(theme.mismatch),
             ),
             Span::styled(
                 format!("NF:{} ", total_not_found),

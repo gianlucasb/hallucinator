@@ -159,7 +159,7 @@ pub fn render_in(
                 Status::Verified => ("\u{2713} Verified".to_string(), theme.verified),
                 Status::NotFound => ("\u{2717} Not Found".to_string(), theme.not_found),
                 Status::Mismatch(kind) => {
-                    (format!("\u{26A0} Mismatch ({})", kind.description()), theme.author_mismatch)
+                    (format!("\u{26A0} Mismatch ({})", kind.description()), theme.mismatch)
                 }
             }
         };
@@ -261,12 +261,12 @@ pub fn render_in(
                     DbStatus::Match => ("\u{2713} match".to_string(), theme.verified),
                     DbStatus::NoMatch => ("no match".to_string(), theme.dim),
                     DbStatus::AuthorMismatch => {
-                        ("\u{26A0} mismatch".to_string(), theme.author_mismatch)
+                        ("\u{26A0} mismatch".to_string(), theme.mismatch)
                     }
                     DbStatus::Timeout => ("timeout".to_string(), theme.not_found),
                     DbStatus::RateLimited => (
                         "\u{2717} 429 rate limited".to_string(),
-                        theme.author_mismatch,
+                        theme.mismatch,
                     ),
                     DbStatus::Error => {
                         let msg = db_result.error_message.as_deref().unwrap_or("error");

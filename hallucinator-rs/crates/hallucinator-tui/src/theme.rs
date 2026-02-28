@@ -8,7 +8,7 @@ use hallucinator_core::Status;
 pub struct Theme {
     pub verified: Color,
     pub not_found: Color,
-    pub author_mismatch: Color,
+    pub mismatch: Color,
     pub retracted: Color,
 
     pub header_fg: Color,
@@ -33,7 +33,7 @@ impl Theme {
         Self {
             verified: Color::Rgb(0, 210, 0),
             not_found: Color::Red,
-            author_mismatch: Color::Yellow,
+            mismatch: Color::Yellow,
             retracted: Color::Magenta,
 
             header_fg: Color::Black,
@@ -56,7 +56,7 @@ impl Theme {
         Self {
             verified: Color::Rgb(0, 200, 80),
             not_found: Color::Rgb(255, 80, 80),
-            author_mismatch: Color::Rgb(255, 200, 0),
+            mismatch: Color::Rgb(255, 200, 0),
             retracted: Color::Rgb(200, 50, 200),
 
             header_fg: Color::White,
@@ -79,7 +79,7 @@ impl Theme {
         Self {
             verified: Color::Rgb(0, 200, 80),         // target acquired
             not_found: Color::Rgb(255, 60, 60),       // bright red alert
-            author_mismatch: Color::Rgb(255, 180, 0), // amber warning
+            mismatch: Color::Rgb(255, 180, 0), // amber warning
             retracted: Color::Rgb(255, 0, 255),       // magenta danger
 
             header_fg: Color::White,
@@ -106,7 +106,7 @@ impl Theme {
         match status {
             Status::Verified => self.verified,
             Status::NotFound => self.not_found,
-            Status::Mismatch(_) => self.author_mismatch,
+            Status::Mismatch(_) => self.mismatch,
         }
     }
 
@@ -116,7 +116,7 @@ impl Theme {
             PaperPhase::Extracting => self.active,
             PaperPhase::ExtractionFailed => self.not_found,
             PaperPhase::Checking => self.active,
-            PaperPhase::Retrying => self.author_mismatch,
+            PaperPhase::Retrying => self.mismatch,
             PaperPhase::Complete => self.verified,
         }
     }
@@ -128,7 +128,7 @@ impl Theme {
                 .fg(self.spinner)
                 .add_modifier(Modifier::BOLD),
             RefPhase::Retrying => Style::default()
-                .fg(self.author_mismatch)
+                .fg(self.mismatch)
                 .add_modifier(Modifier::BOLD),
             RefPhase::Done => Style::default().fg(self.text),
             RefPhase::Skipped(_) => Style::default().fg(self.dim).add_modifier(Modifier::DIM),

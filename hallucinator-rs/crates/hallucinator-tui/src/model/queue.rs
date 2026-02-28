@@ -142,9 +142,9 @@ impl PaperState {
         self.results.iter().filter(|r| r.is_some()).count()
     }
 
-    /// Number of problems (not_found + author_mismatch + retracted).
+    /// Number of problems (not_found + mismatch + retracted).
     pub fn problems(&self) -> usize {
-        self.stats.not_found + self.stats.author_mismatch + self.stats.retracted
+        self.stats.not_found + self.stats.mismatch + self.stats.retracted
     }
 
     /// Percentage of references that are problematic (0.0 - 100.0).
