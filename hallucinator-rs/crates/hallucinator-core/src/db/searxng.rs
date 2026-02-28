@@ -10,6 +10,8 @@
 use super::{DatabaseBackend, DbQueryError, DbQueryResult};
 use crate::matching::normalize_title;
 use crate::text_utils::get_query_words;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -187,6 +189,23 @@ impl DatabaseBackend for Searxng {
 
                 match self
                     .search_and_match(&keyword_query, title, client, timeout)
+                    .await
+                {
+                    Ok(Some(result)) => return Ok(result),
+                    Ok(None) | Err(_) => {}
+                }
+            }
+
+            // Strategy 3: For RFC/standard document titles, try "RFC NNNN" exact match
+            // RFC titles often appear as "RFC 5480" in search results
+            static RFC_PATTERN: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"(?i)\brfc\s*(\d+)\b").unwrap());
+            if let Some(caps) = RFC_PATTERN.captures(title) {
+                let rfc_num = caps.get(1).unwrap().as_str();
+                let rfc_query = format!("\"RFC {}\"", rfc_num);
+
+                match self
+                    .search_and_match(&rfc_query, title, client, timeout)
                     .await
                 {
                     Ok(Some(result)) => return Ok(result),
