@@ -73,7 +73,6 @@ The tool queries these databases simultaneously:
 | **DBLP** | Computer science bibliography |
 | **Semantic Scholar** | Aggregates Academia.edu, SSRN, PubMed, and more |
 | **ACL Anthology** | Computational linguistics papers |
-| **NeurIPS** | NeurIPS conference proceedings |
 | **Europe PMC** | Life science literature (42M+ abstracts, mirrors PubMed/PMC) |
 | **PubMed** | Biomedical literature via NCBI E-utilities |
 | **OpenAlex** | 250M+ works (optional, needs free API key) |
