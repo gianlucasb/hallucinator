@@ -142,6 +142,8 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "eted", "ited", "uted", "oted",
         // Common -tine/-dine/-rine syllable breaks (e.g., "Byzan-tine", "rou-tine")
         "tine", "dine", "rine", "zine", "nine", "line", "mine", "pine", "vine", "fine",
+        // Common -fier/-lier/-tier syllable breaks (e.g., "identi-fier", "classi-fier")
+        "fier", "fiers", "lier", "tier", "cier", "sier",
     ]
     .into_iter()
     .collect()
@@ -161,7 +163,7 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
         // Match: lowercase letter, hyphen (no space), then common syllable suffixes,
         // followed by punctuation, space, or end of string
         // NOTE: rust regex doesn't support look-ahead, so we capture the trailing char too
-        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting|ral|lar|nar|ural|eral|oral|iral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|por|mated|nated|rated|lated|cated|gated|pated|vated|dated|tated|sated|tine|dine|rine|zine|nine|line|mine|pine|vine|fine)([.\s,;:?!]|$)").unwrap()
+        Regex::new(r"(?i)([a-z])-(tion|tions|sion|sions|cient|cients|curity|rity|lity|nity|bilities|ilities|els|ness|ment|ments|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|ble|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ises|izes|uous|tifying|fying|lying|rying|nying|tying|ating|eting|iting|oting|uting|ral|lar|nar|ural|eral|oral|iral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|por|mated|nated|rated|lated|cated|gated|pated|vated|dated|tated|sated|tine|dine|rine|zine|nine|line|mine|pine|vine|fine|fier|fiers|lier|tier|cier|sier)([.\s,;:?!]|$)").unwrap()
     });
 
     // Resolve compound suffixes: convert defaults to owned Strings for uniform handling
@@ -589,5 +591,17 @@ mod tests {
         assert_eq!(fix_hyphenation("dead- line"), "deadline");
         // No-space variant
         assert_eq!(fix_hyphenation("Byzan-tine fault"), "Byzantine fault");
+    }
+
+    #[test]
+    fn test_fix_hyphenation_fier_syllable_breaks() {
+        // Common -fier syllable breaks (e.g., "identi-fier" should become "identifier")
+        assert_eq!(fix_hyphenation("identi- fier"), "identifier");
+        assert_eq!(fix_hyphenation("classi- fier"), "classifier");
+        assert_eq!(fix_hyphenation("modi- fier"), "modifier");
+        assert_eq!(fix_hyphenation("ampli- fier"), "amplifier");
+        assert_eq!(fix_hyphenation("speci- fier"), "specifier");
+        // No-space variant
+        assert_eq!(fix_hyphenation("identi-fier"), "identifier");
     }
 }
