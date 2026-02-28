@@ -109,6 +109,8 @@ pub fn extract_doi(text: &str) -> Option<String> {
 /// - `arXiv:2301.12345v1`
 /// - `arxiv.org/abs/2301.12345`
 /// - `arXiv:hep-th/9901001` (old format)
+/// - `10.48550/arXiv.2301.12345` (DOI format)
+/// - `CoRR, abs/2301.12345` (CoRR format)
 ///
 /// Also handles IDs split across lines.
 pub fn extract_arxiv_id(text: &str) -> Option<String> {
@@ -120,6 +122,13 @@ pub fn extract_arxiv_id(text: &str) -> Option<String> {
     static FIX2: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)(arxiv\.org/abs/\d{4}\.)\s*\n\s*(\d+)").unwrap());
     let text_fixed = FIX2.replace_all(&text_fixed, "$1$2");
+
+    // arXiv DOI format: 10.48550/arXiv.YYMM.NNNNN (newer DOI format for arXiv papers)
+    static ARXIV_DOI_FMT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)10\.48550/arXiv\.(\d{4}\.\d{4,5}(?:v\d+)?)").unwrap());
+    if let Some(caps) = ARXIV_DOI_FMT.captures(&text_fixed) {
+        return Some(caps.get(1).unwrap().as_str().to_string());
+    }
 
     // New format: YYMM.NNNNN (with optional version)
     static NEW_FMT: Lazy<Regex> =
@@ -135,6 +144,13 @@ pub fn extract_arxiv_id(text: &str) -> Option<String> {
         return Some(caps.get(1).unwrap().as_str().to_string());
     }
 
+    // CoRR format: "CoRR, abs/YYMM.NNNNN" or "CoRR abs/YYMM.NNNNN"
+    static CORR_FMT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)CoRR[,:\s]+abs[/:](\d{4}\.\d{4,5}(?:v\d+)?)").unwrap());
+    if let Some(caps) = CORR_FMT.captures(&text_fixed) {
+        return Some(caps.get(1).unwrap().as_str().to_string());
+    }
+
     // Old format: category/YYMMNNN (e.g., hep-th/9901001)
     static OLD_FMT: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)arXiv[:\s]+([a-z-]+/\d{7}(?:v\d+)?)").unwrap());
@@ -146,6 +162,13 @@ pub fn extract_arxiv_id(text: &str) -> Option<String> {
     static URL_OLD_FMT: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)arxiv\.org/abs/([a-z-]+/\d{7}(?:v\d+)?)").unwrap());
     if let Some(caps) = URL_OLD_FMT.captures(&text_fixed) {
+        return Some(caps.get(1).unwrap().as_str().to_string());
+    }
+
+    // CoRR old format: "CoRR, abs/category/YYMMNNN"
+    static CORR_OLD_FMT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)CoRR[,:\s]+abs[/:]([a-z-]+/\d{7}(?:v\d+)?)").unwrap());
+    if let Some(caps) = CORR_OLD_FMT.captures(&text_fixed) {
         return Some(caps.get(1).unwrap().as_str().to_string());
     }
 
@@ -356,6 +379,50 @@ mod tests {
     #[test]
     fn test_extract_arxiv_none() {
         assert_eq!(extract_arxiv_id("No arXiv here"), None);
+    }
+
+    #[test]
+    fn test_extract_arxiv_doi_format() {
+        // arXiv DOI format: 10.48550/arXiv.YYMM.NNNNN
+        assert_eq!(
+            extract_arxiv_id("10.48550/arXiv.2510.14861"),
+            Some("2510.14861".into())
+        );
+        assert_eq!(
+            extract_arxiv_id("https://doi.org/10.48550/arXiv.2301.12345v2"),
+            Some("2301.12345v2".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_arxiv_corr_format() {
+        // CoRR format: CoRR, abs/YYMM.NNNNN
+        assert_eq!(
+            extract_arxiv_id("CoRR, abs/2503.19786"),
+            Some("2503.19786".into())
+        );
+        assert_eq!(
+            extract_arxiv_id("CoRR abs/2301.12345v1"),
+            Some("2301.12345v1".into())
+        );
+        // With colon separator
+        assert_eq!(
+            extract_arxiv_id("CoRR: abs/2301.12345"),
+            Some("2301.12345".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_arxiv_corr_old_format() {
+        // CoRR old format: CoRR, abs/category/YYMMNNN
+        assert_eq!(
+            extract_arxiv_id("CoRR, abs/cs/0701001"),
+            Some("cs/0701001".into())
+        );
+        assert_eq!(
+            extract_arxiv_id("CoRR abs/hep-th/9901001v2"),
+            Some("hep-th/9901001v2".into())
+        );
     }
 
     #[test]
