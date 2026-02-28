@@ -1,14 +1,15 @@
 //! SearxNG web search fallback for unverified citations.
 //!
 //! This backend queries a self-hosted SearxNG instance to search for papers
-//! that couldn't be found in any academic database. It uses exact phrase
-//! matching and filters results to academic domains.
+//! that couldn't be found in any academic database. It tries exact phrase
+//! matching first, then falls back to keyword search.
 //!
 //! Note: This is a weaker form of verification than academic databases since
 //! it cannot verify authors - it only confirms the paper exists on the web.
 
 use super::{DatabaseBackend, DbQueryError, DbQueryResult};
 use crate::matching::normalize_title;
+use crate::text_utils::get_query_words;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -99,6 +100,50 @@ struct SearxngResult {
     url: String,
 }
 
+impl Searxng {
+    /// Execute a single search query and check results for matching titles.
+    async fn search_and_match(
+        &self,
+        query: &str,
+        title: &str,
+        client: &reqwest::Client,
+        timeout: Duration,
+    ) -> Result<Option<DbQueryResult>, ()> {
+        let url = format!(
+            "{}/search?q={}&format=json",
+            self.base_url.trim_end_matches('/'),
+            urlencoding::encode(query)
+        );
+
+        let resp = match client.get(&url).timeout(timeout).send().await {
+            Ok(r) => r,
+            Err(_) => return Err(()), // Connection error
+        };
+
+        if !resp.status().is_success() {
+            return Err(());
+        }
+
+        let data: SearxngResponse = match resp.json().await {
+            Ok(d) => d,
+            Err(_) => return Err(()),
+        };
+
+        // Check results for matching titles
+        for result in data.results {
+            if titles_match_lenient(title, &result.title) {
+                return Ok(Some(DbQueryResult::found(
+                    result.title,
+                    vec![],
+                    Some(result.url),
+                )));
+            }
+        }
+
+        Ok(None) // No match found in results
+    }
+}
+
 impl DatabaseBackend for Searxng {
     fn name(&self) -> &str {
         "Web Search"
@@ -116,46 +161,40 @@ impl DatabaseBackend for Searxng {
         timeout: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, DbQueryError>> + Send + 'a>> {
         Box::pin(async move {
-            // Use exact phrase matching
-            let query = format!("\"{}\"", title);
-            let url = format!(
-                "{}/search?q={}&format=json",
-                self.base_url.trim_end_matches('/'),
-                urlencoding::encode(&query)
-            );
+            // Strategy 1: Exact phrase matching (most precise)
+            // Normalize smart quotes/apostrophes for better matching
+            let clean_title = title
+                .replace('\u{2019}', "'") // Right single quote
+                .replace('\u{2018}', "'") // Left single quote
+                .replace('\u{201C}', "\"") // Left double quote
+                .replace('\u{201D}', "\""); // Right double quote
+            let exact_query = format!("\"{}\"", clean_title);
 
-            // If SearxNG is not running, silently return "not found" instead of erroring
-            let resp = match client.get(&url).timeout(timeout).send().await {
-                Ok(r) => r,
-                Err(_) => {
-                    // Connection refused, timeout, etc. - SearxNG not available
-                    return Ok(DbQueryResult::not_found());
-                }
-            };
-
-            if !resp.status().is_success() {
-                // SearxNG returned an error - skip silently
-                return Ok(DbQueryResult::not_found());
+            match self
+                .search_and_match(&exact_query, title, client, timeout)
+                .await
+            {
+                Ok(Some(result)) => return Ok(result),
+                Err(_) => return Ok(DbQueryResult::not_found()), // SearxNG unavailable
+                Ok(None) => {} // No match, try fallback
             }
 
-            let data: SearxngResponse = match resp.json().await {
-                Ok(d) => d,
-                Err(_) => {
-                    // Failed to parse response - skip silently
-                    return Ok(DbQueryResult::not_found());
-                }
-            };
+            // Strategy 2: Keyword search with significant words
+            // This catches cases where the indexed title differs slightly
+            let keywords = get_query_words(title, 6);
+            if keywords.len() >= 3 {
+                let keyword_query = keywords.join(" ");
 
-            // Check results for matching titles
-            for result in data.results {
-                // Verify the title matches (lenient matching for web search)
-                if titles_match_lenient(title, &result.title) {
-                    // Return found result - no authors available from web search
-                    return Ok(DbQueryResult::found(result.title, vec![], Some(result.url)));
+                match self
+                    .search_and_match(&keyword_query, title, client, timeout)
+                    .await
+                {
+                    Ok(Some(result)) => return Ok(result),
+                    Ok(None) | Err(_) => {}
                 }
             }
 
-            // No matching academic result found
+            // No match found
             Ok(DbQueryResult::not_found())
         })
     }
