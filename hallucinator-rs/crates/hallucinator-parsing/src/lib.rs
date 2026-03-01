@@ -4,6 +4,7 @@ use thiserror::Error;
 
 pub mod authors;
 pub mod config;
+pub mod dictionary;
 pub mod extractor;
 pub mod identifiers;
 pub mod scoring;
@@ -12,6 +13,7 @@ pub mod text_processing;
 pub mod title;
 
 pub use config::{ListOverride, ParsingConfig, ParsingConfigBuilder};
+pub use dictionary::Dictionary;
 pub use extractor::ReferenceExtractor;
 pub use scoring::{ScoringWeights, score_segmentation, select_best_segmentation};
 pub use section::{SegmentationResult, SegmentationStrategy};
