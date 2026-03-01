@@ -1,8 +1,10 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::config::ParsingConfig;
+use crate::dictionary::Dictionary;
 use crate::{ExtractionResult, ParsingError, PdfBackend, Reference, SkipStats};
 use crate::{authors, identifiers, section, text_processing, title};
 
@@ -11,8 +13,13 @@ use crate::{authors, identifiers, section, text_processing, title};
 /// Holds a [`ParsingConfig`] and exposes each pipeline step as a method.
 /// The default constructor uses built-in defaults; use [`ReferenceExtractor::with_config`]
 /// to supply custom regex patterns and thresholds.
+///
+/// Optionally accepts a [`Dictionary`] for dictionary-based hyphenation fixing.
+/// When a dictionary is provided, merged words are validated against the dictionary;
+/// otherwise, heuristic-based hyphenation is used as a fallback.
 pub struct ReferenceExtractor {
     config: ParsingConfig,
+    dictionary: Option<Arc<dyn Dictionary>>,
 }
 
 impl Default for ReferenceExtractor {
@@ -26,12 +33,34 @@ impl ReferenceExtractor {
     pub fn new() -> Self {
         Self {
             config: ParsingConfig::default(),
+            dictionary: None,
         }
     }
 
     /// Create an extractor with a custom configuration.
     pub fn with_config(config: ParsingConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            dictionary: None,
+        }
+    }
+
+    /// Create an extractor with a dictionary for hyphenation fixing.
+    ///
+    /// When a dictionary is provided, words are validated against it to determine
+    /// whether to merge hyphenated parts (if the merged word exists) or keep the
+    /// hyphen (if it doesn't). This is more accurate than heuristic-based hyphenation.
+    pub fn with_dictionary<D: Dictionary + 'static>(mut self, dict: D) -> Self {
+        self.dictionary = Some(Arc::new(dict));
+        self
+    }
+
+    /// Create an extractor with a shared dictionary reference.
+    ///
+    /// Use this when you want to share a dictionary across multiple extractors.
+    pub fn with_shared_dictionary(mut self, dict: Arc<dyn Dictionary>) -> Self {
+        self.dictionary = Some(dict);
+        self
     }
 
     /// Get a reference to the current config.
@@ -63,7 +92,7 @@ impl ReferenceExtractor {
     ///
     /// `prev_authors` is used for em-dash "same authors" handling.
     pub fn parse_reference(&self, ref_text: &str, prev_authors: &[String]) -> ParsedRef {
-        parse_single_reference(ref_text, prev_authors, &self.config)
+        parse_single_reference(ref_text, prev_authors, &self.config, self.dictionary.as_deref())
     }
 
     /// Run the extraction pipeline on already-extracted text.
@@ -89,7 +118,8 @@ impl ReferenceExtractor {
         let mut previous_authors: Vec<String> = Vec::new();
 
         for (raw_idx, ref_text) in raw_refs.iter().enumerate() {
-            let parsed = parse_single_reference(ref_text, &previous_authors, &self.config);
+            let parsed =
+                parse_single_reference(ref_text, &previous_authors, &self.config, self.dictionary.as_deref());
             match parsed {
                 ParsedRef::Skip(reason, raw_citation, title) => {
                     match reason {
@@ -146,6 +176,7 @@ fn parse_single_reference(
     ref_text: &str,
     prev_authors: &[String],
     config: &ParsingConfig,
+    dictionary: Option<&dyn Dictionary>,
 ) -> ParsedRef {
     // Extract DOI and arXiv ID BEFORE fixing hyphenation
     let doi = identifiers::extract_doi(ref_text);
@@ -155,8 +186,12 @@ fn parse_single_reference(
     static PAGE_NUM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\d{1,4}\n").unwrap());
     let ref_text = PAGE_NUM_RE.replace_all(ref_text, "\n");
 
-    // Fix hyphenation (config-aware for custom compound suffixes)
-    let ref_text = text_processing::fix_hyphenation_with_config(&ref_text, config);
+    // Fix hyphenation: use dictionary if available, otherwise fall back to heuristics
+    let ref_text = if let Some(dict) = dictionary {
+        text_processing::fix_hyphenation_with_dict(&ref_text, dict)
+    } else {
+        text_processing::fix_hyphenation_with_config(&ref_text, config)
+    };
 
     // Skip entries with non-academic URLs
     static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?\s*:\s*//").unwrap());

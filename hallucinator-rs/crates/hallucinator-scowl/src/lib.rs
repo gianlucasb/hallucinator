@@ -7,10 +7,17 @@
 //!
 //! - **Embedded**: Load the compiled-in word list with [`ScowlDictionary::embedded()`]
 //! - **File-based**: Load from a file path with [`ScowlDictionary::from_file()`]
+//!
+//! # Integration with hallucinator-parsing
+//!
+//! This crate implements the [`Dictionary`] trait from `hallucinator-parsing`,
+//! allowing it to be used with [`hallucinator_parsing::text_processing::fix_hyphenation_with_dict`].
 
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+
+use hallucinator_parsing::Dictionary;
 
 /// A dictionary backed by SCOWL word lists.
 ///
@@ -20,11 +27,31 @@ pub struct ScowlDictionary {
 }
 
 impl ScowlDictionary {
-    /// Load the embedded SCOWL word list (size 70, ~160K words).
+    /// Load the embedded SCOWL word list (size 70, ~160K words) plus academic terms.
     ///
     /// This is the recommended way to use the dictionary for most cases.
+    /// Includes both the base SCOWL dictionary and a curated list of academic/technical
+    /// terms commonly found in research papers.
     pub fn embedded() -> Self {
-        Self::from_str(include_str!("../data/wordlist.txt"))
+        let scowl = include_str!("../data/wordlist.txt");
+        let academic = include_str!("../data/academic-terms.txt");
+        Self::from_multiple(&[scowl, academic])
+    }
+
+    /// Load dictionary from multiple string sources.
+    ///
+    /// Words from all sources are combined into a single dictionary.
+    pub fn from_multiple(sources: &[&str]) -> Self {
+        let words = sources
+            .iter()
+            .flat_map(|content| {
+                content
+                    .lines()
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(|l| l.to_lowercase())
+            })
+            .collect();
+        Self { words }
     }
 
     /// Load dictionary from a file path.
@@ -66,6 +93,12 @@ impl ScowlDictionary {
     }
 }
 
+impl Dictionary for ScowlDictionary {
+    fn contains(&self, word: &str) -> bool {
+        self.words.contains(&word.to_lowercase())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +125,31 @@ mod tests {
         assert!(dict.contains("neural"));
         assert!(dict.contains("classifier"));
         assert!(dict.contains("automated"));
+    }
+
+    #[test]
+    fn test_contains_academic_terms() {
+        let dict = ScowlDictionary::embedded();
+
+        // ML/AI terms from academic supplement
+        assert!(dict.contains("tokenization"), "tokenization should be in dict");
+        assert!(dict.contains("analyzing"), "analyzing should be in dict");
+        assert!(dict.contains("randomized"), "randomized should be in dict");
+        assert!(dict.contains("convolutional"), "convolutional should be in dict");
+        assert!(dict.contains("hyperparameter"), "hyperparameter should be in dict");
+        assert!(dict.contains("backpropagation"), "backpropagation should be in dict");
+        assert!(dict.contains("autoencoder"), "autoencoder should be in dict");
+
+        // CS terms
+        assert!(dict.contains("middleware"), "middleware should be in dict");
+        assert!(dict.contains("containerized"), "containerized should be in dict");
+        assert!(dict.contains("virtualization"), "virtualization should be in dict");
+        assert!(dict.contains("serialization"), "serialization should be in dict");
+
+        // Security terms
+        assert!(dict.contains("ciphertext"), "ciphertext should be in dict");
+        assert!(dict.contains("blockchain"), "blockchain should be in dict");
+        assert!(dict.contains("ransomware"), "ransomware should be in dict");
     }
 
     #[test]

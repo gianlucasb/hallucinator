@@ -17,9 +17,13 @@ thiserror.workspace = true
 [dev-dependencies]
 hallucinator-bbl = { workspace = true }
 hallucinator-core = { workspace = true }
+hallucinator-scowl = { workspace = true }
 mupdf = { workspace = true }
 rapidfuzz = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 anyhow = { workspace = true }
+dirs = { workspace = true }
+rusqlite = { workspace = true }
+regex = { workspace = true }
 strsim = "0.11"

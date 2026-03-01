@@ -6,3 +6,4 @@ description = "SCOWL-based English dictionary for hallucinator"
 license = "MIT"
 
 [dependencies]
+hallucinator-parsing.workspace = true

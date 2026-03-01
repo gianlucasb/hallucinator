@@ -1366,13 +1366,16 @@ name = "hallucinator-parsing"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "dirs",
  "flate2",
  "hallucinator-bbl",
  "hallucinator-core",
+ "hallucinator-scowl",
  "mupdf",
  "once_cell",
  "rapidfuzz",
  "regex",
+ "rusqlite",
  "strsim",
  "tar",
  "thiserror 2.0.18",
@@ -1396,6 +1399,9 @@ dependencies = [
 [[package]]
 name = "hallucinator-scowl"
 version = "0.1.0"
+dependencies = [
+ "hallucinator-parsing",
+]
 
 [[package]]
 name = "hallucinator-tui"
