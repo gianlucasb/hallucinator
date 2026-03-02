@@ -167,6 +167,8 @@ blockchain
 blockchains
 cryptocurrency
 cryptocurrencies
+multisignature
+multisignatures
 ransomware
 malware
 spyware
