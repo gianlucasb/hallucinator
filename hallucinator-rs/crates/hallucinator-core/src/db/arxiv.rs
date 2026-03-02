@@ -50,7 +50,7 @@ impl DatabaseBackend for Arxiv {
     fn query_arxiv_id<'a>(
         &'a self,
         arxiv_id: &'a str,
-        title: &'a str,
+        _title: &'a str,
         _authors: &'a [String],
         client: &'a reqwest::Client,
         timeout: Duration,
@@ -76,10 +76,122 @@ impl DatabaseBackend for Arxiv {
                 Err(e) => return Some(Err(DbQueryError::Other(e.to_string()))),
             };
 
-            // Parse Atom XML feed with title validation
-            Some(parse_arxiv_response(&body, title))
+            // For direct ID lookups, skip title validation - we trust the ID
+            Some(parse_arxiv_id_response(&body))
         })
     }
+}
+
+/// Parse arXiv Atom XML response for direct ID lookup (no title validation).
+fn parse_arxiv_id_response(xml: &str) -> Result<DbQueryResult, DbQueryError> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_str(xml);
+
+    let mut in_entry = false;
+    let mut in_title = false;
+    let mut in_author = false;
+    let mut in_name = false;
+
+    let mut current_title = String::new();
+    let mut current_authors: Vec<String> = Vec::new();
+    let mut current_name = String::new();
+    let mut current_link = String::new();
+
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"entry" => {
+                        in_entry = true;
+                        current_title.clear();
+                        current_authors.clear();
+                        current_link.clear();
+                    }
+                    b"title" if in_entry => {
+                        in_title = true;
+                        current_title.clear();
+                    }
+                    b"author" if in_entry => {
+                        in_author = true;
+                        current_name.clear();
+                    }
+                    b"name" if in_author => {
+                        in_name = true;
+                        current_name.clear();
+                    }
+                    _ => {}
+                }
+                // Handle link element (self-closing or not)
+                if local.as_ref() == b"link" && in_entry {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"href" {
+                            current_link = String::from_utf8_lossy(&attr.value).to_string();
+                        }
+                    }
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"link" && in_entry {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"href" && current_link.is_empty() {
+                            current_link = String::from_utf8_lossy(&attr.value).to_string();
+                        }
+                    }
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                let text = e.unescape().unwrap_or_default();
+                if in_title && in_entry {
+                    current_title.push_str(&text);
+                }
+                if in_name {
+                    current_name.push_str(&text);
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"entry" => {
+                        // Return the first entry (direct ID lookup returns exactly one)
+                        let entry_title = current_title.trim().to_string();
+                        if !entry_title.is_empty() && !current_authors.is_empty() {
+                            let link = if current_link.is_empty() {
+                                None
+                            } else {
+                                Some(current_link.clone())
+                            };
+                            return Ok(DbQueryResult::found(
+                                entry_title,
+                                current_authors.clone(),
+                                link,
+                            ));
+                        }
+                        in_entry = false;
+                    }
+                    b"title" => in_title = false,
+                    b"author" => {
+                        if !current_name.is_empty() {
+                            current_authors.push(current_name.trim().to_string());
+                        }
+                        in_author = false;
+                    }
+                    b"name" => in_name = false,
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(DbQueryError::Other(format!("XML parse error: {}", e))),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(DbQueryResult::not_found())
 }
 
 /// Parse arXiv Atom XML response and find matching entries.

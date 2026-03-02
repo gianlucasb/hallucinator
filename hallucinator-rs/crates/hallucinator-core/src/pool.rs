@@ -543,10 +543,13 @@ async fn finalize_collector(collector: &RefCollector) {
     all_failed_dbs.extend(remote_failed_dbs);
 
     // Build doi_info from reference DOI + DOI drainer result
+    // Only mark as invalid if we got a definitive NoMatch - not for timeouts/errors
     let doi_info = collector.reference.doi.as_ref().map(|doi| {
-        let valid = all_db_results.iter().any(|r| {
-            r.db_name == "DOI" && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch)
-        });
+        let doi_result = all_db_results.iter().find(|r| r.db_name == "DOI");
+        let valid = match doi_result {
+            Some(r) => !matches!(r.status, DbStatus::NoMatch),
+            None => true, // No result yet, assume valid
+        };
         DoiInfo {
             doi: doi.clone(),
             valid,
@@ -555,10 +558,13 @@ async fn finalize_collector(collector: &RefCollector) {
     });
 
     // Build arxiv_info from reference arXiv ID + arXiv drainer result
+    // Only mark as invalid if we got a definitive NoMatch - not for timeouts/errors
     let arxiv_info = collector.reference.arxiv_id.as_ref().map(|arxiv_id| {
-        let valid = all_db_results.iter().any(|r| {
-            r.db_name == "arXiv" && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch)
-        });
+        let arxiv_result = all_db_results.iter().find(|r| r.db_name == "arXiv");
+        let valid = match arxiv_result {
+            Some(r) => !matches!(r.status, DbStatus::NoMatch),
+            None => true, // No result yet, assume valid
+        };
         ArxivInfo {
             arxiv_id: arxiv_id.clone(),
             valid,
@@ -964,10 +970,11 @@ async fn coordinator_loop(
             });
 
             let doi_info = reference.doi.as_ref().map(|doi| {
-                let valid = all_db_results.iter().any(|r| {
-                    r.db_name == "DOI"
-                        && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch)
-                });
+                let doi_result = all_db_results.iter().find(|r| r.db_name == "DOI");
+                let valid = match doi_result {
+                    Some(r) => !matches!(r.status, DbStatus::NoMatch),
+                    None => true,
+                };
                 DoiInfo {
                     doi: doi.clone(),
                     valid,
