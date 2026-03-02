@@ -102,7 +102,7 @@ impl Default for ConfigState {
             ("OpenAlex".to_string(), true),
             ("DOI".to_string(), true),
             ("GovInfo".to_string(), true),
-            ("PatentsView".to_string(), true),
+            // PatentsView disabled - API key grants suspended
         ];
 
         Self {
