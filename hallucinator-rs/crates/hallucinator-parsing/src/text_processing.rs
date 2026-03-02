@@ -60,23 +60,46 @@ pub fn expand_ligatures(text: &str) -> String {
 /// assert_eq!(fix_hyphenation_with_dict("human- centered", &dict), "human-centered");
 /// ```
 pub fn fix_hyphenation_with_dict<D: Dictionary + ?Sized>(text: &str, dict: &D) -> String {
-    // Only fix "word- word" patterns (hyphen followed by whitespace).
+    // Pass 1: Fix "word- word" patterns (hyphen followed by whitespace).
     // These are clearly PDF line break artifacts.
-    //
-    // We do NOT fix "word-word" patterns (no space) because these are likely
-    // intentional hyphenated compounds (e.g., "co-located", "self-attention").
-    // Both "colocated" and "co-located" are valid spellings, and we should
-    // preserve the author's choice.
     static RE_WITH_SPACE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(\w+)-\s+(\w+)").unwrap()
     });
 
-    RE_WITH_SPACE
+    let result = RE_WITH_SPACE
         .replace_all(text, |caps: &regex::Captures| {
             let before = &caps[1];
             let after = &caps[2];
 
             // If before ends with a digit, keep hyphen (e.g., "GPT-4-turbo")
+            if before.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+                return format!("{}-{}", before, after);
+            }
+
+            // Check if merged word is in dictionary
+            let merged = format!("{}{}", before, after);
+            if dict.contains(&merged.to_lowercase()) {
+                merged
+            } else {
+                format!("{}-{}", before, after)
+            }
+        })
+        .into_owned();
+
+    // Pass 2: Fix "word-word" patterns (no space) using dictionary lookup.
+    // This handles cases where the PDF removed the space (e.g., "Chal-lenges").
+    // If the merged word is in the dictionary, it's a real word split by a
+    // line break. If not, it's likely an intentional compound (e.g., "co-located").
+    static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"([a-zA-Z]+)-([a-zA-Z]+)").unwrap()
+    });
+
+    RE_NO_SPACE
+        .replace_all(&result, |caps: &regex::Captures| {
+            let before = &caps[1];
+            let after = &caps[2];
+
+            // If before ends with a digit, keep hyphen (e.g., "GPT4-turbo")
             if before.chars().last().is_some_and(|c| c.is_ascii_digit()) {
                 return format!("{}-{}", before, after);
             }
@@ -116,7 +139,6 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "mated", "nated", "rated", "lated", "cated", "gated", "tine", "dine",
         "rine", "line", "fier", "fiers", "ship", "ships", "hood", "hoods",
         "archy", "ences", "ances", "morphism", "antees", "tionships", "erware",
-        "lenges", "graphy", "tography",
     ]
     .into_iter()
     .collect()
@@ -130,7 +152,7 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
 
     static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| {
         // Match common syllable suffixes without space
-        Regex::new(r"(?i)([a-z])-(tion|tions|tional|sion|sions|sional|ment|ments|ness|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ation|ering|uring|ating|bilities|ilities|ral|lar|nar|ural|eral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|mated|nated|rated|lated|cated|gated|tine|dine|rine|line|fier|fiers|ship|ships|hood|hoods|archy|ences|ances|morphism|antees|tionships|erware|lenges|graphy|tography)([.\s,;:?!]|$)").unwrap()
+        Regex::new(r"(?i)([a-z])-(tion|tions|tional|sion|sions|sional|ment|ments|ness|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ation|ering|uring|ating|bilities|ilities|ral|lar|nar|ural|eral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|mated|nated|rated|lated|cated|gated|tine|dine|rine|line|fier|fiers|ship|ships|hood|hoods|archy|ences|ances|morphism|antees|tionships|erware)([.\s,;:?!]|$)").unwrap()
     });
 
     let default_suffixes: Vec<String> = COMPOUND_SUFFIXES.iter().map(|s| s.to_string()).collect();
@@ -238,10 +260,10 @@ mod tests {
         assert_eq!(fix_hyphenation_with_dict("auto- mated", &dict), "automated");
         assert_eq!(fix_hyphenation_with_dict("detec- tion", &dict), "detection");
 
-        // No-space variants are NOT fixed (could be intentional hyphenation)
-        // "bidirec-tional" without space is preserved as-is
-        assert_eq!(fix_hyphenation_with_dict("bidirec-tional", &dict), "bidirec-tional");
-        assert_eq!(fix_hyphenation_with_dict("member-ship", &dict), "member-ship");
+        // No-space variants ARE NOW ALSO FIXED when merged word is in dictionary
+        // This catches PDF artifacts where the space after hyphen was lost
+        assert_eq!(fix_hyphenation_with_dict("bidirec-tional", &dict), "bidirectional");
+        assert_eq!(fix_hyphenation_with_dict("member-ship", &dict), "membership");
     }
 
     #[test]
@@ -329,10 +351,9 @@ mod tests {
         assert_eq!(fix_hyphenation("Implementa-tion"), "Implementation");
         assert_eq!(fix_hyphenation("bidirec-tional"), "bidirectional");
         assert_eq!(fix_hyphenation("member-ship"), "membership");
-        assert_eq!(fix_hyphenation("Chal-lenges"), "Challenges");
-        assert_eq!(fix_hyphenation("cryp-tography"), "cryptography");
-        // "els" is not a known suffix, so heuristics keep the hyphen
-        // (dictionary-based approach would handle this correctly)
+        // "lenges", "els", "tography" are not known suffixes - use dictionary for these
+        assert_eq!(fix_hyphenation("Chal-lenges"), "Chal-lenges");
+        assert_eq!(fix_hyphenation("cryp-tography"), "cryp-tography");
         assert_eq!(fix_hyphenation("Language Mod-els."), "Language Mod-els.");
     }
 
@@ -351,16 +372,36 @@ mod tests {
     #[test]
     fn test_dict_handles_edge_cases_heuristics_miss() {
         // Cases that heuristics miss but dictionary handles correctly
-        // NOTE: Dictionary-based approach only fixes "word- word" patterns (with space)
-        // to preserve intentional hyphenation like "co-located"
         let dict = MockDict::new(&["models", "language", "neural", "networks"]);
 
         // With space after hyphen: these ARE fixed
         assert_eq!(fix_hyphenation_with_dict("Language Mod- els.", &dict), "Language Models.");
         assert_eq!(fix_hyphenation_with_dict("Neu- ral net- works", &dict), "Neural networks");
 
-        // Without space: these are preserved (could be intentional hyphenation)
-        assert_eq!(fix_hyphenation_with_dict("Mod-els", &dict), "Mod-els");
-        assert_eq!(fix_hyphenation_with_dict("Neu-ral", &dict), "Neu-ral");
+        // Without space: NOW ALSO FIXED when merged word is in dictionary
+        assert_eq!(fix_hyphenation_with_dict("Mod-els", &dict), "Models");
+        assert_eq!(fix_hyphenation_with_dict("Neu-ral", &dict), "Neural");
+    }
+
+    #[test]
+    fn test_dict_no_space_preserves_compounds() {
+        // Compound words should be preserved (merged form not in dictionary)
+        let dict = MockDict::new(&["human", "centered", "data", "driven", "self", "attention"]);
+
+        // These should keep hyphen because merged form is NOT in dictionary
+        assert_eq!(fix_hyphenation_with_dict("human-centered", &dict), "human-centered");
+        assert_eq!(fix_hyphenation_with_dict("data-driven", &dict), "data-driven");
+        assert_eq!(fix_hyphenation_with_dict("self-attention", &dict), "self-attention");
+    }
+
+    #[test]
+    fn test_dict_no_space_merges_real_words() {
+        // Real words split by PDF should be merged (merged form IS in dictionary)
+        let dict = MockDict::new(&["challenges", "cryptography", "photography", "methodology"]);
+
+        assert_eq!(fix_hyphenation_with_dict("Chal-lenges", &dict), "Challenges");
+        assert_eq!(fix_hyphenation_with_dict("cryp-tography", &dict), "cryptography");
+        assert_eq!(fix_hyphenation_with_dict("pho-tography", &dict), "photography");
+        assert_eq!(fix_hyphenation_with_dict("method-ology", &dict), "methodology");
     }
 }
