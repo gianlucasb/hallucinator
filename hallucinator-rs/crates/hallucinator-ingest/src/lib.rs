@@ -42,7 +42,7 @@ pub fn extract_references(path: &Path) -> Result<ExtractionResult, IngestError> 
 
 #[cfg(feature = "pdf")]
 fn extract_pdf(path: &Path) -> Result<ExtractionResult, IngestError> {
-    let backend = hallucinator_pdf_mupdf::MupdfBackend;
+    let backend = hallucinator_pdf_mupdf::MupdfBackend::default();
     hallucinator_parsing::extract_references(path, &backend).map_err(IngestError::Pdf)
 }
 
