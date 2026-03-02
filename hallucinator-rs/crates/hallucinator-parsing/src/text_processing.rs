@@ -116,6 +116,7 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "mated", "nated", "rated", "lated", "cated", "gated", "tine", "dine",
         "rine", "line", "fier", "fiers", "ship", "ships", "hood", "hoods",
         "archy", "ences", "ances", "morphism", "antees", "tionships", "erware",
+        "lenges", "graphy", "tography",
     ]
     .into_iter()
     .collect()
@@ -129,7 +130,7 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
 
     static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| {
         // Match common syllable suffixes without space
-        Regex::new(r"(?i)([a-z])-(tion|tions|tional|sion|sions|sional|ment|ments|ness|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ation|ering|uring|ating|bilities|ilities|ral|lar|nar|ural|eral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|mated|nated|rated|lated|cated|gated|tine|dine|rine|line|fier|fiers|ship|ships|hood|hoods|archy|ences|ances|morphism|antees|tionships|erware)([.\s,;:?!]|$)").unwrap()
+        Regex::new(r"(?i)([a-z])-(tion|tions|tional|sion|sions|sional|ment|ments|ness|ance|ence|ency|ity|ing|ings|ism|isms|ist|ists|able|ible|ure|ures|age|ages|ous|ive|ical|ally|ular|ology|ization|ised|ized|ation|ering|uring|ating|bilities|ilities|ral|lar|nar|ural|eral|ber|der|ter|ger|ver|ner|per|fer|ser|cer|ker|mer|tor|sor|mated|nated|rated|lated|cated|gated|tine|dine|rine|line|fier|fiers|ship|ships|hood|hoods|archy|ences|ances|morphism|antees|tionships|erware|lenges|graphy|tography)([.\s,;:?!]|$)").unwrap()
     });
 
     let default_suffixes: Vec<String> = COMPOUND_SUFFIXES.iter().map(|s| s.to_string()).collect();
@@ -153,12 +154,12 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
                 return format!("{}-{}", before_word, after_word);
             }
 
-            // Check connector words (Over-The-Air, etc.)
+            // Check connector words (Over-The-Air, Plug-and-Play, etc.)
             static CONNECTORS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-                ["The", "To", "Of", "In", "On", "Up", "Out", "At", "By", "For", "And", "Or", "A", "An"]
+                ["the", "to", "of", "in", "on", "up", "out", "at", "by", "for", "and", "or", "a", "an"]
                     .into_iter().collect()
             });
-            if CONNECTORS.contains(after_word) {
+            if CONNECTORS.contains(after_word.to_lowercase().as_str()) {
                 return format!("{}-{}", before_word, after_word);
             }
 
@@ -317,6 +318,8 @@ mod tests {
     fn test_heuristic_connectors() {
         assert_eq!(fix_hyphenation("Over-\nThe-Air"), "Over-The-Air");
         assert_eq!(fix_hyphenation("Up-\nTo-Date"), "Up-To-Date");
+        // Lowercase connectors should also be preserved
+        assert_eq!(fix_hyphenation("Plug-\nand-Play"), "Plug-and-Play");
     }
 
     #[test]
@@ -326,6 +329,8 @@ mod tests {
         assert_eq!(fix_hyphenation("Implementa-tion"), "Implementation");
         assert_eq!(fix_hyphenation("bidirec-tional"), "bidirectional");
         assert_eq!(fix_hyphenation("member-ship"), "membership");
+        assert_eq!(fix_hyphenation("Chal-lenges"), "Challenges");
+        assert_eq!(fix_hyphenation("cryp-tography"), "cryptography");
         // "els" is not a known suffix, so heuristics keep the hyphen
         // (dictionary-based approach would handle this correctly)
         assert_eq!(fix_hyphenation("Language Mod-els."), "Language Mod-els.");
