@@ -76,6 +76,7 @@ The tool queries these databases simultaneously:
 | **Europe PMC** | Life science literature (42M+ abstracts, mirrors PubMed/PMC) |
 | **PubMed** | Biomedical literature via NCBI E-utilities |
 | **OpenAlex** | 250M+ works (optional, needs free API key) |
+| **GovInfo** | US federal laws, regulations, court opinions (optional, needs free API key) |
 | **Web Search** | SearxNG fallback for unindexed papers (optional, see below) |
 
 ~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
@@ -98,6 +99,15 @@ API keys are optional but recommended. They improve coverage and reduce rate lim
 2. Click "Request API Key"
 3. Fill out the form (academic use)
 4. Wait for email (usually same day)
+
+### GovInfo (free, instant)
+For papers citing US federal laws, regulations, or court opinions:
+1. Go to https://api.data.gov/signup/
+2. Enter your name and email
+3. You'll receive an API key instantly (no approval process)
+4. Use with `--govinfo-key=YOUR_KEY` or set `GOVINFO_KEY` env var
+
+GovInfo covers Public Laws, Congressional Bills, Code of Federal Regulations (CFR), Federal Register, and US Court Opinions.
 
 ---
 
