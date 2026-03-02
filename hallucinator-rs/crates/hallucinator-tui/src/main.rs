@@ -175,6 +175,16 @@ async fn main() -> anyhow::Result<()> {
     {
         config_state.s2_api_key = key;
     }
+    if let Ok(key) = std::env::var("GOVINFO_KEY")
+        && !key.is_empty()
+    {
+        config_state.govinfo_key = key;
+    }
+    if let Ok(key) = std::env::var("PATENTSVIEW_KEY")
+        && !key.is_empty()
+    {
+        config_state.patentsview_key = key;
+    }
     if let Ok(path) = std::env::var("DBLP_OFFLINE_PATH")
         && !path.is_empty()
     {

@@ -21,6 +21,16 @@ pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
         {
             state.crossref_mailto = email.clone();
         }
+        if let Some(ref key) = api.govinfo_key
+            && !key.is_empty()
+        {
+            state.govinfo_key = key.clone();
+        }
+        if let Some(ref key) = api.patentsview_key
+            && !key.is_empty()
+        {
+            state.patentsview_key = key.clone();
+        }
     }
     if let Some(db) = &file_cfg.databases {
         if let Some(ref path) = db.dblp_offline_path
@@ -110,6 +120,16 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
                 None
             } else {
                 Some(state.crossref_mailto.clone())
+            },
+            govinfo_key: if state.govinfo_key.is_empty() {
+                None
+            } else {
+                Some(state.govinfo_key.clone())
+            },
+            patentsview_key: if state.patentsview_key.is_empty() {
+                None
+            } else {
+                Some(state.patentsview_key.clone())
             },
         }),
         databases: Some(DatabasesConfig {

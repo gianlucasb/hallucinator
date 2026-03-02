@@ -140,6 +140,16 @@ impl App {
             } else {
                 Some(self.config_state.s2_api_key.clone())
             },
+            govinfo_key: if self.config_state.govinfo_key.is_empty() {
+                None
+            } else {
+                Some(self.config_state.govinfo_key.clone())
+            },
+            patentsview_key: if self.config_state.patentsview_key.is_empty() {
+                None
+            } else {
+                Some(self.config_state.patentsview_key.clone())
+            },
             dblp_offline_path: if self.config_state.dblp_offline_path.is_empty() {
                 None
             } else {

@@ -269,6 +269,8 @@ pub struct CheckStats {
 pub struct Config {
     pub openalex_key: Option<String>,
     pub s2_api_key: Option<String>,
+    pub govinfo_key: Option<String>,
+    pub patentsview_key: Option<String>,
     pub dblp_offline_path: Option<PathBuf>,
     pub dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>>,
     pub acl_offline_path: Option<PathBuf>,
@@ -302,6 +304,11 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("openalex_key", &self.openalex_key.as_ref().map(|_| "***"))
             .field("s2_api_key", &self.s2_api_key.as_ref().map(|_| "***"))
+            .field("govinfo_key", &self.govinfo_key.as_ref().map(|_| "***"))
+            .field(
+                "patentsview_key",
+                &self.patentsview_key.as_ref().map(|_| "***"),
+            )
             .field("dblp_offline_path", &self.dblp_offline_path)
             .field(
                 "dblp_offline_db",
@@ -344,6 +351,8 @@ impl Default for Config {
         Self {
             openalex_key: None,
             s2_api_key: None,
+            govinfo_key: None,
+            patentsview_key: None,
             dblp_offline_path: None,
             dblp_offline_db: None,
             acl_offline_path: None,

@@ -581,6 +581,20 @@ pub(crate) fn build_database_list(
             );
         }
     }
+    // GovInfo (requires API key, silently skip if not configured)
+    if should_include("GovInfo")
+        && let Some(ref key) = config.govinfo_key
+    {
+        databases.push(Box::new(govinfo::GovInfo::new(key.clone())));
+    }
+    // PatentsView - DISABLED: API key grants are currently suspended
+    // See: https://patentsview.org/apis/keyrequest
+    // Uncomment when API keys become available again:
+    // if should_include("PatentsView")
+    //     && let Some(ref key) = config.patentsview_key
+    // {
+    //     databases.push(Box::new(patentsview::PatentsView::new(key.clone())));
+    // }
 
     databases
 }
@@ -602,6 +616,7 @@ mod tests {
                 "PubMed".into(),
                 "OpenAlex".into(),
                 "DOI".into(),
+                "GovInfo".into(),
             ],
             ..Config::default()
         }

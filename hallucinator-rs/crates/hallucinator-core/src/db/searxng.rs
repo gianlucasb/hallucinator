@@ -165,11 +165,15 @@ impl DatabaseBackend for Searxng {
         Box::pin(async move {
             // Strategy 1: Exact phrase matching (most precise)
             // Normalize smart quotes/apostrophes for better matching
+            // Also remove colons which some search engines interpret as field specifiers
             let clean_title = title
                 .replace('\u{2019}', "'") // Right single quote
                 .replace('\u{2018}', "'") // Left single quote
                 .replace('\u{201C}', "\"") // Left double quote
-                .replace('\u{201D}', "\""); // Right double quote
+                .replace('\u{201D}', "\"") // Right double quote
+                .replace('\u{2013}', "-") // En-dash to hyphen
+                .replace('\u{2014}', "-") // Em-dash to hyphen
+                .replace(':', ""); // Remove colons (interpreted as field specifiers)
             let exact_query = format!("\"{}\"", clean_title);
 
             match self
@@ -262,6 +266,32 @@ mod tests {
         assert!(!titles_match_lenient(
             "Attention Is All You Need",
             "BERT: Pre-training of Deep Bidirectional Transformers"
+        ));
+    }
+
+    #[test]
+    fn test_titles_match_lenient_with_colon() {
+        // Titles with colons should still match (colon is stripped by normalize_title)
+        assert!(titles_match_lenient(
+            "Ethereum: A secure decentralised generalised transaction ledger",
+            "Ethereum A secure decentralised generalised transaction ledger"
+        ));
+        assert!(titles_match_lenient(
+            "BERT: Pre-training of Deep Bidirectional Transformers",
+            "BERT Pre-training of Deep Bidirectional Transformers"
+        ));
+    }
+
+    #[test]
+    fn test_titles_match_lenient_with_dashes() {
+        // En-dash and em-dash should match regular hyphen
+        assert!(titles_match_lenient(
+            "Emerging trends in digital payments–a prospective study", // en-dash
+            "Emerging trends in digital payments-a prospective study"  // hyphen
+        ));
+        assert!(titles_match_lenient(
+            "Some title—with em-dash", // em-dash
+            "Some title-with em-dash"  // hyphen
         ));
     }
 }
