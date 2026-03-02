@@ -45,6 +45,14 @@ enum Command {
         #[arg(long)]
         s2_api_key: Option<String>,
 
+        /// GovInfo API key (free from api.data.gov)
+        #[arg(long)]
+        govinfo_key: Option<String>,
+
+        /// PatentsView API key (US patents)
+        #[arg(long)]
+        patentsview_key: Option<String>,
+
         /// Path to output log file
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -193,6 +201,8 @@ async fn main() -> anyhow::Result<()> {
             no_color,
             openalex_key,
             s2_api_key,
+            govinfo_key,
+            patentsview_key,
             output,
             dblp_offline,
             acl_offline,
@@ -262,6 +272,8 @@ async fn main() -> anyhow::Result<()> {
                     no_color,
                     openalex_key,
                     s2_api_key,
+                    govinfo_key,
+                    patentsview_key,
                     output,
                     dblp_offline,
                     acl_offline,
@@ -375,6 +387,8 @@ async fn check(
     no_color: bool,
     openalex_key: Option<String>,
     s2_api_key: Option<String>,
+    govinfo_key: Option<String>,
+    patentsview_key: Option<String>,
     output: Option<PathBuf>,
     dblp_offline: Option<PathBuf>,
     acl_offline: Option<PathBuf>,
@@ -411,6 +425,22 @@ async fn check(
                 .api_keys
                 .as_ref()
                 .and_then(|a| a.s2_api_key.clone())
+        });
+    let govinfo_key = govinfo_key
+        .or_else(|| std::env::var("GOVINFO_KEY").ok())
+        .or_else(|| {
+            file_config
+                .api_keys
+                .as_ref()
+                .and_then(|a| a.govinfo_key.clone())
+        });
+    let patentsview_key = patentsview_key
+        .or_else(|| std::env::var("PATENTSVIEW_KEY").ok())
+        .or_else(|| {
+            file_config
+                .api_keys
+                .as_ref()
+                .and_then(|a| a.patentsview_key.clone())
         });
     let dblp_offline_path = dblp_offline
         .or_else(|| std::env::var("DBLP_OFFLINE_PATH").ok().map(PathBuf::from))
@@ -687,6 +717,8 @@ async fn check(
     let config = hallucinator_core::Config {
         openalex_key: openalex_key.clone(),
         s2_api_key,
+        govinfo_key,
+        patentsview_key,
         dblp_offline_path: dblp_offline_path.clone(),
         dblp_offline_db,
         acl_offline_path: acl_offline_path.clone(),

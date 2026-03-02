@@ -145,6 +145,11 @@ fn render_api_keys(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) {
                 config.crossref_mailto.clone()
             },
         ),
+        ("GovInfo", ConfigState::mask_key(&config.govinfo_key)),
+        (
+            "PatentsView",
+            ConfigState::mask_key(&config.patentsview_key),
+        ),
     ];
     for (i, (label, display_default)) in items.iter().enumerate() {
         let cursor = if config.item_cursor == i { "> " } else { "  " };

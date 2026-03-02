@@ -69,6 +69,8 @@ pub struct ConfigState {
     pub openalex_key: String,
     pub s2_api_key: String,
     pub crossref_mailto: String,
+    pub govinfo_key: String,
+    pub patentsview_key: String,
     pub disabled_dbs: Vec<(String, bool)>, // (name, enabled)
     pub dblp_offline_path: String,
     pub acl_offline_path: String,
@@ -99,6 +101,8 @@ impl Default for ConfigState {
             ("PubMed".to_string(), true),
             ("OpenAlex".to_string(), true),
             ("DOI".to_string(), true),
+            ("GovInfo".to_string(), true),
+            ("PatentsView".to_string(), true),
         ];
 
         Self {
@@ -124,6 +128,8 @@ impl Default for ConfigState {
             openalex_key: String::new(),
             s2_api_key: String::new(),
             crossref_mailto: String::new(),
+            govinfo_key: String::new(),
+            patentsview_key: String::new(),
             disabled_dbs: all_dbs,
             dblp_offline_path: String::new(),
             acl_offline_path: String::new(),

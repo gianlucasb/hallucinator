@@ -37,7 +37,7 @@ impl App {
     /// Get the number of items in the current config section.
     pub(super) fn config_section_item_count(&self) -> usize {
         match self.config_state.section {
-            ConfigSection::ApiKeys => 3,
+            ConfigSection::ApiKeys => 5, // OpenAlex + S2 + CrossRef Mailto + GovInfo + PatentsView
             ConfigSection::Databases => 7 + self.config_state.disabled_dbs.len(), // DBLP + ACL + OpenAlex + cache_path + clear_cache + clear_not_found + searxng_url + toggles
             ConfigSection::Concurrency => 5,
             ConfigSection::Display => 2, // theme + fps
@@ -52,6 +52,8 @@ impl App {
                     0 => self.config_state.openalex_key.clone(),
                     1 => self.config_state.s2_api_key.clone(),
                     2 => self.config_state.crossref_mailto.clone(),
+                    3 => self.config_state.govinfo_key.clone(),
+                    4 => self.config_state.patentsview_key.clone(),
                     _ => return,
                 };
                 self.config_state.editing = true;
@@ -163,6 +165,8 @@ impl App {
                 0 => self.config_state.openalex_key = buf,
                 1 => self.config_state.s2_api_key = buf,
                 2 => self.config_state.crossref_mailto = buf,
+                3 => self.config_state.govinfo_key = buf,
+                4 => self.config_state.patentsview_key = buf,
                 _ => {}
             },
             ConfigSection::Concurrency => match self.config_state.item_cursor {

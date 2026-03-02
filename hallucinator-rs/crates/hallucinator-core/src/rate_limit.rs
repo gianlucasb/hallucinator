@@ -184,6 +184,12 @@ impl RateLimiters {
         // DOI (doi.org): generous limit, no documented cap but be polite
         limiters.insert("DOI", AdaptiveDbLimiter::per_second(3));
 
+        // GovInfo: 40/sec documented limit, use 10/sec conservative
+        limiters.insert("GovInfo", AdaptiveDbLimiter::per_second(10));
+
+        // PatentsView: no documented limit, use 5/sec to be polite
+        limiters.insert("PatentsView", AdaptiveDbLimiter::per_second(5));
+
         // SSRN: disabled, skip limiter
         // NeurIPS: disabled, skip limiter
         // Offline DBs (DBLP offline, ACL offline) share names but don't make HTTP requests

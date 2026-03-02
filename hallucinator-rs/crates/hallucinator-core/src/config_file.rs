@@ -17,6 +17,8 @@ pub struct ApiKeysConfig {
     pub openalex_key: Option<String>,
     pub s2_api_key: Option<String>,
     pub crossref_mailto: Option<String>,
+    pub govinfo_key: Option<String>,
+    pub patentsview_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,6 +94,20 @@ pub fn merge(base: ConfigFile, overlay: ConfigFile) -> ConfigFile {
                     base.api_keys
                         .as_ref()
                         .and_then(|a| a.crossref_mailto.clone())
+                }),
+            govinfo_key: overlay
+                .api_keys
+                .as_ref()
+                .and_then(|a| a.govinfo_key.clone())
+                .or_else(|| base.api_keys.as_ref().and_then(|a| a.govinfo_key.clone())),
+            patentsview_key: overlay
+                .api_keys
+                .as_ref()
+                .and_then(|a| a.patentsview_key.clone())
+                .or_else(|| {
+                    base.api_keys
+                        .as_ref()
+                        .and_then(|a| a.patentsview_key.clone())
                 }),
         }),
         databases: Some(DatabasesConfig {
