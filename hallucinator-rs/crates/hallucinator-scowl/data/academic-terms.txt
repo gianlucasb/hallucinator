@@ -2,6 +2,13 @@
 # Words commonly found in academic papers that are missing from SCOWL
 # One word per line, case-insensitive
 
+# Common base words surprisingly missing from SCOWL
+analysis
+analyses
+analyze
+analyzes
+analyzed
+
 # -ized/-ization patterns (very common in academic writing)
 analyzing
 randomized

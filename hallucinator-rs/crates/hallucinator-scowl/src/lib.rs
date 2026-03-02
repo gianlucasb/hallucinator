@@ -131,6 +131,11 @@ mod tests {
     fn test_contains_academic_terms() {
         let dict = ScowlDictionary::embedded();
 
+        // Common base words from academic supplement
+        assert!(dict.contains("analysis"), "analysis should be in dict");
+        assert!(dict.contains("analyses"), "analyses should be in dict");
+        assert!(dict.contains("analyze"), "analyze should be in dict");
+
         // ML/AI terms from academic supplement
         assert!(dict.contains("tokenization"), "tokenization should be in dict");
         assert!(dict.contains("analyzing"), "analyzing should be in dict");
