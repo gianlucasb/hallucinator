@@ -1,5 +1,7 @@
 use std::path::Path;
+use std::sync::Arc;
 
+use once_cell::sync::Lazy;
 use thiserror::Error;
 
 pub mod archive;
@@ -8,6 +10,11 @@ pub mod archive;
 pub use hallucinator_core::{ExtractionResult, Reference, SkipStats};
 // Re-export archive API
 pub use archive::{ArchiveItem, ExtractedPdf, extract_archive_streaming, is_archive_path};
+
+/// Global SCOWL dictionary for dictionary-based hyphenation fixing.
+/// Loaded once at first use.
+static SCOWL_DICT: Lazy<Arc<hallucinator_scowl::ScowlDictionary>> =
+    Lazy::new(|| Arc::new(hallucinator_scowl::ScowlDictionary::embedded()));
 
 #[derive(Error, Debug)]
 pub enum IngestError {
@@ -43,7 +50,12 @@ pub fn extract_references(path: &Path) -> Result<ExtractionResult, IngestError> 
 #[cfg(feature = "pdf")]
 fn extract_pdf(path: &Path) -> Result<ExtractionResult, IngestError> {
     let backend = hallucinator_pdf_mupdf::MupdfBackend;
-    hallucinator_parsing::extract_references(path, &backend).map_err(IngestError::Pdf)
+    // Use SCOWL dictionary for accurate hyphenation fixing
+    let extractor =
+        hallucinator_parsing::ReferenceExtractor::new().with_shared_dictionary(SCOWL_DICT.clone());
+    extractor
+        .extract_references_via_backend(path, &backend)
+        .map_err(IngestError::Pdf)
 }
 
 #[cfg(not(feature = "pdf"))]

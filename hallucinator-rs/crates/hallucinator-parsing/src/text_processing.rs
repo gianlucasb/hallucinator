@@ -397,11 +397,14 @@ mod tests {
     #[test]
     fn test_dict_no_space_merges_real_words() {
         // Real words split by PDF should be merged (merged form IS in dictionary)
-        let dict = MockDict::new(&["challenges", "cryptography", "photography", "methodology"]);
+        let dict = MockDict::new(&["challenges", "cryptography", "photography", "methodology", "protocols"]);
 
         assert_eq!(fix_hyphenation_with_dict("Chal-lenges", &dict), "Challenges");
         assert_eq!(fix_hyphenation_with_dict("cryp-tography", &dict), "cryptography");
         assert_eq!(fix_hyphenation_with_dict("pho-tography", &dict), "photography");
         assert_eq!(fix_hyphenation_with_dict("method-ology", &dict), "methodology");
+        assert_eq!(fix_hyphenation_with_dict("proto-cols", &dict), "protocols");
+        assert_eq!(fix_hyphenation_with_dict("Modern adventures with legacy proto-cols", &dict),
+                   "Modern adventures with legacy protocols");
     }
 }

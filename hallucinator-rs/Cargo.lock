@@ -1334,6 +1334,8 @@ dependencies = [
  "hallucinator-core",
  "hallucinator-parsing",
  "hallucinator-pdf-mupdf",
+ "hallucinator-scowl",
+ "once_cell",
  "tar",
  "thiserror 2.0.18",
  "tracing",

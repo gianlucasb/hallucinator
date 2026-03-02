@@ -17,8 +17,10 @@ hallucinator-core.workspace = true
 hallucinator-parsing.workspace = true
 hallucinator-pdf-mupdf = { workspace = true, optional = true }
 hallucinator-bbl.workspace = true
+hallucinator-scowl.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zip.workspace = true
 tar.workspace = true
 flate2.workspace = true
+once_cell.workspace = true
