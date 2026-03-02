@@ -75,6 +75,7 @@ hallucinator-cli check --no-color paper.pdf
 |--------|-------------|
 | `--openalex-key=KEY` | OpenAlex API key |
 | `--s2-api-key=KEY` | Semantic Scholar API key |
+| `--govinfo-key=KEY` | GovInfo API key (for US federal laws) |
 | `--dblp-offline=PATH` | Path to offline DBLP database |
 | `--acl-offline=PATH` | Path to offline ACL Anthology database |
 | `--output=PATH` | Write output to file |
@@ -160,7 +161,7 @@ The TUI also has `update-dblp` and `update-acl` subcommands, same as the CLI.
 Settings are loaded from (highest to lowest priority):
 
 1. CLI arguments
-2. Environment variables (`OPENALEX_KEY`, `S2_API_KEY`, `DBLP_OFFLINE_PATH`, `ACL_OFFLINE_PATH`, `SEARXNG_URL`, `DB_TIMEOUT`, `DB_TIMEOUT_SHORT`)
+2. Environment variables (`OPENALEX_KEY`, `S2_API_KEY`, `GOVINFO_KEY`, `DBLP_OFFLINE_PATH`, `ACL_OFFLINE_PATH`, `SEARXNG_URL`, `DB_TIMEOUT`, `DB_TIMEOUT_SHORT`)
 3. Config file
 4. Defaults
 
@@ -177,6 +178,7 @@ Settings changed in the TUI config screen are persisted automatically.
 [api_keys]
 openalex_key = "..."
 s2_api_key = "..."
+govinfo_key = "..."  # Free from api.data.gov
 
 [databases]
 dblp_offline_path = "/path/to/dblp.db"
@@ -219,6 +221,7 @@ Same 10 databases as the Python version:
 | Europe PMC | Life science literature (42M+ abstracts) |
 | PubMed | Biomedical literature via NCBI |
 | OpenAlex | 250M+ works (optional, needs API key) |
+| GovInfo | US federal laws, regulations, court opinions (optional, needs free API key) |
 | Web Search | SearxNG fallback (optional, weaker than DB matches) |
 
 Each reference is checked against all enabled databases concurrently. First verified match wins (early exit).
@@ -265,6 +268,49 @@ searxng_url = "http://localhost:8080"
 2. If not found anywhere, SearxNG is queried as a fallback
 3. Results are filtered for academic domains and exact title matches
 4. Matches are marked as "Web Search" (no author verification)
+
+---
+
+## GovInfo (US Federal Laws)
+
+[GovInfo](https://www.govinfo.gov/) provides access to US federal government publications including laws, regulations, congressional records, and court opinions. This is useful for verifying legal citations in academic papers.
+
+### Getting an API Key
+
+1. Go to [api.data.gov/signup](https://api.data.gov/signup/)
+2. Enter your name and email
+3. You'll receive an API key instantly (no approval process)
+4. The key works for all api.data.gov services including GovInfo
+
+### Usage
+
+```bash
+# CLI
+hallucinator-cli check --govinfo-key=YOUR_KEY paper.pdf
+
+# Environment variable
+export GOVINFO_KEY=YOUR_KEY
+hallucinator-cli check paper.pdf
+```
+
+### Config file
+
+```toml
+[api_keys]
+govinfo_key = "your-key-here"
+```
+
+### Coverage
+
+GovInfo indexes:
+- **Public and Private Laws** (e.g., "Clean Air Act Amendments of 1990")
+- **Congressional Bills and Reports**
+- **Code of Federal Regulations (CFR)**
+- **Federal Register**
+- **US Court Opinions**
+- **Congressional Record**
+
+> **Note:** Academic papers often cite laws by informal names (e.g., "CIPA" instead of "Children's Internet Protection Act"). GovInfo searches the full text, so exact title matching may not always succeed for informal citations.
 
 ---
 
