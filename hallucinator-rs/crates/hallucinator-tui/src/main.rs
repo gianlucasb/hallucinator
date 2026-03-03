@@ -51,6 +51,10 @@ struct Cli {
     #[arg(long)]
     s2_api_key: Option<String>,
 
+    /// GovInfo API key (free from api.data.gov)
+    #[arg(long)]
+    govinfo_key: Option<String>,
+
     /// Path to offline DBLP database
     #[arg(long)]
     dblp_offline: Option<PathBuf>,
@@ -217,6 +221,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(key) = cli.s2_api_key {
         config_state.s2_api_key = key;
+    }
+    if let Some(key) = cli.govinfo_key {
+        config_state.govinfo_key = key;
     }
     if let Some(ref path) = cli.dblp_offline {
         config_state.dblp_offline_path = path.display().to_string();
