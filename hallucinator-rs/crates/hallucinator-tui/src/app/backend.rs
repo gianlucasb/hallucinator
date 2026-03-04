@@ -57,6 +57,7 @@ impl App {
                                 authors: r.authors,
                                 doi: r.doi,
                                 arxiv_id: r.arxiv_id,
+                                urls: r.urls,
                             }
                         })
                         .collect();

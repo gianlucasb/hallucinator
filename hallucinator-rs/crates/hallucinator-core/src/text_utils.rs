@@ -2,6 +2,67 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 
+/// Extract URLs from reference text.
+///
+/// Handles common PDF extraction artifacts:
+/// - Broken URLs with spaces in "http://" (e.g., "http : //")
+/// - Line breaks within URLs
+/// - Trailing punctuation
+///
+/// Excludes:
+/// - DOI URLs (already handled via extract_doi)
+/// - Academic URLs (doi.org, arxiv.org, etc.)
+pub fn extract_urls(text: &str) -> Vec<String> {
+    // First, fix broken URL prefixes (common PDF extraction issue)
+    // "http : //" or "ht tp://" or "https : //" etc.
+    static BROKEN_PREFIX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)ht\s*tp\s*(s?)\s*:\s*//").unwrap());
+    let text_fixed = BROKEN_PREFIX.replace_all(text, "http$1://");
+
+    // Fix URLs split across lines (URL continues with path after newline)
+    // Match URLs and continue across newlines if the next line starts with /path or alphanumeric
+    static LINE_BREAK_FIX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(https?://[^\s\]>]+)\s*\n\s*(/[^\s\]>]*)").unwrap());
+    let text_fixed = LINE_BREAK_FIX.replace_all(&text_fixed, "$1$2");
+
+    // URL regex that captures common URL patterns
+    static URL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"https?://[^\s\]>\)\},]+").unwrap()
+    });
+
+    // Academic domains to exclude (these are handled by dedicated backends)
+    static ACADEMIC_DOMAINS: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)(doi\.org|arxiv\.org|acm\.org|ieee\.org|usenix\.org|semanticscholar\.org|dblp\.org|aclanthology\.org|openreview\.net|neurips\.cc|proceedings\.mlr\.press)").unwrap()
+    });
+
+    let mut urls = Vec::new();
+    let mut seen = HashSet::new();
+
+    for m in URL_RE.find_iter(&text_fixed) {
+        let mut url = m.as_str().to_string();
+
+        // Clean trailing punctuation (common in citations)
+        url = url.trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"', '\'']).to_string();
+
+        // Skip academic URLs (handled by dedicated backends)
+        if ACADEMIC_DOMAINS.is_match(&url) {
+            continue;
+        }
+
+        // Skip DOI URLs (already extracted separately)
+        if url.contains("doi.org") {
+            continue;
+        }
+
+        // Deduplicate
+        if seen.insert(url.clone()) {
+            urls.push(url);
+        }
+    }
+
+    urls
+}
+
 /// Strip unbalanced trailing parentheses, brackets, and braces from a DOI.
 fn clean_doi(doi: &str) -> String {
     let mut doi = doi.trim_end_matches(['.', ',', ';', ':']);
@@ -462,5 +523,81 @@ mod tests {
     fn test_get_query_words_bibtex_hyphenated() {
         let words = get_query_words("{COVID}-19 Detection with Deep Learning", 6);
         assert!(words.contains(&"COVID-19".to_string()));
+    }
+
+    // ── extract_urls tests ──
+
+    #[test]
+    fn test_extract_urls_basic() {
+        let urls = extract_urls("See https://github.com/user/repo for details.");
+        assert_eq!(urls, vec!["https://github.com/user/repo"]);
+    }
+
+    #[test]
+    fn test_extract_urls_multiple() {
+        let urls = extract_urls("Code at https://github.com/user/repo and docs at https://example.com/docs");
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"https://github.com/user/repo".to_string()));
+        assert!(urls.contains(&"https://example.com/docs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_urls_trailing_punct() {
+        let urls = extract_urls("Visit https://github.com/repo.");
+        assert_eq!(urls, vec!["https://github.com/repo"]);
+
+        let urls2 = extract_urls("(see https://example.com/page)");
+        assert_eq!(urls2, vec!["https://example.com/page"]);
+    }
+
+    #[test]
+    fn test_extract_urls_broken_prefix() {
+        // PDF extraction sometimes adds spaces in "http://"
+        let urls = extract_urls("See http : //github.com/repo for code.");
+        assert_eq!(urls, vec!["http://github.com/repo"]);
+
+        let urls2 = extract_urls("Visit ht tp://example.com/page.");
+        assert_eq!(urls2, vec!["http://example.com/page"]);
+    }
+
+    #[test]
+    fn test_extract_urls_excludes_academic() {
+        // Academic URLs should be excluded (handled by dedicated backends)
+        let urls = extract_urls("Paper at https://arxiv.org/abs/2301.12345 and code at https://github.com/user/repo");
+        assert_eq!(urls, vec!["https://github.com/user/repo"]);
+
+        // doi.org should be excluded
+        let urls2 = extract_urls("https://doi.org/10.1234/test");
+        assert!(urls2.is_empty());
+
+        // Other academic domains
+        let urls3 = extract_urls("https://semanticscholar.org/paper/123 https://dblp.org/rec/test");
+        assert!(urls3.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_deduplicates() {
+        let urls = extract_urls("https://github.com/repo and again https://github.com/repo");
+        assert_eq!(urls.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_urls_none() {
+        let urls = extract_urls("No URLs in this text.");
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_with_path() {
+        let urls = extract_urls("https://github.com/user/repo/blob/main/README.md");
+        assert_eq!(urls, vec!["https://github.com/user/repo/blob/main/README.md"]);
+    }
+
+    #[test]
+    fn test_extract_urls_edudata_case() {
+        // Real-world case: citation with GitHub URL
+        let text = "BigData Lab @USTC. 2021. EduData. Online, accessed February 5, 2025. https://github.com/bigdata-ustc/EduData";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://github.com/bigdata-ustc/EduData"]);
     }
 }

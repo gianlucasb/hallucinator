@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::authors::validate_authors;
 use crate::db::DatabaseBackend;
 use crate::db::searxng::Searxng;
+use crate::db::url_check::UrlChecker;
 use crate::orchestrator::{build_database_list, query_local_databases};
 use crate::rate_limit::{self, ArxivIdContext, DbQueryError, DoiContext};
 use crate::{
@@ -477,6 +478,59 @@ async fn finalize_collector(collector: &RefCollector) {
         }
     };
 
+    // URL liveness check for references with embedded URLs
+    let (status, source, found_authors, paper_url, remote_db_results) =
+        if status == Status::NotFound && !collector.reference.urls.is_empty() {
+            let timeout = Duration::from_secs(collector.config.db_timeout_secs);
+            let start = std::time::Instant::now();
+
+            if let Some(url_result) = UrlChecker::check_first_live(
+                &collector.reference.urls,
+                &collector.client,
+                timeout,
+            )
+            .await
+            {
+                let elapsed = start.elapsed();
+                let url = url_result.final_url.unwrap_or(url_result.url);
+                (collector.progress)(ProgressEvent::DatabaseQueryComplete {
+                    paper_index: 0,
+                    ref_index: collector.ref_index,
+                    db_name: "URL Check".to_string(),
+                    status: DbStatus::Match,
+                    elapsed,
+                });
+                let mut db_results = remote_db_results;
+                db_results.push(DbResult {
+                    db_name: "URL Check".into(),
+                    status: DbStatus::Match,
+                    elapsed: Some(elapsed),
+                    found_authors: vec![],
+                    paper_url: Some(url.clone()),
+                    error_message: None,
+                });
+                (
+                    Status::Verified,
+                    Some("URL Check".into()),
+                    vec![],
+                    Some(url),
+                    db_results,
+                )
+            } else {
+                let elapsed = start.elapsed();
+                (collector.progress)(ProgressEvent::DatabaseQueryComplete {
+                    paper_index: 0,
+                    ref_index: collector.ref_index,
+                    db_name: "URL Check".to_string(),
+                    status: DbStatus::NoMatch,
+                    elapsed,
+                });
+                (status, source, found_authors, paper_url, remote_db_results)
+            }
+        } else {
+            (status, source, found_authors, paper_url, remote_db_results)
+        };
+
     // SearxNG fallback for NotFound references
     let (status, source, found_authors, paper_url, remote_db_results) =
         if status == Status::NotFound {
@@ -834,9 +888,67 @@ async fn coordinator_loop(
 
         // --- Fan out to drainer queues ---
         if drainer_txs.is_empty() {
-            // No remote DBs enabled — try SearxNG fallback if configured
+            // No remote DBs enabled — try URL check and SearxNG fallbacks
             let result = if local_result.status == Status::NotFound {
-                if let Some(ref searxng_url) = config.searxng_url {
+                // Try URL liveness check first
+                let url_check_result = if !reference.urls.is_empty() {
+                    let timeout = Duration::from_secs(config.db_timeout_secs);
+                    let start = std::time::Instant::now();
+                    let result =
+                        UrlChecker::check_first_live(&reference.urls, &client, timeout).await;
+                    let elapsed = start.elapsed();
+
+                    if let Some(url_result) = result {
+                        let url = url_result.final_url.unwrap_or(url_result.url);
+                        progress(ProgressEvent::DatabaseQueryComplete {
+                            paper_index: 0,
+                            ref_index,
+                            db_name: "URL Check".to_string(),
+                            status: DbStatus::Match,
+                            elapsed,
+                        });
+                        let mut db_results = local_result.db_results.clone();
+                        db_results.push(DbResult {
+                            db_name: "URL Check".into(),
+                            status: DbStatus::Match,
+                            elapsed: Some(elapsed),
+                            found_authors: vec![],
+                            paper_url: Some(url.clone()),
+                            error_message: None,
+                        });
+                        Some(ValidationResult {
+                            title: title.clone(),
+                            raw_citation: reference.raw_citation.clone(),
+                            ref_authors: reference.authors.clone(),
+                            status: Status::Verified,
+                            source: Some("URL Check".into()),
+                            found_authors: vec![],
+                            paper_url: Some(url),
+                            failed_dbs: local_result.failed_dbs.clone(),
+                            db_results,
+                            doi_info: None,
+                            arxiv_info: None,
+                            retraction_info: None,
+                        })
+                    } else {
+                        progress(ProgressEvent::DatabaseQueryComplete {
+                            paper_index: 0,
+                            ref_index,
+                            db_name: "URL Check".to_string(),
+                            status: DbStatus::NoMatch,
+                            elapsed,
+                        });
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // If URL check succeeded, use that result
+                if let Some(result) = url_check_result {
+                    result
+                } else if let Some(ref searxng_url) = config.searxng_url {
+                    // Otherwise try SearxNG fallback
                     let searxng = Searxng::new(searxng_url.clone());
                     let timeout = Duration::from_secs(config.db_timeout_secs);
 

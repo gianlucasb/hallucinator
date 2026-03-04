@@ -123,7 +123,6 @@ impl ReferenceExtractor {
             match parsed {
                 ParsedRef::Skip(reason, raw_citation, title) => {
                     match reason {
-                        SkipReason::UrlOnly => stats.url_only += 1,
                         SkipReason::ShortTitle => stats.short_title += 1,
                     }
                     references.push(Reference {
@@ -132,9 +131,9 @@ impl ReferenceExtractor {
                         authors: vec![],
                         doi: None,
                         arxiv_id: None,
+                        urls: vec![],
                         original_number: raw_idx + 1,
                         skip_reason: Some(match reason {
-                            SkipReason::UrlOnly => "url_only".to_string(),
                             SkipReason::ShortTitle => "short_title".to_string(),
                         }),
                     });
@@ -166,8 +165,8 @@ pub enum ParsedRef {
 }
 
 /// Reason a reference was skipped.
+#[derive(Debug)]
 pub enum SkipReason {
-    UrlOnly,
     ShortTitle,
 }
 
@@ -193,30 +192,8 @@ fn parse_single_reference(
         text_processing::fix_hyphenation_with_config(&ref_text, config)
     };
 
-    // Skip entries with non-academic URLs
-    static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?\s*:\s*//").unwrap());
-    static BROKEN_URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"ht\s*tps?\s*:\s*//").unwrap());
-    static ACADEMIC_URL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)(acm\.org|ieee\.org|usenix\.org|arxiv\.org|doi\.org)").unwrap()
-    });
-
-    if (URL_RE.is_match(&ref_text) || BROKEN_URL_RE.is_match(&ref_text))
-        && !ACADEMIC_URL_RE.is_match(&ref_text)
-    {
-        // Still extract a title for display purposes even though we're skipping
-        let (extracted_title, from_quotes) =
-            title::extract_title_from_reference_with_config(&ref_text, config);
-        let cleaned_title = title::clean_title_with_config(&extracted_title, from_quotes, config);
-        let title = if cleaned_title.is_empty() {
-            None
-        } else {
-            Some(cleaned_title)
-        };
-
-        static WS_SKIP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
-        let raw = WS_SKIP_RE.replace_all(&ref_text, " ").trim().to_string();
-        return ParsedRef::Skip(SkipReason::UrlOnly, raw, title);
-    }
+    // Extract non-academic URLs (for URL liveness check fallback)
+    let urls = identifiers::extract_urls(&ref_text);
 
     // Extract title
     let (extracted_title, from_quotes) =
@@ -226,11 +203,11 @@ fn parse_single_reference(
     if cleaned_title.is_empty() || cleaned_title.split_whitespace().count() < config.min_title_words
     {
         // Short titles can still be real citations if we have strong signals:
-        // DOI, arXiv ID, or venue/year markers in the raw text.
+        // DOI, arXiv ID, URLs, or venue/year markers in the raw text.
         // Note: from_quotes alone is not a strong signal — most IEEE/ACM refs
         // use quoted titles, which would bypass min_title_words for nearly everything.
         let has_strong_signal = !cleaned_title.is_empty()
-            && (doi.is_some() || arxiv_id.is_some() || looks_like_citation(&ref_text));
+            && (doi.is_some() || arxiv_id.is_some() || !urls.is_empty() || looks_like_citation(&ref_text));
 
         if !has_strong_signal {
             static WS_SKIP_RE2: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
@@ -270,6 +247,7 @@ fn parse_single_reference(
         authors: ref_authors,
         doi,
         arxiv_id,
+        urls,
         original_number: 0, // placeholder; overwritten by caller
         skip_reason: None,
     })
@@ -357,22 +335,28 @@ mod tests {
     }
 
     #[test]
-    fn test_extractor_skips_url_only_refs() {
+    fn test_extractor_extracts_urls_from_refs() {
         let ext = ReferenceExtractor::new();
-        // Test URL skipping via parse_reference directly (avoids segmentation complexity)
-        let ref_text = "See https://github.com/some/repo for details about the implementation.";
+
+        // References with non-academic URLs should have URLs extracted
+        // They may still be skipped if the title is too short, but URLs should be captured
+        let ref_text = r#"J. Smith, "A Great Paper About GitHub Projects," https://github.com/some/repo, 2023."#;
         let parsed = ext.parse_reference(ref_text, &[]);
         match parsed {
-            ParsedRef::Skip(SkipReason::UrlOnly, _, _) => {} // expected
-            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // also acceptable
-            ParsedRef::Ref(r) => panic!("URL-only ref should be skipped, got: {:?}", r.title),
+            ParsedRef::Ref(r) => {
+                assert!(!r.urls.is_empty(), "Should extract URL from reference");
+                assert!(r.urls[0].contains("github.com"));
+            }
+            ParsedRef::Skip(..) => panic!("Reference with title and URL should not be skipped"),
         }
 
-        // Academic URLs should NOT be skipped
+        // Academic URLs should NOT be in the urls list (handled by dedicated backends)
         let academic_ref = r#"J. Smith, "A Paper Title About Reference Detection Systems," https://doi.org/10.1234/test, 2023."#;
         let parsed2 = ext.parse_reference(academic_ref, &[]);
         match parsed2 {
-            ParsedRef::Ref(_) => {} // expected — doi.org is academic
+            ParsedRef::Ref(r) => {
+                assert!(r.urls.is_empty(), "doi.org URLs should be excluded");
+            }
             ParsedRef::Skip(..) => panic!("Academic URL ref should not be skipped"),
         }
     }
@@ -617,6 +601,38 @@ mod tests {
     }
 
     #[test]
+    fn test_short_title_rescued_by_url() {
+        let ext = ReferenceExtractor::new();
+        // 3-word title but has URL → should NOT be skipped
+        let ref_text = "Smith, J. Word Affect Intensities. https://github.com/user/repo";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                assert!(!r.urls.is_empty(), "Should have extracted URL");
+            }
+            ParsedRef::Skip(..) => panic!("Short title with URL should be rescued"),
+        }
+    }
+
+    #[test]
+    fn test_edudata_reference() {
+        // Real-world case from arxiv paper: one-word title "EduData" with GitHub URL
+        let ext = ReferenceExtractor::new();
+        let ref_text = "BigData Lab @USTC. 2021. EduData. Online, accessed February 5, 2025. https://github.com/bigdata-ustc/EduData";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                assert_eq!(r.title.as_deref(), Some("EduData"), "Title should be 'EduData'");
+                assert!(!r.urls.is_empty(), "Should have extracted GitHub URL");
+                assert!(r.urls[0].contains("github.com"), "URL should be the GitHub URL");
+            }
+            ParsedRef::Skip(reason, _, _) => {
+                panic!("EduData with GitHub URL should not be skipped (was skipped due to {:?})", reason);
+            }
+        }
+    }
+
+    #[test]
     fn test_short_title_rescued_by_venue() {
         let ext = ReferenceExtractor::new();
         // 3-word title with venue + year signals → should NOT be skipped
@@ -642,26 +658,23 @@ mod tests {
         }
     }
 
-    // ── URL-only skip with title extraction ──
+    // ── URL extraction from references ──
 
     #[test]
-    fn test_url_only_skip_preserves_title() {
+    fn test_url_reference_extracts_url_and_title() {
         let ext = ReferenceExtractor::new();
-        // A reference with a non-academic URL that also has a parseable title
+        // A reference with a non-academic URL should be parsed (not skipped)
+        // with both title and URL extracted
         let ref_text =
             "Smith, J. 2023. Some Interesting Report About Software. https://example.com/report";
         let parsed = ext.parse_reference(ref_text, &[]);
         match parsed {
-            ParsedRef::Skip(SkipReason::UrlOnly, _, title) => {
-                assert!(
-                    title.is_some(),
-                    "URL-only skip should still extract a title"
-                );
+            ParsedRef::Ref(r) => {
+                assert!(r.title.is_some(), "Should extract a title");
+                assert!(!r.urls.is_empty(), "Should extract the URL");
+                assert!(r.urls[0].contains("example.com"));
             }
-            ParsedRef::Ref(_) => panic!("Non-academic URL should be skipped"),
-            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {
-                panic!("Should be UrlOnly skip, not ShortTitle")
-            }
+            ParsedRef::Skip(..) => panic!("Reference with URL and valid title should not be skipped"),
         }
     }
 

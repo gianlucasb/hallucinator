@@ -188,6 +188,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
                 authors,
                 doi: None,
                 arxiv_id: None,
+                urls: vec![],
             });
             continue;
         }
@@ -209,6 +210,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
                     authors,
                     doi,
                     arxiv_id,
+                    urls: vec![],
                 });
                 continue;
             }
@@ -305,6 +307,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
             authors: ref_authors,
             doi: ref_doi,
             arxiv_id: ref_arxiv,
+            urls: vec![],
         });
     }
 

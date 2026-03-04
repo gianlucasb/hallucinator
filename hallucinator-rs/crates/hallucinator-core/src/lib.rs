@@ -61,7 +61,7 @@ pub use backend::{BackendError, PdfBackend};
 pub use cache::{DEFAULT_NEGATIVE_TTL, DEFAULT_POSITIVE_TTL, QueryCache};
 pub use orchestrator::{DbSearchResult, query_all_databases};
 pub use rate_limit::{DbQueryError, RateLimitedResult, RateLimiters};
-pub use text_utils::{extract_arxiv_id, extract_doi, get_query_words};
+pub use text_utils::{extract_arxiv_id, extract_doi, extract_urls, get_query_words};
 
 /// A parsed reference extracted from a document.
 #[derive(Debug, Clone)]
@@ -71,6 +71,9 @@ pub struct Reference {
     pub authors: Vec<String>,
     pub doi: Option<String>,
     pub arxiv_id: Option<String>,
+    /// URLs extracted from the reference (e.g., GitHub links, blog posts).
+    /// Used for URL liveness check fallback when academic databases don't find the paper.
+    pub urls: Vec<String>,
     /// 1-based position in the original reference list (before skip filtering).
     pub original_number: usize,
     /// If set, this reference was skipped during extraction (e.g. "url_only", "short_title").

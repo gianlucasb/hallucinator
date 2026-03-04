@@ -15,6 +15,7 @@ pub mod pubmed;
 pub mod searxng;
 pub mod semantic_scholar;
 pub mod ssrn;
+pub mod url_check;
 
 #[cfg(test)]
 pub(crate) mod mock;

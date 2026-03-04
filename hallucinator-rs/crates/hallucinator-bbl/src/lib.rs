@@ -59,6 +59,7 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
                     authors: vec![],
                     doi: None,
                     arxiv_id: None,
+                    urls: vec![],
                     original_number: raw_idx + 1,
                     skip_reason: Some("no_title".to_string()),
                 });
@@ -72,6 +73,7 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
                     authors: vec![],
                     doi: None,
                     arxiv_id: None,
+                    urls: vec![],
                     original_number: raw_idx + 1,
                     skip_reason: Some("short_title".to_string()),
                 });
@@ -85,6 +87,7 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
                     authors: vec![],
                     doi: None,
                     arxiv_id: None,
+                    urls: vec![],
                     original_number: raw_idx + 1,
                     skip_reason: Some("no_title".to_string()),
                 });
@@ -112,6 +115,7 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
                 authors,
                 doi: None,
                 arxiv_id: None,
+                urls: vec![],
                 original_number: raw_idx + 1,
                 skip_reason: Some("url_only".to_string()),
             });
@@ -128,6 +132,7 @@ pub fn extract_references_from_bbl_str(content: &str) -> Result<ExtractionResult
             authors,
             doi,
             arxiv_id,
+            urls: vec![],
             original_number: raw_idx + 1,
             skip_reason: None,
         });
@@ -238,6 +243,7 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
                     authors: vec![],
                     doi: None,
                     arxiv_id: None,
+                    urls: vec![],
                     original_number: raw_idx + 1,
                     skip_reason: Some("no_title".to_string()),
                 });
@@ -251,6 +257,7 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
                     authors: vec![],
                     doi: None,
                     arxiv_id: None,
+                    urls: vec![],
                     original_number: raw_idx + 1,
                     skip_reason: Some("short_title".to_string()),
                 });
@@ -264,6 +271,7 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
                     authors: vec![],
                     doi: None,
                     arxiv_id: None,
+                    urls: vec![],
                     original_number: raw_idx + 1,
                     skip_reason: Some("no_title".to_string()),
                 });
@@ -325,6 +333,7 @@ fn process_bib_entries(entries: &[&biblatex::Entry]) -> ExtractionResult {
             authors,
             doi,
             arxiv_id,
+            urls: vec![],
             original_number: raw_idx + 1,
             skip_reason: None,
         });
