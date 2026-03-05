@@ -6,6 +6,7 @@ use std::collections::HashSet;
 ///
 /// Handles common PDF extraction artifacts:
 /// - Broken URLs with spaces in "http://" (e.g., "http : //")
+/// - Spaced punctuation in URLs (e.g., "www . example . org / path")
 /// - Line breaks within URLs
 /// - Trailing punctuation
 ///
@@ -14,10 +15,17 @@ use std::collections::HashSet;
 /// - Academic URLs (doi.org, arxiv.org, etc.)
 pub fn extract_urls(text: &str) -> Vec<String> {
     // First, fix broken URL prefixes (common PDF extraction issue)
-    // "http : //" or "ht tp://" or "https : //" etc.
+    // "http : //" or "ht tp://" or "https : / /" or "https : // " etc.
+    // Note: Some PDFs even have spaces between the slashes: "https : / /"
+    // The trailing \s* consumes any space between the slashes and the domain
     static BROKEN_PREFIX: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)ht\s*tp\s*(s?)\s*:\s*//").unwrap());
+        Lazy::new(|| Regex::new(r"(?i)ht\s*tp\s*(s?)\s*:\s*/\s*/\s*").unwrap());
     let text_fixed = BROKEN_PREFIX.replace_all(text, "http$1://");
+
+    // Fix spaced punctuation in URL regions: " . " → "." and " / " → "/"
+    // This handles PDFs that add spaces around all punctuation.
+    // We apply this aggressively after the protocol is fixed.
+    let text_fixed = fix_spaced_url_punctuation(&text_fixed);
 
     // Fix URLs split across lines (URL continues with path after newline)
     // Match URLs and continue across newlines if the next line starts with /path or alphanumeric
@@ -26,9 +34,8 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     let text_fixed = LINE_BREAK_FIX.replace_all(&text_fixed, "$1$2");
 
     // URL regex that captures common URL patterns
-    static URL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"https?://[^\s\]>\)\},]+").unwrap()
-    });
+    static URL_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"https?://[^\s\]>\)\},]+").unwrap());
 
     // Academic domains to exclude (these are handled by dedicated backends)
     static ACADEMIC_DOMAINS: Lazy<Regex> = Lazy::new(|| {
@@ -42,7 +49,9 @@ pub fn extract_urls(text: &str) -> Vec<String> {
         let mut url = m.as_str().to_string();
 
         // Clean trailing punctuation (common in citations)
-        url = url.trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"', '\'']).to_string();
+        url = url
+            .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"', '\''])
+            .to_string();
 
         // Skip academic URLs (handled by dedicated backends)
         if ACADEMIC_DOMAINS.is_match(&url) {
@@ -61,6 +70,61 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     }
 
     urls
+}
+
+/// Fix spaced punctuation within URL regions.
+///
+/// PDFs sometimes add spaces around punctuation, producing URLs like:
+/// `https://www . example . org / path / to / file`
+///
+/// This function finds URL regions (starting with `https://`) and removes
+/// spaces around `.` and `/` within them.
+fn fix_spaced_url_punctuation(text: &str) -> String {
+    // Find URL-like regions and fix spacing within them
+    static URL_REGION: Lazy<Regex> = Lazy::new(|| {
+        // Match https:// followed by characters that could be URL parts (including spaces around punctuation)
+        // Exclude () to avoid capturing "(visited on...)" annotations
+        Regex::new(r"https?://[\w\s.\-/~:@!$&'+,;=%?#\[\]]+").unwrap()
+    });
+
+    let mut result = text.to_string();
+
+    // Process each potential URL region
+    for m in URL_REGION.find_iter(text) {
+        let region = m.as_str();
+        let fixed = fix_url_spacing(region);
+        if fixed != region {
+            result = result.replace(region, &fixed);
+        }
+    }
+
+    result
+}
+
+/// Fix spacing within a single URL region.
+fn fix_url_spacing(url_region: &str) -> String {
+    let mut result = url_region.to_string();
+
+    // Remove spaces around dots: " . " or " ." or ". " → "."
+    // But be careful: we don't want to join unrelated words
+    // Only fix when surrounded by alphanumeric/URL-like chars
+    static SPACED_DOT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(\w)\s*\.\s*(\w)").unwrap());
+    result = SPACED_DOT.replace_all(&result, "$1.$2").to_string();
+
+    // Remove spaces around slashes when between URL parts: " / " → "/"
+    // Only fix when the slash is between alphanumeric/URL-like characters
+    // This avoids joining "url/ (visited" → "url/(visited"
+    static SPACED_SLASH: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(\w)\s*/\s*(\w)").unwrap());
+    result = SPACED_SLASH.replace_all(&result, "$1/$2").to_string();
+
+    // Remove spaces around hyphens in paths: "call- for- papers" → "call-for-papers"
+    static SPACED_HYPHEN: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(\w)\s*-\s*(\w)").unwrap());
+    result = SPACED_HYPHEN.replace_all(&result, "$1-$2").to_string();
+
+    result
 }
 
 /// Strip unbalanced trailing parentheses, brackets, and braces from a DOI.
@@ -599,5 +663,92 @@ mod tests {
         let text = "BigData Lab @USTC. 2021. EduData. Online, accessed February 5, 2025. https://github.com/bigdata-ustc/EduData";
         let urls = extract_urls(text);
         assert_eq!(urls, vec!["https://github.com/bigdata-ustc/EduData"]);
+    }
+
+    #[test]
+    fn test_extract_urls_pdf_broken_colon_space() {
+        // PDF extraction often produces "https: //" with space after colon
+        let text = "Online. https: //www.example.org/page";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://www.example.org/page"]);
+    }
+
+    #[test]
+    fn test_extract_urls_space_in_domain() {
+        // PDF extraction can split domain across lines creating spaces
+        // Now fixed! Spaces within URL regions are removed
+        let text = "See https://www.cs. cmu.edu/paper.pdf for details";
+        let urls = extract_urls(text);
+        // URL is now properly reconstructed
+        assert_eq!(urls, vec!["https://www.cs.cmu.edu/paper.pdf"]);
+    }
+
+    #[test]
+    fn test_extract_urls_real_pdf_cases() {
+        // Real cases from 300_Transparency Practices.pdf
+        let text1 = "https: / / cra . org / wp - content / uploads / 2024 / 07 / Report.pdf";
+        let urls1 = extract_urls(text1);
+        assert_eq!(
+            urls1,
+            vec!["https://cra.org/wp-content/uploads/2024/07/Report.pdf"]
+        );
+
+        // Space in path with hyphens
+        let text2 =
+            "https : / / www . usenix . org / conference/usenixsecurity25/call- for- papers";
+        let urls2 = extract_urls(text2);
+        // usenix.org is academic, so should be excluded
+        assert!(urls2.is_empty());
+
+        // chi2024 with space after domain
+        let text3 = "https://chi2024. acm.org/2024/02/08/artifacts-at-chi-2024/";
+        let urls3 = extract_urls(text3);
+        // acm.org is academic, so should be excluded
+        assert!(urls3.is_empty());
+
+        // go-fair.org - not academic, should be extracted
+        // Note: need space before (visited) for proper parsing
+        let text4 = "URL: https://www.go-fair.org/fair-principles/ (visited on...)";
+        let urls4 = extract_urls(text4);
+        assert_eq!(urls4, vec!["https://www.go-fair.org/fair-principles/"]);
+
+        // cos.io - not academic, should be extracted
+        let text5 = "URL: https: //www.cos.io/initiatives/top-guidelines";
+        let urls5 = extract_urls(text5);
+        assert_eq!(urls5, vec!["https://www.cos.io/initiatives/top-guidelines"]);
+
+        // icpsr.umich.edu - not academic (data repository), should be extracted
+        let text6 = "URL: https://www.icpsr.umich.edu/files/deposit/ data.pdf";
+        let urls6 = extract_urls(text6);
+        // Note: space in path gets fixed
+        assert_eq!(
+            urls6,
+            vec!["https://www.icpsr.umich.edu/files/deposit/data.pdf"]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_extreme_spacing() {
+        // Extreme case: spaces between all URL parts (using non-academic domain)
+        let text = "URL: https : / / www . github . com / user / repo";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://www.github.com/user/repo"]);
+
+        // Also test academic domain - should be excluded (handled by dedicated backends)
+        let text2 = "URL: https : / / www . acm . org / publications / policies/test";
+        let urls2 = extract_urls(text2);
+        assert!(urls2.is_empty(), "acm.org should be excluded as academic domain");
+    }
+
+    #[test]
+    fn test_extract_urls_space_after_domain() {
+        // Space after domain, before path - now fixed!
+        let text = "URL: https://www.sigsac.org/ ccs/CCS2024/call-for-papers.html";
+        let urls = extract_urls(text);
+        // Path is now properly joined
+        assert_eq!(
+            urls,
+            vec!["https://www.sigsac.org/ccs/CCS2024/call-for-papers.html"]
+        );
     }
 }
