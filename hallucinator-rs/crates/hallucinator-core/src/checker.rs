@@ -1,6 +1,7 @@
 use crate::db::DatabaseBackend;
 use crate::db::DbQueryResult;
 use crate::db::searxng::Searxng;
+use crate::db::url_check::UrlChecker;
 use crate::doi::{DoiMatchResult, DoiValidation, check_doi_match, validate_doi};
 use crate::orchestrator::query_all_databases;
 use crate::pool::{RefJob, ValidationPool};
@@ -233,7 +234,46 @@ pub async fn check_single_reference(
     )
     .await;
 
-    // Step 2.5: SearxNG fallback for NotFound references
+    // Step 2.5: URL liveness check for references with embedded URLs
+    if db_result.status == Status::NotFound && !reference.urls.is_empty() {
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let start = std::time::Instant::now();
+
+        if let Some(url_result) = UrlChecker::check_first_live(&reference.urls, client, timeout).await {
+            let elapsed = start.elapsed();
+            let paper_url = url_result.final_url.unwrap_or(url_result.url);
+
+            let url_db_result = DbResult {
+                db_name: "URL Check".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: vec![], // URL check cannot verify authors
+                paper_url: Some(paper_url.clone()),
+                error_message: None,
+            };
+            if let Some(cb) = on_db_complete {
+                cb(url_db_result.clone());
+            }
+            db_result.db_results.push(url_db_result);
+
+            db_result.status = Status::Verified;
+            db_result.source = Some("URL Check".into());
+            db_result.found_authors = vec![];
+            db_result.paper_url = Some(paper_url);
+        } else if let Some(cb) = on_db_complete {
+            let elapsed = start.elapsed();
+            cb(DbResult {
+                db_name: "URL Check".into(),
+                status: DbStatus::NoMatch,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: None,
+                error_message: None,
+            });
+        }
+    }
+
+    // Step 2.6: SearxNG fallback for NotFound references
     if db_result.status == Status::NotFound
         && let Some(ref searxng_url) = config.searxng_url
     {
@@ -278,7 +318,7 @@ pub async fn check_single_reference(
         }
     }
 
-    // Step 2.6: OpenAlex API fallback when offline DB is active but didn't find it
+    // Step 2.7: OpenAlex API fallback when offline DB is active but didn't find it
     if db_result.status == Status::NotFound
         && config.openalex_offline_db.is_some()
         && let Some(ref api_key) = config.openalex_key

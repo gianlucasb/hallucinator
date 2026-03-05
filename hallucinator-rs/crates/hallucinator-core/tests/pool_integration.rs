@@ -37,6 +37,7 @@ fn dummy_ref(title: &str) -> Reference {
         authors: vec![],
         doi: None,
         arxiv_id: None,
+        urls: vec![],
         original_number: 1,
         skip_reason: None,
     }

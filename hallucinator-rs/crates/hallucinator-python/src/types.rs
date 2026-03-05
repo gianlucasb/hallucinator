@@ -32,13 +32,14 @@ impl PyReference {
     ///     arxiv_id: The arXiv ID, if known.
     ///     raw_citation: Raw citation text for display. Defaults to the title.
     #[new]
-    #[pyo3(signature = (title, authors=vec![], doi=None, arxiv_id=None, raw_citation=None))]
+    #[pyo3(signature = (title, authors=vec![], doi=None, arxiv_id=None, raw_citation=None, urls=vec![]))]
     fn new(
         title: String,
         authors: Vec<String>,
         doi: Option<String>,
         arxiv_id: Option<String>,
         raw_citation: Option<String>,
+        urls: Vec<String>,
     ) -> Self {
         Self {
             inner: Reference {
@@ -47,6 +48,7 @@ impl PyReference {
                 authors,
                 doi,
                 arxiv_id,
+                urls,
                 original_number: 0,
                 skip_reason: None,
             },
@@ -81,6 +83,12 @@ impl PyReference {
     #[getter]
     fn arxiv_id(&self) -> Option<&str> {
         self.inner.arxiv_id.as_deref()
+    }
+
+    /// URLs extracted from the reference (for URL liveness check fallback).
+    #[getter]
+    fn urls(&self) -> Vec<String> {
+        self.inner.urls.clone()
     }
 
     /// 1-based position in the original reference list (before skip filtering).

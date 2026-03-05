@@ -31,6 +31,8 @@ pub struct RefState {
     pub doi: Option<String>,
     /// arXiv ID extracted during parsing.
     pub arxiv_id: Option<String>,
+    /// URLs extracted from the reference (for URL liveness check fallback).
+    pub urls: Vec<String>,
 }
 
 impl RefState {
@@ -52,6 +54,7 @@ impl RefState {
             authors: self.authors.clone(),
             doi: self.doi.clone(),
             arxiv_id: self.arxiv_id.clone(),
+            urls: self.urls.clone(),
             original_number: self.index + 1,
             skip_reason,
         }
