@@ -78,6 +78,11 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
+    // === Format 1c2: Org Report - "Org Name, Title (Year)" ===
+    if let Some(result) = try_org_comma_title(ref_text) {
+        return result;
+    }
+
     // === Format 1d: RFC/Internet Draft - "Authors. RFC XXXX: Title, Year." ===
     if let Some(result) = try_rfc_reference(ref_text) {
         return result;
@@ -90,7 +95,12 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
-    // === Format 2b: Book citation - "Author and Author, Title. Publisher, Year." ===
+    // === Format 2b: Edited book - "Author, Title, edited by Editors, Series (Publisher, Year)" ===
+    if let Some(result) = try_edited_book(ref_text) {
+        return result;
+    }
+
+    // === Format 2c: Book citation - "Author and Author, Title. Publisher, Year." ===
     if let Some(result) = try_book_citation(ref_text) {
         return result;
     }
@@ -372,10 +382,14 @@ pub(crate) fn clean_title_with_config(
             // Multiple semicolons with short tokens (code-like)
             Regex::new(r";\s*[a-z]{2,6}\s*;").unwrap(),
             // Assembly instructions: "mov eax, ebx" or "push ecx" patterns
+            // Exclude "and" and "or" since they're common English words that appear in titles
+            // like "cloud and iot," - only match with semicolon delimiter for these
             Regex::new(
-                r"(?i)\b(?:mov|push|pop|call|ret|jmp|lea|add|sub|xor|and|or)\s+[a-z]{2,3}[,;]",
+                r"(?i)\b(?:mov|push|pop|call|ret|jmp|lea|add|sub|xor)\s+[a-z]{2,3}[,;]",
             )
             .unwrap(),
+            // "and" and "or" require semicolon (not comma) to avoid matching English text
+            Regex::new(r"(?i)\b(?:and|or)\s+[a-z]{2,3};").unwrap(),
         ]
     });
     if CODE_PATTERNS.iter().any(|re| re.is_match(&title)) {
@@ -749,7 +763,8 @@ fn is_likely_author_list(text: &str) -> bool {
 }
 
 fn try_org_doc(ref_text: &str) -> Option<(String, bool)> {
-    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z][a-zA-Z\s]+):\s*(.+)").unwrap());
+    // Allow digits in org name for cases like "GDI Film Study 2024: Title"
+    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z][a-zA-Z0-9\s]+):\s*(.+)").unwrap());
 
     let caps = RE.captures(ref_text)?;
     let after_colon = caps.get(2).unwrap().as_str().trim();
@@ -759,6 +774,8 @@ fn try_org_doc(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(r"\s+\((?:19|20)\d{2}\)\s*[,.]?\s*(?:https?://|$)").unwrap(),
             Regex::new(r"\s+\((?:19|20)\d{2}\)\s*,").unwrap(),
             Regex::new(r"\.\s*https?://").unwrap(),
+            // Truncate at ", https://" (URL after comma)
+            Regex::new(r",\s*https?://").unwrap(),
         ]
     });
 
@@ -778,6 +795,86 @@ fn try_org_doc(ref_text: &str) -> Option<(String, bool)> {
     } else {
         None
     }
+}
+
+/// Handle "Org Name, Title (Year)" format for reports/white papers.
+/// e.g., "BBC America and Women's Media Center, Superpowering girls: ... (2018)"
+fn try_org_comma_title(ref_text: &str) -> Option<(String, bool)> {
+    // Pattern: Multi-word org name (capitalized), comma, title, (Year)
+    // Org name must be 2+ capitalized words, may contain "and", apostrophes
+    // Title follows comma, ends at (Year) pattern
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"^([A-Z][a-zA-Z']+(?:\s+(?:and|&|of|for|the|on)\s+|\s+)[A-Z][a-zA-Z']+(?:\s+[A-Za-z']+)*),\s+([A-Z][^(]+)\s+\((\d{4})\)"
+        ).unwrap()
+    });
+
+    let caps = RE.captures(ref_text)?;
+    let org = caps.get(1).unwrap().as_str().trim();
+    let title = caps.get(2).unwrap().as_str().trim();
+
+    // Org should be 3+ words with org indicators, OR contain org-like keywords
+    // Person names like "Lorrie Faith Cranor" (FirstName MiddleName LastName) should be rejected
+    let word_count = org.split_whitespace().count();
+    if word_count < 2 {
+        return None;
+    }
+
+    static ORG_INDICATORS: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(Inc|Corp|Foundation|Institute|Center|Centre|University|College|Association|Commission|Committee|Council|Bureau|Agency|Department|Ministry|Board|Media|Broadcasting|Network|Film|Study|Research|Organization|Organisation|Society|Group|Company|International|National|Federal|World|Global|American|British|European)\b").unwrap()
+    });
+
+    // For 2-3 word names, require org indicators (these often look like person names)
+    if word_count <= 3 && !ORG_INDICATORS.is_match(org) {
+        return None;
+    }
+
+    // Title should be substantial (3+ words)
+    if title.split_whitespace().count() < 3 {
+        return None;
+    }
+
+    // Clean trailing punctuation from title
+    static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.,;:]+\s*$").unwrap());
+    let title = TRAIL.replace(title, "");
+
+    Some((title.to_string(), false))
+}
+
+/// Handle "Author, Title, edited by Editors, Series (Publisher, Year)" format.
+/// e.g., "C. G. Jung, The Archetypes and the Collective Unconscious, edited by H. Read, ..."
+fn try_edited_book(ref_text: &str) -> Option<(String, bool)> {
+    // Look for ", edited by" or ", ed. by" clause
+    static EDITED_BY: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i),\s+(?:edited|ed\.?)\s+by\s+").unwrap());
+
+    let edited_match = EDITED_BY.find(ref_text)?;
+    let before_edited = &ref_text[..edited_match.start()];
+
+    // Find the author/title split: look for pattern "Author(s), Title"
+    // Author patterns: "C. G. Jung" (initials + surname), "Jung, C. G." (surname, initials)
+    // The title starts after the author name, following a comma
+
+    // Pattern 1: "I. I. Surname, Title" - initials followed by surname, comma, then title
+    static AUTHOR_TITLE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"^([A-Z]\.\s*(?:[A-Z]\.\s*)*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),\s+(.+)$"
+        ).unwrap()
+    });
+
+    if let Some(caps) = AUTHOR_TITLE.captures(before_edited) {
+        let title = caps.get(2).unwrap().as_str().trim();
+
+        // Title should be substantial (3+ words)
+        if title.split_whitespace().count() >= 3 {
+            // Clean trailing punctuation
+            static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.,;:]+\s*$").unwrap());
+            let title = TRAIL.replace(title, "");
+            return Some((title.to_string(), false));
+        }
+    }
+
+    None
 }
 
 /// Handle RFC references: "Authors. RFC XXXX: Title, Year." or "Authors. RFC XXXX: Title. Year."
@@ -3969,3 +4066,89 @@ fn test_issue_236_slashed_l_in_author_name() {
         title
     );
 }
+
+#[test]
+fn test_org_doc_with_digits_in_name() {
+    // Organization name with digits like "GDI Film Study 2024" should be recognized
+    let ref_text = "[8] GDI Film Study 2024: Women Take the Lead in $20-$50M Film Budgets, https://geenadavisinstitute.org/research/gdi-film-study-2024-representation-in-family-films/ (n.d.), accessed: 2025-06-11.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.contains("Women Take the Lead"),
+        "Title should contain 'Women Take the Lead', got: '{}'",
+        title
+    );
+}
+
+#[test]
+fn test_org_comma_title_year_format() {
+    // Format: "Organization Name, Title (Year)" - common for reports/white papers
+    let ref_text = "[10] BBC America and Women's Media Center, Superpowering girls: How fictional role models influence kids' confidence & career choices (2018), accessed: 2025-08-11.";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.contains("Superpowering girls"),
+        "Title should contain 'Superpowering girls', got: '{}'",
+        title
+    );
+}
+
+#[test]
+fn test_edited_by_clause_not_in_title() {
+    // "edited by" clause should not cause the series name to be picked as title
+    let ref_text = "[3] C. G. Jung, The Archetypes and the Collective Unconscious, edited by H. Read, M. Fordham, and G. Adler, Collected Works of C. G. Jung, Vol. 9, Part 1 (Princeton University Press, Princeton, NJ, 1969).";
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        title.contains("Archetypes and the Collective Unconscious"),
+        "Title should be 'The Archetypes and the Collective Unconscious', got: '{}'",
+        title
+    );
+    assert!(
+        !title.contains("Collected Works"),
+        "Title should NOT contain 'Collected Works' (series name), got: '{}'",
+        title
+    );
+}
+
+#[test]
+fn test_ieee_et_al_quoted_title() {
+    let ref_text = r#"M. C. Gaitan-Cardenas et al., "Explainable ai-based intrusion detection systems for cloud and iot," in Proc. IEEE IC2E, 2023, pp. 1–8."#;
+    let (title, from_quotes) = extract_title_from_reference(ref_text);
+    assert!(
+        title.contains("Explainable"),
+        "Title should contain 'Explainable', got: '{}'",
+        title
+    );
+}
+
+
+#[test]
+fn test_ieee_et_al_quoted_title_cleaned() {
+    // The actual text from the PDF has smart quotes and a newline in the middle
+    // Issue: "and iot," was being rejected as assembly code (the "and" instruction)
+    let ref_text = "M. C. Gaitan-Cardenas et al., \u{201c}Explainable ai-based intrusion detection\nsystems for cloud and iot,\u{201d} in Proc. IEEE IC2E, 2023, pp. 1\u{2013}8.";
+    let (title, from_quotes) = extract_title_from_reference(ref_text);
+    let cleaned = clean_title(&title, from_quotes);
+    assert!(
+        cleaned.contains("Explainable"),
+        "Cleaned title should contain 'Explainable', got: '{}'",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("iot"),
+        "Cleaned title should contain 'iot', got: '{}'",
+        cleaned
+    );
+}
+
+#[test]
+fn test_acm_three_author_names() {
+    // ACM format with three authors and "and" in author list
+    let ref_text = "Lorrie Faith Cranor, Praveen Guduru, and Manjula Arjula. 2006. User Interfaces For Privacy Agents. ACM Trans. Comput.-Hum. Interact. 13, 2 (2006), 135–178";
+    let (title, _from_quotes) = extract_title_from_reference(ref_text);
+    println!("Extracted title: '{}'", title);
+    assert!(
+        title.contains("User Interfaces"),
+        "Title should contain 'User Interfaces', got: '{}'",
+        title
+    );
+}
+

@@ -27,11 +27,23 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     // We apply this aggressively after the protocol is fixed.
     let text_fixed = fix_spaced_url_punctuation(&text_fixed);
 
-    // Fix URLs split across lines (URL continues with path after newline)
-    // Match URLs and continue across newlines if the next line starts with /path or alphanumeric
-    static LINE_BREAK_FIX: Lazy<Regex> =
+    // Fix URLs split across lines - multiple patterns:
+    //
+    // Pattern 1: Protocol split after colon: "https:\n//www.example.com"
+    static PROTOCOL_SPLIT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(https?):\s*\n\s*(//[^\s\]>]+)").unwrap());
+    let text_fixed = PROTOCOL_SPLIT.replace_all(&text_fixed, "$1:$2");
+
+    // Pattern 2: Domain split mid-word: "https://www.pytho\nn.org" or "https://www.julien\nverneaut.com"
+    // Match URL followed by newline and continuation that looks like domain/path (starts with lowercase letter)
+    static DOMAIN_SPLIT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(https?://[^\s\]>\n]+)\s*\n\s*([a-z][^\s\]>]*)").unwrap());
+    let text_fixed = DOMAIN_SPLIT.replace_all(&text_fixed, "$1$2");
+
+    // Pattern 3: Path continuation: URL continues with /path after newline
+    static PATH_SPLIT: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(https?://[^\s\]>]+)\s*\n\s*(/[^\s\]>]*)").unwrap());
-    let text_fixed = LINE_BREAK_FIX.replace_all(&text_fixed, "$1$2");
+    let text_fixed = PATH_SPLIT.replace_all(&text_fixed, "$1$2");
 
     // URL regex that captures common URL patterns
     static URL_RE: Lazy<Regex> =
@@ -750,5 +762,23 @@ mod tests {
             urls,
             vec!["https://www.sigsac.org/ccs/CCS2024/call-for-papers.html"]
         );
+    }
+
+    #[test]
+    fn test_extract_urls_line_break_patterns() {
+        // Pattern 1: Protocol split after colon
+        let text1 = "[97] Wappalyzer. n.d.. Find Out. https:\n//www.wappalyzer.com Accessed";
+        let urls1 = extract_urls(text1);
+        assert_eq!(urls1, vec!["https://www.wappalyzer.com"]);
+
+        // Pattern 2: Domain split mid-word
+        let text2 = "[63] Python. 2025. Download Python. https://www.python.o\nrg/downloads Accessed";
+        let urls2 = extract_urls(text2);
+        assert_eq!(urls2, vec!["https://www.python.org/downloads"]);
+
+        // Pattern 3: Domain split mid-word (longer domain)
+        let text3 = "[96] Julien. n.d.. Reverse-Engineering. https://www.julien\nverneaut.com/en/experiments Accessed";
+        let urls3 = extract_urls(text3);
+        assert_eq!(urls3, vec!["https://www.julienverneaut.com/en/experiments"]);
     }
 }
