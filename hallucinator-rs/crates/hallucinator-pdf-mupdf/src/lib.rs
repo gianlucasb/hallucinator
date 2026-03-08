@@ -31,18 +31,12 @@ impl PdfBackend for MupdfBackend {
                 .to_text_page(TextPageFlags::empty())
                 .map_err(|e| BackendError::ExtractionError(e.to_string()))?;
 
-            // Use block/line iteration to match PyMuPDF's get_text() behavior
-            let mut page_text = String::new();
-            for block in text_page.blocks() {
-                for line in block.lines() {
-                    let line_text: String = line
-                        .chars()
-                        .map(|c| c.char().unwrap_or('\u{FFFD}'))
-                        .collect();
-                    page_text.push_str(&line_text);
-                    page_text.push('\n');
-                }
-            }
+            // Use to_text() for proper text extraction that handles column layouts
+            // This uses mupdf's internal text extraction which properly handles
+            // two-column PDFs without truncating characters at column boundaries
+            let page_text = text_page
+                .to_text()
+                .map_err(|e| BackendError::ExtractionError(e.to_string()))?;
             pages_text.push(page_text);
         }
 

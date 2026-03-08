@@ -326,7 +326,21 @@ fn try_ieee_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<St
     for i in 0..matches.len() {
         let start = matches[i].end();
         let end = if i + 1 < matches.len() {
-            matches[i + 1].start()
+            // Check if the next match starts with a digit (from prev ref's DOI)
+            // If so, include that digit in the current reference
+            let next_start = matches[i + 1].start();
+            let next_match_str = matches[i + 1].as_str();
+            // If match starts with a digit (e.g., "0[3]" from DOI ending in ...0),
+            // the digit belongs to the current reference
+            if let Some(first_char) = next_match_str.chars().next() {
+                if first_char.is_ascii_digit() {
+                    next_start + 1 // Include the digit in current ref
+                } else {
+                    next_start
+                }
+            } else {
+                next_start
+            }
         } else {
             ref_text.len()
         };
