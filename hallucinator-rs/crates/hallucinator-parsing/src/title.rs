@@ -189,6 +189,15 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
+    // Reject titles that are actually identifiers (DOI, URL, arXiv ID, etc.)
+    // These indicate a parsing failure where an identifier was extracted as title
+    static IDENTIFIER_PREFIX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^(?:doi:|https?://|arXiv:|ISBN[:\s]|ISSN[:\s])").unwrap()
+    });
+    if IDENTIFIER_PREFIX.is_match(title) {
+        return String::new();
+    }
+
     let mut title = fix_hyphenation(title);
 
     // Strip leading year from ACM-style titles ("2017. Title" -> "Title")
@@ -497,7 +506,14 @@ fn try_quoted_title_with_config(ref_text: &str, config: &ParsingConfig) -> Optio
             // Check for subtitle after the quote — but only if quoted part is long enough
             // (>= 2 words). Short inner quotes like "Proof-Carrying" are likely embedded
             // in a longer title, not actual title delimiters.
-            if !after_quote.is_empty() && quoted_part.split_whitespace().count() >= 2 {
+            // Skip subtitle handling if after_quote starts with a URL (http/https)
+            // e.g., "Title." https://example.com → just use "Title", not "Title: https://..."
+            static URL_START: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"(?i)^[\s.:,]*h\s*t\s*t\s*p\s*s?\s*:\s*//").unwrap());
+            if !after_quote.is_empty()
+                && quoted_part.split_whitespace().count() >= 2
+                && !URL_START.is_match(after_quote)
+            {
                 let subtitle_text = if after_quote.starts_with(':') || after_quote.starts_with('-')
                 {
                     Some(after_quote[1..].trim())
@@ -603,6 +619,8 @@ fn find_subtitle_end(text: &str) -> usize {
             Regex::new(r"\s+(?:19|20)\d{2}\.").unwrap(),
             Regex::new(r"[.,]\s+[A-Z][a-z]+\s+\d+[,\s]").unwrap(),
             Regex::new(&format!(r"\.\s*[A-Z](?:{}|\s)+,\s*\d+\s*[,(:]", j)).unwrap(),
+            // Truncate at URLs (with optional broken spacing from PDF extraction)
+            Regex::new(r"(?i)[.:,]?\s*h\s*t\s*t\s*p\s*s?\s*:\s*//").unwrap(),
         ]
     });
 
@@ -767,6 +785,14 @@ fn try_org_doc(ref_text: &str) -> Option<(String, bool)> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z][a-zA-Z0-9\s]+):\s*(.+)").unwrap());
 
     let caps = RE.captures(ref_text)?;
+    let org_name = caps.get(1).unwrap().as_str();
+
+    // Reject if org name ends with " and" - likely malformed author list, not organization
+    // e.g., "Qwen and:" is an author team name, not an organization
+    if org_name.trim().to_lowercase().ends_with(" and") {
+        return None;
+    }
+
     let after_colon = caps.get(2).unwrap().as_str().trim();
 
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
@@ -1057,7 +1083,28 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
 /// - Format 1: "Authors. Title. Year. arXiv: ID"
 /// - Format 2: "Authors. Title. arXiv:ID, Year." (common ML/AI style)
 /// - Format 3: "Authors. Title, Year. arXiv:ID." (comma before year)
+/// - Format 4: "Authors. Year. Title. arXiv:ID" (year before title, common in ML papers)
 fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
+    // Try Format 4 first: ". YYYY. Title. arXiv:ID" (year before title)
+    // Common in ML papers: "Author et al. 2024. Title Here. arXiv:2412.15115"
+    static RE4: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\.\s*(?:19|20)\d{2}\.\s+([^.]+(?:\.[^.]+)*)\.\s*arXiv\s*:\s*\d+\.\d+")
+            .unwrap()
+    });
+
+    if let Some(caps) = RE4.captures(ref_text) {
+        if let Some(title_match) = caps.get(1) {
+            let title = title_match.as_str().trim();
+            // Ensure it's a reasonable title (not just venue info)
+            if title.split_whitespace().count() >= 2
+                && !title.starts_with("In ")
+                && !title.starts_with("Proceedings")
+            {
+                return Some((title.to_string(), false));
+            }
+        }
+    }
+
     // Try Format 2 first: ". arXiv:ID, Year" (more common in recent papers)
     // Pattern: Title ends at ". arXiv:" and the arXiv ID is followed by ", Year"
     static RE2: Lazy<Regex> = Lazy::new(|| {
@@ -1784,21 +1831,60 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
 
     let mut potential_title = strip_leading_surname(sentences[1].trim());
 
-    // Check if it looks like authors (high ratio of capitalized words + "and")
-    // BUT be careful: titles can also have capitalized words and "and"
+    // Skip if starts with identifier (doi:, https://, arXiv:, etc.)
+    static IDENTIFIER_START: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^(?:doi:|https?://|arXiv:|ISBN[:\s]|ISSN[:\s])").unwrap()
+    });
+    if IDENTIFIER_START.is_match(&potential_title) {
+        // Try to use previous sentence if it looks like a title
+        let first = sentences[0].trim();
+        if !first.is_empty()
+            && !IDENTIFIER_START.is_match(first)
+            && first.split_whitespace().count() >= 3
+        {
+            potential_title = first.to_string();
+        } else {
+            return None;
+        }
+    }
+
+    // Skip if starts with "In " (venue marker)
+    static IN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[Ii]n\s+").unwrap());
+    if IN_RE.is_match(&potential_title) {
+        return None;
+    }
+
+    // Skip if starts with venue/proceedings marker
+    static VENUE_START: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^(?:Proceedings|Proc\.|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR)\b").unwrap()
+    });
+    if VENUE_START.is_match(&potential_title) {
+        return None;
+    }
+
+    // Check if it looks like an author list using multiple heuristics
     let words: Vec<&str> = potential_title.split_whitespace().collect();
     if !words.is_empty() {
-        // Check if the sentence looks like an author list (names separated by commas)
-        // Real author lists have patterns like "John Smith, Jane Doe, and Bob Wilson"
-        // Titles rarely have this many comma-separated capitalized pairs
+        // Heuristic 1: Pattern-based author list detection
         static AUTHOR_LIST_PATTERN: Lazy<Regex> = Lazy::new(|| {
             // Match: CapWord CapWord, CapWord CapWord, and CapWord CapWord
-            // This is more specific than just "many capitalized words + and"
             Regex::new(r"^(?:[A-Z][a-z]+\s+[A-Z][a-z]+,\s*)+(?:and\s+)?[A-Z][a-z]+\s+[A-Z][a-z]+$")
                 .unwrap()
         });
 
-        let looks_like_author_list = AUTHOR_LIST_PATTERN.is_match(&potential_title);
+        // Heuristic 2: High comma ratio + "and" suggests author list
+        // Author lists typically have many commas (one per author)
+        let comma_count = potential_title.matches(',').count();
+        let word_count = words.len();
+        let has_and = potential_title.contains(" and ");
+        // Ratio > 0.12 means roughly one comma per 8 words (typical for author lists)
+        let high_comma_ratio = word_count > 0
+            && comma_count >= 3
+            && has_and
+            && (comma_count as f64 / word_count as f64) > 0.12;
+
+        let looks_like_author_list =
+            AUTHOR_LIST_PATTERN.is_match(&potential_title) || high_comma_ratio;
 
         if looks_like_author_list && sentences.len() >= 3 {
             let third = sentences[2].trim();
@@ -1807,17 +1893,20 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
                 Lazy::new(|| Regex::new(r"^(?:19|20)\d{2}[a-z]?\.?$").unwrap());
             let third_word_count = third.split_whitespace().count();
 
-            if !JUST_YEAR.is_match(third) && third_word_count >= 3 {
+            if !JUST_YEAR.is_match(third)
+                && third_word_count >= 3
+                && !IDENTIFIER_START.is_match(third)
+                && !VENUE_START.is_match(third)
+            {
                 potential_title = third.to_string();
+            } else {
+                // Can't find a good title, return None
+                return None;
             }
-            // Otherwise keep sentences[1] - it's probably the real title
+        } else if looks_like_author_list {
+            // Looks like author list but no third sentence available
+            return None;
         }
-    }
-
-    // Skip if starts with "In " (venue)
-    static IN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[Ii]n\s+").unwrap());
-    if IN_RE.is_match(&potential_title) {
-        return None;
     }
 
     if potential_title.is_empty() {
@@ -2220,6 +2309,8 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"\.\s*\d+\s*$").unwrap(),
         Regex::new(r"\.\s*https?://.*$").unwrap(),
         Regex::new(r"\.\s*ht\s*tps?://.*$").unwrap(),
+        // Handle URLs after colon or other punctuation (e.g., "Title.: https://...")
+        Regex::new(r"(?i)[.:,]\s*:?\s*h\s*t\s*t\s*p\s*s?\s*:\s*//.*$").unwrap(),
         Regex::new(r"(?i),\s*(?:vol\.|pp\.|pages).*$").unwrap(),
         Regex::new(r"(?i)\.\s*Data\s+in\s+brief.*$").unwrap(),
         Regex::new(r"(?i)\.\s*Biochemia\s+medica.*$").unwrap(),
@@ -4111,7 +4202,7 @@ fn test_edited_by_clause_not_in_title() {
 #[test]
 fn test_ieee_et_al_quoted_title() {
     let ref_text = r#"M. C. Gaitan-Cardenas et al., "Explainable ai-based intrusion detection systems for cloud and iot," in Proc. IEEE IC2E, 2023, pp. 1–8."#;
-    let (title, from_quotes) = extract_title_from_reference(ref_text);
+    let (title, _from_quotes) = extract_title_from_reference(ref_text);
     assert!(
         title.contains("Explainable"),
         "Title should contain 'Explainable', got: '{}'",
@@ -4148,6 +4239,65 @@ fn test_acm_three_author_names() {
     assert!(
         title.contains("User Interfaces"),
         "Title should contain 'User Interfaces', got: '{}'",
+        title
+    );
+}
+
+#[test]
+fn test_arxiv_year_before_title_format() {
+    // Format: "Authors. Year. Title. arXiv:ID" - common in ML papers
+    // The title comes AFTER the year, before the arXiv ID
+    let ref_text = "Qwen and:, An Yang, Baosong Yang, and Zihan Qiu. 2025. Qwen2.5 Technical Report. arXiv:2412.15115 [cs.CL]";
+
+    // Test the regex directly
+    let re4 = Regex::new(r"\.\s*(?:19|20)\d{2}\.\s+([^.]+(?:\.[^.]+)*)\.\s*arXiv\s*:\s*\d+\.\d+").unwrap();
+    if let Some(caps) = re4.captures(ref_text) {
+        println!("RE4 matched, title capture: {:?}", caps.get(1).map(|m| m.as_str()));
+    } else {
+        println!("RE4 did NOT match on input");
+    }
+
+    let (title, _from_quotes) = extract_title_from_reference(ref_text);
+    println!("Extracted title: '{}'", title);
+    assert_eq!(
+        title, "Qwen2.5 Technical Report",
+        "Should extract title between year and arXiv ID"
+    );
+}
+
+#[test]
+fn test_quoted_title_url_not_included() {
+    // URL after quoted title should NOT be included as subtitle
+    // Format: Author, "Title." https://url.com, Year
+    let ref_text = r#"U. Amitabh and A. Ansari, "Hiring with AI doesn't have to be so inhumane." https://www.weforum.org/stories/2025/03/ai-hiring-human-touch-recruitment/, 2025"#;
+    let (title, from_quotes) = extract_title_from_reference(ref_text);
+    assert!(from_quotes, "Should be extracted from quotes");
+    assert!(
+        !title.contains("https"),
+        "Title should NOT contain URL, got: '{}'",
+        title
+    );
+    assert!(
+        title.contains("Hiring with AI"),
+        "Title should contain 'Hiring with AI', got: '{}'",
+        title
+    );
+}
+
+#[test]
+fn test_model_card_url_not_included() {
+    // Model card format with URL
+    let ref_text = r#"DeepSeek-AI, "DeepSeek-V3.1 — Model Card." https://huggingface.co/deepseek-ai/DeepSeek-V3.1, Sept. 2025"#;
+    let (title, _) = extract_title_from_reference(ref_text);
+    assert!(
+        !title.contains("https"),
+        "Title should NOT contain URL, got: '{}'",
+        title
+    );
+    // Title may have trailing period from IEEE format
+    assert!(
+        title.starts_with("DeepSeek-V3.1 — Model Card"),
+        "Should extract model card title without URL, got: '{}'",
         title
     );
 }
