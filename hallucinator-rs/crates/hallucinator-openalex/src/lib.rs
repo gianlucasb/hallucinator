@@ -1,3 +1,5 @@
+// Licensed under either AGPL-3.0-or-later or MIT license, at your option.
+
 //! Offline OpenAlex database builder and querier.
 //!
 //! Provides a Tantivy-backed OpenAlex index with full-text search and fuzzy

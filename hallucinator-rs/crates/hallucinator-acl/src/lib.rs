@@ -1,3 +1,5 @@
+// Licensed under either AGPL-3.0-or-later or MIT license, at your option.
+
 //! Offline ACL Anthology database builder and querier.
 //!
 //! Provides a normalized SQLite-backed ACL Anthology index with FTS5 full-text

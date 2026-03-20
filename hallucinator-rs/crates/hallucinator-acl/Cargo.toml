@@ -2,7 +2,7 @@
 name = "hallucinator-acl"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "AGPL-3.0-or-later OR MIT"
 description = "Offline ACL Anthology database builder and querier"
 
 [package.metadata.dist]

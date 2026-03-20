@@ -1,3 +1,5 @@
+// Licensed under either AGPL-3.0-or-later or MIT license, at your option.
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

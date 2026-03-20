@@ -2,7 +2,7 @@
 name = "hallucinator-dblp"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "AGPL-3.0-or-later OR MIT"
 description = "Offline DBLP database builder and querier"
 
 [package.metadata.dist]

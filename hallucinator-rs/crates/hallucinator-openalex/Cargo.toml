@@ -2,7 +2,7 @@
 name = "hallucinator-openalex"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "AGPL-3.0-or-later OR MIT"
 description = "Offline OpenAlex database builder and querier using Tantivy"
 
 [package.metadata.dist]

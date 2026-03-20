@@ -1,3 +1,5 @@
+// Licensed under either AGPL-3.0-or-later or MIT license, at your option.
+
 //! Offline DBLP database builder and querier.
 //!
 //! Provides a normalized SQLite-backed DBLP index with FTS5 full-text search,

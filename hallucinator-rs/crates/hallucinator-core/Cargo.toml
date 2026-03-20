@@ -2,7 +2,7 @@
 name = "hallucinator-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "AGPL-3.0-or-later OR MIT"
 description = "Validation engine and database query backends for hallucinated reference detection"
 
 [package.metadata.dist]
