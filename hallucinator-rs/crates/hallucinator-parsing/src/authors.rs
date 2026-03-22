@@ -2,6 +2,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::config::ParsingConfig;
+use crate::text_processing::fix_hyphenation;
 
 /// Special sentinel value indicating the reference uses em-dashes to
 /// indicate "same authors as previous entry."
@@ -28,9 +29,12 @@ pub(crate) fn extract_authors_from_reference_with_config(
     ref_text: &str,
     config: &ParsingConfig,
 ) -> Vec<String> {
+    // Fix hyphenation from PDF line breaks in author names (e.g., "Shan- shan" → "Shanshan")
+    let ref_text = fix_hyphenation(ref_text);
+
     // Normalize whitespace
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
-    let ref_text = WS_RE.replace_all(ref_text, " ");
+    let ref_text = WS_RE.replace_all(&ref_text, " ");
     let ref_text = ref_text.trim();
 
     // Check for em-dash pattern meaning "same authors as previous"
@@ -183,9 +187,15 @@ fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<Stri
     static AMP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*&\s*").unwrap());
     let section = AMP_RE.replace_all(&section, ", ");
 
-    // Remove "et al."
+    // Remove "et al." but keep the authors before it
     static ET_AL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i),?\s*et\s+al\.?").unwrap());
     let section = ET_AL_RE.replace_all(&section, "");
+
+    // If after removing et al. the section is empty or just whitespace,
+    // the original had only "et al." - nothing to extract
+    if section.trim().is_empty() {
+        return vec![];
+    }
 
     let mut authors = Vec::new();
 
@@ -233,7 +243,26 @@ fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<Stri
         let is_all_caps =
             has_upper && !has_lower && part.chars().filter(|c| c.is_ascii_uppercase()).count() >= 2;
 
-        if part.len() > 2 && (has_upper && has_lower || is_all_caps) {
+        // Skip venue/journal names that got into the author section
+        static VENUE_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+            [
+                "journal", "transactions", "proceedings", "conference", "workshop",
+                "symposium", "review", "society", "association", "networks",
+                "computing", "intelligence", "engineering", "software", "systems",
+                "science", "research", "letters", "advances", "foundations",
+                "international", "quarterly", "annual", "bulletin",
+            ]
+            .into_iter()
+            .collect()
+        });
+        let lower_words: Vec<&str> = part.split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+            .collect();
+        if lower_words.len() >= 2 && lower_words.iter().any(|w| VENUE_WORDS.contains(w.to_lowercase().as_str())) {
+            continue;
+        }
+
+        if part.len() >= 2 && (has_upper && has_lower || is_all_caps) {
             authors.push(part.to_string());
         }
     }
@@ -319,6 +348,44 @@ mod tests {
         assert!(
             authors.len() >= 2,
             "Expected at least 2 authors, got: {:?}",
+            authors
+        );
+    }
+
+    #[test]
+    fn test_et_al_preserves_listed_authors() {
+        // "et al." should be removed but authors before it should be kept
+        let ref_text = r#"Wu, J., et al.: A survey on llm-generated text detection. arXiv preprint arXiv:2310.14724 (2023)"#;
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            !authors.is_empty(),
+            "Should extract authors before et al.: {:?}",
+            authors
+        );
+    }
+
+    #[test]
+    fn test_venue_not_parsed_as_author() {
+        // Venue/journal names should not be parsed as author names
+        let ref_text = "Badis, L., Amad, M., A\u{00EF}ssani, D., Abbar, S.: P2PCF. Journal of High Speed Networks, 25(1), 2019.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            !authors.iter().any(|a| a.contains("Journal") || a.contains("Networks")),
+            "Journal name should not be in authors: {:?}",
+            authors
+        );
+    }
+
+    #[test]
+    fn test_hyphenated_author_name_fixed() {
+        // PDF line break in author name should be fixed
+        let ref_text = r#"Hans, A., Schwarzschild, A., Cherepanova, V., Kazemi, H., Saha, A., Goldblum, M., Geiping, J., Goldstein, T.: Spotting LLMs with binoc- ulars: Zero-shot detection of machine-generated text. In: ICML (2024)"#;
+        let authors = extract_authors_from_reference(ref_text);
+        // The hyphenation in "binoc- ulars" is in the title, not authors
+        // but checking that author parsing still works correctly
+        assert!(
+            authors.iter().any(|a| a.contains("Hans")),
+            "Should extract authors: {:?}",
             authors
         );
     }

@@ -444,6 +444,71 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
+    // Strip edition info: "2nd edn", "1st ed.", "(1st ed ed.)", "(1 ed.)", "(2 ed.)", "Fourth Edition", etc.
+    // Requires either a number before "ed" or the longer forms "edn"/"edition" to avoid
+    // matching words ending in "ed" (e.g., "Need").
+    static EDITION_TRAIL: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)[,.]?\s*\(?(?:\d+(?:st|nd|rd|th)?\s+ed\.?\s*(?:ed\.?)?|\d+(?:st|nd|rd|th)\s+edn\.?|(?:first|second|third|fourth|fifth|sixth)\s+edition)\)?\.?\s*$")
+            .unwrap()
+    });
+    title = EDITION_TRAIL.replace(&title, "").to_string();
+
+    // Also strip standalone parenthesized edition: "(1 ed.)" or "(2 ed.)" at end of title
+    static PAREN_EDITION: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\s*\(\d+\s+ed\.?\)\s*$").unwrap()
+    });
+    title = PAREN_EDITION.replace(&title, "").to_string();
+
+    // Strip trailing ", Nth edn" format (no parens)
+    static COMMA_EDN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i),\s*\d+(?:st|nd|rd|th)\s+edn\.?\s*$").unwrap()
+    });
+    title = COMMA_EDN.replace(&title, "").to_string();
+
+    // Strip publisher + city trailing info: ", Publisher, City (Year)" or ". Publisher, City"
+    static PUBLISHER_TRAIL: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"[.,]\s*(?:Knopf|Routledge|Springer|Cambridge\s+University\s+Press|Oxford\s+University\s+Press|MIT\s+Press|Wiley|Elsevier|Academic\s+Press|Prentice\s+Hall|McGraw-Hill|Sage|Harvard\s+University\s+Press|Princeton\s+University\s+Press|University\s+of\s+\w+\s+Press)\b.*$")
+            .unwrap()
+    });
+    title = PUBLISHER_TRAIL.replace(&title, "").to_string();
+
+    // Strip "Technical report" suffix
+    static TECH_REPORT_TRAIL: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)[.,]\s*(?:Technical\s+report|Tech\.?\s*Rep\.?).*$").unwrap()
+    });
+    title = TECH_REPORT_TRAIL.replace(&title, "").to_string();
+
+    // Strip RFC year suffix from titles like "GZIP file format specification version 4.3. RFC 1952 (1996)"
+    static RFC_YEAR_TRAIL: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"[.,]\s*RFC\s+\d+\s*\(\d{4}\)\s*$").unwrap()
+    });
+    title = RFC_YEAR_TRAIL.replace(&title, "").to_string();
+
+    // Strip standalone RFC reference at end: ". RFC 1952 (1996)" when not the whole title
+    static RFC_STANDALONE_TRAIL: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\.\s+RFC\s+\d+\s*\(\d{4}\)\s*$").unwrap()
+    });
+    if title.len() > 20 {
+        title = RFC_STANDALONE_TRAIL.replace(&title, "").to_string();
+    }
+
+    // Strip volume/issue suffixes that slipped through: ", 2017. 2(2)" or ". 36(5):219–238"
+    static VOL_ISSUE_TRAIL: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"[.,]\s*(?:19|20)\d{2}\.\s*\d+\(\d+\).*$").unwrap()
+    });
+    title = VOL_ISSUE_TRAIL.replace(&title, "").to_string();
+
+    static VOL_ISSUE_TRAIL2: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\.\s*\d+\(\d+\)\s*:\s*\d+[\u{2013}\-]?\d*\s*$").unwrap()
+    });
+    title = VOL_ISSUE_TRAIL2.replace(&title, "").to_string();
+
+    // Strip ": , JournalName, Vol, (Year)" pattern from Springer/Nature format
+    static COLON_COMMA_JOURNAL: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r":\s*,\s*[A-Z].*$").unwrap()
+    });
+    title = COLON_COMMA_JOURNAL.replace(&title, "").to_string();
+
     title = title.trim().to_string();
     static TRAILING_PUNCT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.,;:]+$").unwrap());
     title = TRAILING_PUNCT.replace(&title, "").to_string();
@@ -664,6 +729,8 @@ fn try_lncs(ref_text: &str) -> Option<(String, bool)> {
 fn find_title_end_lncs(text: &str) -> usize {
     static PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
+            // ": , JournalName" — colon-comma-journal pattern from Springer/Nature
+            Regex::new(r":\s*,\s*[A-Z]").unwrap(),
             // Journal + volume(issue): ". Journal 13(6),"
             Regex::new(r"\.\s+[A-Z][A-Za-z\s&\-]+\s+\d+\s*\(\d+\)\s*[,:]").unwrap(),
             // Journal + volume, pages: ". Journal 13, 456" or ": 456"
@@ -1048,6 +1115,8 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
             .unwrap(),
             // ". https://" — URL after period
             Regex::new(r"\.\s*https?://").unwrap(),
+            // ". Publisher, City" — publisher names after period
+            Regex::new(r"\.\s*(?:Routledge|Springer|Elsevier|Wiley|Cambridge|Oxford|Knopf|MIT\s+Press|Academic\s+Press|Prentice\s+Hall|McGraw-Hill|Sage|CRC\s+Press)\b").unwrap(),
         ]
     });
 
@@ -2294,9 +2363,12 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"\[C\].*$").unwrap(),
         Regex::new(r"\[M\].*$").unwrap(),
         Regex::new(r"\[D\].*$").unwrap(),
-        // Handle ". In" followed by capital letter or year (e.g., ".In 2020 Conference...")
+        // Handle ". In" or ", in" followed by capital letter or year (e.g., ".In 2020 Conference...")
         Regex::new(r"(?i)\.\s*[Ii]n:\s+(?:[A-Z]|(?:19|20)\d{2}).*$").unwrap(),
         Regex::new(r"(?i)\.\s*[Ii]n\s+(?:[A-Z]|(?:19|20)\d{2}).*$").unwrap(),
+        // ", in:" or ", in Proceedings/The/..." — comma-separated venue reference
+        Regex::new(r"(?i),\s+in:\s+(?:[A-Z]|(?:19|20)\d{2}).*$").unwrap(),
+        Regex::new(r"(?i),\s+in\s+(?:Proceedings|The\s+\w+|(?:19|20)\d{2}).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR|PACM[- ]?\w+|JMLR|VLDB|SIGMOD|SIGKDD|PLDI|POPL|OOPSLA|SOSP|OSDI|IACR|Cryptology\s+ePrint).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$").unwrap(),
         Regex::new(r"(?i)[.?!]\s+International\s+Journal\b.*$").unwrap(),
@@ -4299,6 +4371,109 @@ fn test_model_card_url_not_included() {
         title.starts_with("DeepSeek-V3.1 — Model Card"),
         "Should extract model card title without URL, got: '{}'",
         title
+    );
+}
+
+#[test]
+fn test_edition_info_stripped() {
+    // Edition info like "2nd edn" should be removed
+    let title = "Elements of Information Theory, 2nd edn";
+    let cleaned = clean_title(title, false);
+    assert_eq!(cleaned, "Elements of Information Theory");
+
+    let title2 = "Some Book Title (1st ed ed.)";
+    let cleaned2 = clean_title(title2, false);
+    assert!(
+        !cleaned2.contains("ed"),
+        "Edition info should be stripped: '{}'",
+        cleaned2
+    );
+
+    let title3 = "The Experimental City (1 ed.)";
+    let cleaned3 = clean_title(title3, false);
+    assert_eq!(cleaned3, "The Experimental City");
+
+    let title4 = "Delinquency and Drift (2 ed.)";
+    let cleaned4 = clean_title(title4, false);
+    assert_eq!(cleaned4, "Delinquency and Drift");
+}
+
+#[test]
+fn test_publisher_trailing_stripped() {
+    // Publisher + city should be removed from title
+    let title = "Forces of Production: A Social History of Industrial Automation. Knopf, New York";
+    let cleaned = clean_title(title, false);
+    assert!(
+        !cleaned.contains("Knopf"),
+        "Publisher should be stripped: '{}'",
+        cleaned
+    );
+}
+
+#[test]
+fn test_tech_report_suffix_stripped() {
+    // "Technical report" suffix should be removed
+    let title = "Internet Research: Ethical Guidelines 3.0. Technical report";
+    let cleaned = clean_title(title, false);
+    assert!(
+        !cleaned.contains("Technical report"),
+        "Technical report suffix should be stripped: '{}'",
+        cleaned
+    );
+}
+
+#[test]
+fn test_rfc_year_suffix_stripped() {
+    // RFC year suffix should be removed
+    let title = "GZIP file format specification version 4.3. RFC 1952 (1996)";
+    let cleaned = clean_title(title, false);
+    assert!(
+        !cleaned.contains("RFC 1952"),
+        "RFC year suffix should be stripped: '{}'",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("GZIP file format"),
+        "Title should be preserved: '{}'",
+        cleaned
+    );
+}
+
+#[test]
+fn test_vol_issue_suffix_stripped() {
+    // Volume/issue info should be stripped
+    let title = "Explainable artificial intelligence (xai), 2017. 2(2)";
+    let cleaned = clean_title(title, false);
+    assert!(
+        !cleaned.contains("2(2)"),
+        "Volume/issue should be stripped: '{}'",
+        cleaned
+    );
+
+    let title2 = "Explainable autonomous robots: a survey and perspective. 36(5):219\u{2013}238";
+    let cleaned2 = clean_title(title2, false);
+    assert!(
+        !cleaned2.contains("36(5)"),
+        "Volume/issue should be stripped: '{}'",
+        cleaned2
+    );
+}
+
+#[test]
+fn test_colon_comma_journal_stripped() {
+    // ": , JournalName" pattern from Springer/Nature format
+    let ref_text = "Akritidis, L., Alamaniotis, M., Bozanis, P.: Flagr: A flexible high-performance library for rank aggregation: , Soft-wareX, 21, (2023)";
+    let (title, _) = extract_title_from_reference(ref_text);
+    let cleaned = clean_title(&title, false);
+    assert!(
+        !cleaned.contains("Soft-wareX"),
+        "Journal name should not be in title: '{}'",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("Flagr"),
+        "Title should contain 'Flagr': '{}'",
+        cleaned
     );
 }
 

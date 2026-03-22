@@ -24,14 +24,112 @@ pub(crate) static COMPOUND_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| 
     .collect()
 });
 
-/// Expand common typographic ligatures found in PDFs.
+/// Expand common typographic ligatures found in PDFs and fix separated diacritics.
 pub fn expand_ligatures(text: &str) -> String {
-    text.replace('\u{FB00}', "ff")
+    let text = text
+        .replace('\u{FB00}', "ff")
         .replace('\u{FB01}', "fi")
         .replace('\u{FB02}', "fl")
         .replace('\u{FB03}', "ffi")
         .replace('\u{FB04}', "ffl")
-        .replace(['\u{FB05}', '\u{FB06}'], "st")
+        .replace(['\u{FB05}', '\u{FB06}'], "st");
+
+    // Fix separated diacritics from PDF extraction (e.g., "´e" → "é", "¨o" → "ö")
+    // These appear when PDFs encode accented characters as separate diacritic + letter.
+    fix_separated_diacritics_pdf(&text)
+}
+
+/// Compose separated diacritics from PDF extraction into proper Unicode characters.
+///
+/// Handles patterns like:
+/// - `"´e"` → `"é"` (acute accent)
+/// - `"¨o"` → `"ö"` (umlaut/diaeresis)
+/// - `"`a"` → `"à"` (grave accent)
+/// - `"ˇc"` → `"č"` (caron)
+fn fix_separated_diacritics_pdf(text: &str) -> String {
+    use std::collections::HashMap;
+
+    static COMPOSITIONS: Lazy<HashMap<(char, char), char>> = Lazy::new(|| {
+        let mut m = HashMap::new();
+        // Umlaut/diaeresis (¨ U+00A8)
+        for (letter, composed) in [
+            ('A', 'Ä'), ('a', 'ä'), ('E', 'Ë'), ('e', 'ë'),
+            ('I', 'Ï'), ('i', 'ï'), ('O', 'Ö'), ('o', 'ö'),
+            ('U', 'Ü'), ('u', 'ü'), ('Y', 'Ÿ'), ('y', 'ÿ'),
+        ] {
+            m.insert(('\u{a8}', letter), composed);
+        }
+        // Acute accent (´ U+00B4)
+        for (letter, composed) in [
+            ('A', 'Á'), ('a', 'á'), ('E', 'É'), ('e', 'é'),
+            ('I', 'Í'), ('i', 'í'), ('O', 'Ó'), ('o', 'ó'),
+            ('U', 'Ú'), ('u', 'ú'), ('N', 'Ń'), ('n', 'ń'),
+            ('C', 'Ć'), ('c', 'ć'), ('S', 'Ś'), ('s', 'ś'),
+            ('Z', 'Ź'), ('z', 'ź'), ('Y', 'Ý'), ('y', 'ý'),
+        ] {
+            m.insert(('\u{b4}', letter), composed);
+        }
+        // Grave accent (` U+0060)
+        for (letter, composed) in [
+            ('A', 'À'), ('a', 'à'), ('E', 'È'), ('e', 'è'),
+            ('I', 'Ì'), ('i', 'ì'), ('O', 'Ò'), ('o', 'ò'),
+            ('U', 'Ù'), ('u', 'ù'),
+        ] {
+            m.insert(('`', letter), composed);
+        }
+        // Tilde (˜ U+02DC)
+        for (letter, composed) in [
+            ('A', 'Ã'), ('a', 'ã'), ('N', 'Ñ'), ('n', 'ñ'),
+            ('O', 'Õ'), ('o', 'õ'),
+        ] {
+            m.insert(('\u{2dc}', letter), composed);
+        }
+        // Caron/háček (ˇ U+02C7)
+        for (letter, composed) in [
+            ('C', 'Č'), ('c', 'č'), ('S', 'Š'), ('s', 'š'),
+            ('Z', 'Ž'), ('z', 'ž'), ('E', 'Ě'), ('e', 'ě'),
+            ('R', 'Ř'), ('r', 'ř'), ('N', 'Ň'), ('n', 'ň'),
+        ] {
+            m.insert(('\u{2c7}', letter), composed);
+        }
+        // Cedilla (¸ U+00B8)
+        for (letter, composed) in [('C', 'Ç'), ('c', 'ç')] {
+            m.insert(('\u{b8}', letter), composed);
+        }
+        m
+    });
+
+    static DIACRITICS: &[char] = &['\u{a8}', '\u{b4}', '`', '\u{2dc}', '\u{2c7}', '\u{b8}'];
+
+    // Quick check: if no diacritics present, return as-is
+    if !text.chars().any(|c| DIACRITICS.contains(&c)) {
+        return text.to_string();
+    }
+
+    // Compose diacritic + optional space + letter
+    static DIACRITIC_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"([\u{a8}\u{b4}`\u{2dc}\u{2c7}\u{b8}])\s*([A-Za-z])").unwrap()
+    });
+
+    // Also handle letter + space + diacritic (e.g., "B ¨UNZ")
+    static SPACE_BEFORE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"([A-Za-z])\s+([\u{a8}\u{b4}`\u{2dc}\u{2c7}\u{b8}])").unwrap()
+    });
+
+    // Step 1: Remove space between letter and following diacritic
+    let text = SPACE_BEFORE_RE.replace_all(&text, "$1$2");
+
+    // Step 2: Compose diacritic + letter
+    DIACRITIC_RE
+        .replace_all(&text, |caps: &regex::Captures| {
+            let diacritic = caps[1].chars().next().unwrap();
+            let letter = caps[2].chars().next().unwrap();
+            COMPOSITIONS
+                .get(&(diacritic, letter))
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| letter.to_string())
+        })
+        .to_string()
 }
 
 /// Fix hyphenation from PDF line breaks using dictionary lookup.
