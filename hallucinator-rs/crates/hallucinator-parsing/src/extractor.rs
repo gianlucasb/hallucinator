@@ -254,6 +254,18 @@ fn parse_single_reference(
     static NUM_PREFIX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d+\.\s*").unwrap());
     let raw_citation = NUM_PREFIX.replace(&raw_citation, "").to_string();
 
+    // Second URL extraction pass: try extracting from the whitespace-normalized
+    // raw citation. PDF line breaks often split URLs (e.g., "https://example.org/\npath"
+    // becomes "https://example.org/ path" after normalization). The first pass may miss
+    // these, but after whitespace normalization the URL fragments are closer together.
+    let mut urls = urls;
+    if urls.is_empty() {
+        let extra_urls = identifiers::extract_urls(&raw_citation);
+        if !extra_urls.is_empty() {
+            urls = extra_urls;
+        }
+    }
+
     ParsedRef::Ref(Reference {
         raw_citation,
         title: Some(cleaned_title),

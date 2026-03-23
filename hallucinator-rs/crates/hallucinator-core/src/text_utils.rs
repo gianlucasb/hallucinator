@@ -122,11 +122,16 @@ fn fix_url_spacing(url_region: &str) -> String {
     static SPACED_DOT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*\.\s*(\w)").unwrap());
     result = SPACED_DOT.replace_all(&result, "$1.$2").to_string();
 
-    // Remove spaces around slashes when between URL parts: " / " → "/"
+    // Remove spaces around slashes when between URL parts: " / " or "/ " → "/"
     // Only fix when the slash is between alphanumeric/URL-like characters
     // This avoids joining "url/ (visited" → "url/(visited"
     static SPACED_SLASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*/\s*(\w)").unwrap());
     result = SPACED_SLASH.replace_all(&result, "$1/$2").to_string();
+
+    // Also handle slash at end of a path segment followed by space+continuation:
+    // "org/ wiki" → "org/wiki" (space only after slash, not before)
+    static SLASH_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"/\s+(\w)").unwrap());
+    result = SLASH_SPACE.replace_all(&result, "/$1").to_string();
 
     // Remove spaces around hyphens in paths: "call- for- papers" → "call-for-papers"
     static SPACED_HYPHEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*-\s*(\w)").unwrap());

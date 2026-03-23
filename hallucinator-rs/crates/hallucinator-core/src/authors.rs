@@ -44,26 +44,28 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
         return false;
     }
 
-    // Check for organizational authors: when the reference lists an org name
-    // (e.g., "OpenAI", "Qwen Team", "DARPA") instead of individual authors,
-    // skip author validation — we can't meaningfully compare an org name
-    // against the individual contributor names returned by databases.
-    for ref_a in ref_authors {
-        let ref_lower = ref_a.trim().to_lowercase();
-        // Strip hyphens for matching (e.g., "DeepSeek-AI" → "deepseekai")
-        let ref_dehyphen = ref_lower.replace('-', "");
+    // Check for organizational authors: when either the reference or the database
+    // lists an org name (e.g., "OpenAI", "Qwen Team", "DeepSeek-AI") instead of
+    // individual authors, skip author validation — we can't meaningfully compare
+    // org names against individual contributor names.
+    for author_list in [ref_authors, found_authors] {
+        for author in author_list {
+            let lower = author.trim().to_lowercase();
+            // Strip hyphens for matching (e.g., "DeepSeek-AI" → "deepseekai")
+            let dehyphen = lower.replace('-', "");
 
-        // Direct match against known org names
-        if ORG_AUTHOR_NAMES.contains(ref_lower.as_str())
-            || ORG_AUTHOR_NAMES.contains(ref_dehyphen.as_str())
-        {
-            return true;
-        }
+            // Direct match against known org names
+            if ORG_AUTHOR_NAMES.contains(lower.as_str())
+                || ORG_AUTHOR_NAMES.contains(dehyphen.as_str())
+            {
+                return true;
+            }
 
-        // "X Team" pattern: "Qwen Team", "DeepSeek-AI Team"
-        let ref_words: Vec<&str> = ref_lower.split_whitespace().collect();
-        if ref_words.last() == Some(&"team") && ref_words.len() <= 3 {
-            return true;
+            // "X Team" pattern: "Qwen Team", "DeepSeek-AI Team"
+            let words: Vec<&str> = lower.split_whitespace().collect();
+            if words.last() == Some(&"team") && words.len() <= 3 {
+                return true;
+            }
         }
     }
 
@@ -147,7 +149,9 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
         // check if ALL extracted authors appear in the found authors (subset match).
         // This handles cases where the PDF says "Gentry et al." (1 author) but
         // the DB returns all 5 authors including Gentry.
-        if ref_authors.len() < found_authors.len() && ref_authors.len() <= 3 {
+        // Threshold is 5 because ACM format typically shows up to 5 authors
+        // before "et al.", and USENIX/IEEE show up to 3.
+        if ref_authors.len() < found_authors.len() && ref_authors.len() <= 5 {
             if !ref_surnames.is_empty() && ref_surnames.is_subset(&found_surnames) {
                 return true;
             }
@@ -192,9 +196,16 @@ fn get_surname_from_parts(parts: &[&str]) -> String {
     parts.last().unwrap().to_string()
 }
 
-/// Strip diacritics from a string using Unicode NFKD decomposition.
-/// "Müller" → "Muller", "Crépeau" → "Crepeau", "Doupé" → "Doupe"
+/// Strip diacritics and normalize typographic characters for comparison.
+/// "Müller" → "Muller", "Crépeau" → "Crepeau", "O'Brien" → "O'Brien"
 fn strip_diacritics(s: &str) -> String {
+    // Normalize curly quotes/apostrophes to ASCII before NFKD
+    // (NFKD doesn't decompose U+2019 RIGHT SINGLE QUOTATION MARK)
+    let s = s
+        .replace('\u{2019}', "'") // right single quote → apostrophe
+        .replace('\u{2018}', "'") // left single quote → apostrophe
+        .replace('\u{201C}', "\"") // left double quote
+        .replace('\u{201D}', "\""); // right double quote
     s.nfkd().filter(|c| c.is_ascii()).collect()
 }
 
@@ -421,6 +432,15 @@ mod tests {
     }
 
     #[test]
+    fn test_org_author_found_side() {
+        // DBLP returns "DeepSeek-AI" as org, but PDF has individual authors
+        assert!(validate_authors(
+            &s(&["Daya Guo", "Dejian Yang", "Haowei Zhang"]),
+            &s(&["DeepSeek-AI"]),
+        ));
+    }
+
+    #[test]
     fn test_accent_insensitive_muller() {
         // "Müller" from PDF should match "Muller" from DB
         assert!(validate_authors(
@@ -462,6 +482,15 @@ mod tests {
         assert!(validate_authors(
             &s(&["Müller", "Köbis"]),
             &s(&["Nicolas Muller", "Nils Kobis"]),
+        ));
+    }
+
+    #[test]
+    fn test_curly_quote_obrien() {
+        // PDF uses curly quote U+2019, DB uses straight apostrophe
+        assert!(validate_authors(
+            &s(&["Sean O\u{2019}Brien"]),
+            &s(&["Sean O'Brien"]),
         ));
     }
 

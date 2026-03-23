@@ -2,7 +2,6 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::config::ParsingConfig;
-use crate::text_processing::fix_hyphenation;
 
 /// Special sentinel value indicating the reference uses em-dashes to
 /// indicate "same authors as previous entry."
@@ -29,8 +28,12 @@ pub(crate) fn extract_authors_from_reference_with_config(
     ref_text: &str,
     config: &ParsingConfig,
 ) -> Vec<String> {
-    // Fix hyphenation from PDF line breaks in author names (e.g., "Shan- shan" → "Shanshan")
-    let ref_text = fix_hyphenation(ref_text);
+    // Fix hyphenation from PDF line breaks in author names.
+    // Only fix "word- word" patterns (with space after hyphen) — these are clearly
+    // line break artifacts. We do NOT use the no-space heuristic here because it
+    // can incorrectly break legitimate hyphenated names (e.g., "Agha-Janyan").
+    static HYPHEN_BREAK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)-\s+(\w)").unwrap());
+    let ref_text = HYPHEN_BREAK_RE.replace_all(ref_text, "$1$2");
 
     // Normalize whitespace
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());

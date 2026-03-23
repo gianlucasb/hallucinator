@@ -338,6 +338,36 @@ pub(crate) fn clean_title_with_config(
         title = title[..m.start()].to_string();
     }
 
+    // Strip trailing parenthesized conference abbreviation/year:
+    // "(CCS '17)", "(USENIX Security 23)", "(NDSS '24)", "(IEEE S&P 2023)"
+    static TRAILING_CONF_PAREN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"\s*\((?:CCS|USENIX|NDSS|IEEE|ACM|AAAI|NeurIPS|ICML|ICLR|CVPR|CHI|SOSP|OSDI|SIGCOMM|SIGMOD|VLDB|KDD|WWW|ICSE|FSE|ASE|ISSTA|PLDI|POPL|OOPSLA|EuroSys|ATC|FAST|HotOS|S&P|Oakland)(?:\s+[A-Za-z&]+)*\s*['\u{2019}]?\s*\d{0,4}\s*\)\s*$"
+        ).unwrap()
+    });
+    if let Some(m) = TRAILING_CONF_PAREN_RE.find(&title) {
+        title = title[..m.start()].to_string();
+    }
+
+    // Strip trailing publisher names from book references
+    // e.g., "Title. Basic Books" or "Title. Wiley" or "Title. MIT Press"
+    static TRAILING_PUBLISHER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"\.\s+(?:Basic Books|Wiley|Springer|Elsevier|Cambridge University Press|Oxford University Press|MIT Press|ACM Press|IEEE Press|Addison-Wesley|O'Reilly|Prentice Hall|McGraw-Hill|CRC Press|Academic Press|World Scientific|Morgan Kaufmann|Pearson|SAGE)\s*$"
+        ).unwrap()
+    });
+    if let Some(m) = TRAILING_PUBLISHER_RE.find(&title) {
+        title = title[..m.start()].to_string();
+    }
+
+    // Strip trailing edition markers: "(1st ed.)" or "(2nd edition)"
+    static TRAILING_EDITION_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\s*\(\d+(?:st|nd|rd|th)\s+(?:ed\.?|edition)\)\s*$").unwrap()
+    });
+    if let Some(m) = TRAILING_EDITION_RE.find(&title) {
+        title = title[..m.start()].to_string();
+    }
+
     // FIX 2 (NeurIPS): Reject venue-only titles
     if is_venue_only(&title) {
         return String::new();
@@ -3773,6 +3803,43 @@ mod tests {
         let title = "https://doi.org/10.1109/SP.2017.123";
         let cleaned = clean_title(title, false);
         assert_eq!(cleaned, "", "DOI URL should be rejected as title");
+    }
+
+    #[test]
+    fn test_clean_title_strips_conference_paren() {
+        assert_eq!(
+            clean_title("Directed Greybox Fuzzing (CCS '17)", false),
+            "Directed Greybox Fuzzing"
+        );
+        assert_eq!(
+            clean_title("Some Paper Title (USENIX Security 23)", false),
+            "Some Paper Title"
+        );
+    }
+
+    #[test]
+    fn test_clean_title_strips_publisher() {
+        assert_eq!(
+            clean_title("The Book of Why: The New Science of Cause and Effect. Basic Books", false),
+            "The Book of Why: The New Science of Cause and Effect"
+        );
+    }
+
+    #[test]
+    fn test_clean_title_strips_edition() {
+        assert_eq!(
+            clean_title("The Book of Why (1st ed.)", false),
+            "The Book of Why"
+        );
+    }
+
+    #[test]
+    fn test_clean_title_preserves_normal_parens() {
+        // Normal parenthetical content should NOT be stripped
+        assert_eq!(
+            clean_title("Breaking the o(sqrt n) barrier", false),
+            "Breaking the o(sqrt n) barrier"
+        );
     }
 }
 

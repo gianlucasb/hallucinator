@@ -1,10 +1,30 @@
 use super::{DatabaseBackend, DbQueryError, DbQueryResult};
 use crate::matching::titles_match;
-use crate::rate_limit::check_rate_limit_response;
 use crate::text_utils::get_query_words;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
+
+/// Check PubMed/NCBI response status, treating 429 and 503 as rate limiting.
+/// NCBI returns HTTP 429 when rate limit exceeded and 503 when overloaded.
+fn check_pubmed_status(resp: &reqwest::Response) -> Result<(), DbQueryError> {
+    let status = resp.status().as_u16();
+    if status == 429 || status == 503 {
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_secs);
+        Err(DbQueryError::RateLimited {
+            retry_after: retry_after.or(Some(Duration::from_secs(1))),
+        })
+    } else if !resp.status().is_success() {
+        Err(DbQueryError::Other(format!("HTTP {}", resp.status())))
+    } else {
+        Ok(())
+    }
+}
 
 pub struct PubMed;
 
@@ -41,10 +61,7 @@ impl DatabaseBackend for PubMed {
                 .await
                 .map_err(|e| DbQueryError::Other(e.to_string()))?;
 
-            check_rate_limit_response(&resp)?;
-            if !resp.status().is_success() {
-                return Err(DbQueryError::Other(format!("HTTP {}", resp.status())));
-            }
+            check_pubmed_status(&resp)?;
 
             let data: serde_json::Value = resp
                 .json()
@@ -76,12 +93,7 @@ impl DatabaseBackend for PubMed {
                 .await
                 .map_err(|e| DbQueryError::Other(e.to_string()))?;
 
-            if !resp.status().is_success() {
-                return Err(DbQueryError::Other(format!(
-                    "HTTP {} on fetch",
-                    resp.status()
-                )));
-            }
+            check_pubmed_status(&resp)?;
 
             let data: serde_json::Value = resp
                 .json()
