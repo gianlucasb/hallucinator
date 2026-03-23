@@ -15,15 +15,55 @@ static SURNAME_PREFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 static NAME_SUFFIXES: Lazy<HashSet<&'static str>> =
     Lazy::new(|| ["jr", "sr", "ii", "iii", "iv", "v"].into_iter().collect());
 
+/// Known organizational author names. When a ref_author matches one of these,
+/// we check if the org name appears anywhere in the found_authors list instead
+/// of doing normal name matching.
+static ORG_AUTHOR_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "openai", "meta", "google", "deepmind", "anthropic", "microsoft",
+        "deepseek", "deepseekai", "alibaba", "baidu", "tencent", "nvidia", "apple",
+        "darpa", "ftc", "nasa", "nist", "ieee", "acm",
+        "who", "oecd", "unesco", "european commission",
+        "mistralai", "mistral",
+    ]
+    .into_iter()
+    .collect()
+});
+
 /// Validate that at least one author in `ref_authors` matches one in `found_authors`.
 ///
-/// Uses two modes:
+/// Uses three modes:
+/// - **Organization mode**: If ref_author is a known org name (e.g., "OpenAI"),
+///   check if the org name appears in any found_author string.
 /// - **Last-name-only mode**: If most PDF-extracted authors lack first names/initials,
 ///   compare only surnames (with partial suffix matching for multi-word surnames).
 /// - **Full mode**: Normalize to "FirstInitial surname" and check for set intersection.
 pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> bool {
     if ref_authors.is_empty() || found_authors.is_empty() {
         return false;
+    }
+
+    // Check for organizational authors: when the reference lists an org name
+    // (e.g., "OpenAI", "Qwen Team", "DARPA") instead of individual authors,
+    // skip author validation — we can't meaningfully compare an org name
+    // against the individual contributor names returned by databases.
+    for ref_a in ref_authors {
+        let ref_lower = ref_a.trim().to_lowercase();
+        // Strip hyphens for matching (e.g., "DeepSeek-AI" → "deepseekai")
+        let ref_dehyphen = ref_lower.replace('-', "");
+
+        // Direct match against known org names
+        if ORG_AUTHOR_NAMES.contains(ref_lower.as_str())
+            || ORG_AUTHOR_NAMES.contains(ref_dehyphen.as_str())
+        {
+            return true;
+        }
+
+        // "X Team" pattern: "Qwen Team", "DeepSeek-AI Team"
+        let ref_words: Vec<&str> = ref_lower.split_whitespace().collect();
+        if ref_words.last() == Some(&"team") && ref_words.len() <= 3 {
+            return true;
+        }
     }
 
     let ref_clean: Vec<&str> = ref_authors
@@ -286,5 +326,41 @@ mod tests {
     fn test_empty() {
         assert!(!validate_authors(&[], &s(&["Smith"])));
         assert!(!validate_authors(&s(&["Smith"]), &[]));
+    }
+
+    #[test]
+    fn test_org_author_openai() {
+        // "OpenAI" as ref author should match found authors from the OpenAI org
+        assert!(validate_authors(
+            &s(&["OpenAI"]),
+            &s(&["Josh Achiam", "Steven Adler"]),
+        ));
+    }
+
+    #[test]
+    fn test_org_author_team() {
+        // "Qwen Team" as org author — skip validation, accept any found authors
+        assert!(validate_authors(
+            &s(&["Qwen Team"]),
+            &s(&["An Yang", "Baosong Yang"]),
+        ));
+    }
+
+    #[test]
+    fn test_org_author_meta() {
+        // "Meta" is a known org — skip validation
+        assert!(validate_authors(
+            &s(&["Meta"]),
+            &s(&["Hugo Touvron", "Thibaut Lavril"]),
+        ));
+    }
+
+    #[test]
+    fn test_org_author_deepseek() {
+        // "DeepSeek-AI" with hyphen should also match
+        assert!(validate_authors(
+            &s(&["DeepSeek-AI"]),
+            &s(&["Some Author"]),
+        ));
     }
 }

@@ -122,6 +122,7 @@ pub async fn query_local_databases(
             name,
             rl_result.result,
             elapsed,
+            title,
             ref_authors,
             config.check_openalex_authors,
             on_db_complete,
@@ -246,6 +247,7 @@ pub async fn query_remote_databases(
                 name,
                 Ok(cached_result),
                 Duration::ZERO,
+                title,
                 ref_authors,
                 check_openalex_authors,
                 on_db_complete,
@@ -308,6 +310,7 @@ pub async fn query_remote_databases(
             name,
             query_result,
             elapsed,
+            title,
             &ref_authors,
             check_openalex_authors,
             on_db_complete,
@@ -370,6 +373,12 @@ fn empty_result() -> DbSearchResult {
     }
 }
 
+/// Threshold (in words) below which a title is considered "short".
+/// For short titles, author mismatches are suppressed because a title-only
+/// match is unreliable — a different paper with the same short title is
+/// more likely than a genuine author mismatch.
+const SHORT_TITLE_WORD_THRESHOLD: usize = 6;
+
 /// Process a single DB query result. Returns `Some(verified_result)` on match,
 /// `None` to continue checking other DBs.
 #[allow(clippy::too_many_arguments)]
@@ -377,6 +386,7 @@ fn process_query_result(
     name: String,
     result: Result<crate::db::DbQueryResult, crate::rate_limit::DbQueryError>,
     elapsed: Duration,
+    title: &str,
     ref_authors: &[String],
     check_openalex_authors: bool,
     on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
@@ -432,7 +442,16 @@ fn process_query_result(
                 }
                 db_results.push(db_result);
 
-                if first_mismatch.is_none() && (name != "OpenAlex" || check_openalex_authors) {
+                // For short/ambiguous titles, suppress author mismatch — a title-only
+                // match on a short title is unreliable (likely a different paper with
+                // the same common title like "Gemma", "Sentience", "Interactions").
+                let is_short_title =
+                    title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD;
+
+                if first_mismatch.is_none()
+                    && (name != "OpenAlex" || check_openalex_authors)
+                    && !is_short_title
+                {
                     *first_mismatch = Some(DbSearchResult {
                         status: Status::Mismatch(MismatchKind::AUTHOR),
                         source: Some(name),
@@ -696,7 +715,7 @@ mod tests {
         let rate_limiters = config.rate_limiters.clone();
         let max_retries = config.max_rate_limit_retries;
 
-        let title = "Test Paper Title";
+        let title = "A Comprehensive Survey of Test Paper Methods and Approaches";
         let mut join_set = tokio::task::JoinSet::new();
         let db = mock;
         let ref_authors_owned = ref_authors.to_vec();
@@ -727,6 +746,7 @@ mod tests {
                 name,
                 query_result,
                 elapsed,
+                title,
                 &ref_authors,
                 false,
                 None,
@@ -787,6 +807,78 @@ mod tests {
         ));
         let result = query_single_mock_db(mock, &["CompletelyDifferentAuthor".into()]).await;
         assert_eq!(result.status, Status::Mismatch(MismatchKind::AUTHOR));
+    }
+
+    #[tokio::test]
+    async fn short_title_mismatch_suppressed() {
+        // For short titles (<6 words), author mismatches should be suppressed
+        // because the title match is unreliable (e.g., "Gemma" matching a
+        // different paper with the same name).
+        let mock: Arc<dyn DatabaseBackend> = Arc::new(MockDb::new(
+            "TestDB",
+            MockResponse::Found {
+                title: "Short Title".into(),
+                authors: vec!["Jones".into()],
+                url: None,
+            },
+        ));
+        // Use a short title — mismatch should be suppressed, returning NotFound
+        let config = config_all_disabled();
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let rate_limiters = config.rate_limiters.clone();
+
+        let short_title = "Short Title";
+        let ref_authors_owned: Vec<String> = vec!["CompletelyDifferent".into()];
+        let db = mock;
+        let rate_limiters_clone = rate_limiters.clone();
+        let ref_authors_clone = ref_authors_owned.clone();
+
+        let mut join_set = tokio::task::JoinSet::new();
+        join_set.spawn(async move {
+            let name = db.name().to_string();
+            let rl_result = crate::rate_limit::query_with_retry(
+                db.as_ref(),
+                short_title,
+                &client,
+                timeout,
+                &rate_limiters_clone,
+                config.max_rate_limit_retries,
+                None,
+            )
+            .await;
+            (name, rl_result.result, ref_authors_clone, rl_result.elapsed)
+        });
+
+        let mut failed_dbs = Vec::new();
+        let mut db_results: Vec<DbResult> = Vec::new();
+        let mut first_mismatch: Option<DbSearchResult> = None;
+
+        while let Some(result) = join_set.join_next().await {
+            let (name, query_result, ref_authors, elapsed) = result.unwrap();
+            match process_query_result(
+                name,
+                query_result,
+                elapsed,
+                short_title,
+                &ref_authors,
+                false,
+                None,
+                &mut db_results,
+                &mut failed_dbs,
+                &mut first_mismatch,
+            ) {
+                Some(verified) => panic!("Should not verify: {:?}", verified.status),
+                None => {}
+            }
+        }
+
+        // first_mismatch should be None because short title suppresses it
+        assert!(
+            first_mismatch.is_none(),
+            "Short title should suppress author mismatch, got: {:?}",
+            first_mismatch.as_ref().map(|m| &m.status)
+        );
     }
 
     #[tokio::test]

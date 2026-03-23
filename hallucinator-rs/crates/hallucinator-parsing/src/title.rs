@@ -803,6 +803,11 @@ fn is_venue_only(text: &str) -> bool {
             Regex::new(r"(?i)^(?:SIAM|IEEE|ACM|PNAS)\s+(?:Journal|Transactions|Review)").unwrap(),
             Regex::new(r"(?i)^(?:Journal|Transactions|Proceedings)\s+(?:of|on)\s+").unwrap(),
             Regex::new(r"(?i)^Advances\s+in\s+Neural").unwrap(),
+            // Publisher/venue organization names that get extracted as standalone "titles"
+            // when ACM format splits them onto separate lines
+            Regex::new(r"(?i)^Association\s+for\s+Computational\s+Linguistics\s*$").unwrap(),
+            Regex::new(r"(?i)^European\s+Language\s+Resources\s+Association\s*$").unwrap(),
+            Regex::new(r"(?i)^(?:Morgan\s+Kaufmann|Springer\s+(?:Science|Nature|Verlag)|Elsevier|Cambridge\s+University\s+Press|Oxford\s+University\s+Press|MIT\s+Press)\s*$").unwrap(),
         ]
     });
 
