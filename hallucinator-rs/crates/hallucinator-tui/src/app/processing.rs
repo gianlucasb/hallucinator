@@ -198,6 +198,7 @@ impl App {
             cache_positive_ttl_secs: hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
             cache_negative_ttl_secs: hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs(),
             query_cache: Some(self.get_or_build_query_cache()),
+            extra_backends: vec![],
         }
     }
 

@@ -10,7 +10,7 @@ mod builder;
 mod db;
 mod query;
 pub mod sqlite_sink;
-mod xml_parser;
+pub mod xml_parser;
 
 use std::path::{Path, PathBuf};
 
@@ -170,6 +170,18 @@ impl AclDatabase {
     /// Get the path to the database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+impl From<xml_parser::AclPaper> for hallucinator_common::ParsedRecord {
+    fn from(paper: xml_parser::AclPaper) -> Self {
+        Self {
+            source_id: paper.anthology_id,
+            title: paper.title,
+            authors: paper.authors,
+            url: paper.url,
+            doi: paper.doi,
+        }
     }
 }
 

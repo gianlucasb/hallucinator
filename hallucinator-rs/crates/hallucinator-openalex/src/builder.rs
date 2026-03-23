@@ -503,7 +503,7 @@ fn build_schema() -> Schema {
 ///
 /// Returns `None` if the work type is not in `ALLOWED_TYPES` or required
 /// fields are missing.
-fn parse_work_json(line: &str, min_year: Option<u32>) -> Option<(u64, String, Vec<String>)> {
+pub fn parse_work_json(line: &str, min_year: Option<u32>) -> Option<(u64, String, Vec<String>)> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
 
     // Filter by type

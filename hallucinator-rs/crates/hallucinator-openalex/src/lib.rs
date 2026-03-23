@@ -8,10 +8,10 @@
 //! date-partitioned data. Mirrors the `hallucinator-dblp` / `hallucinator-acl`
 //! crate architecture.
 
-mod builder;
+pub mod builder;
 mod metadata;
 mod query;
-mod s3;
+pub mod s3;
 
 use std::path::{Path, PathBuf};
 

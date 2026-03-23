@@ -738,6 +738,7 @@ async fn check(
         cache_path,
         cache_positive_ttl_secs: positive_ttl,
         cache_negative_ttl_secs: negative_ttl,
+        extra_backends: vec![],
     };
 
     // Handle archives: extract each file and run check on each independently
