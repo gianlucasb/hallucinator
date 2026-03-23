@@ -71,8 +71,8 @@ impl DatabaseBackend for GovInfo {
 
 /// Parse GovInfo JSON response and find matching documents.
 fn parse_govinfo_response(json: &str, title: &str) -> Result<DbQueryResult, DbQueryError> {
-    let data: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| DbQueryError::Other(format!("JSON error: {}", e)))?;
+    let data: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| DbQueryError::Other(format!("JSON error: {}", e)))?;
 
     let results = data["results"].as_array();
 

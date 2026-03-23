@@ -321,7 +321,12 @@ fn print_mismatch_block(
     if kind.contains(MismatchKind::ARXIV_ID) {
         if let Some(arxiv_info) = &result.arxiv_info {
             if color.enabled() {
-                writeln!(w, "{} {} (invalid)", "arXiv ID:".bold(), arxiv_info.arxiv_id)?;
+                writeln!(
+                    w,
+                    "{} {} (invalid)",
+                    "arXiv ID:".bold(),
+                    arxiv_info.arxiv_id
+                )?;
             } else {
                 writeln!(w, "arXiv ID: {} (invalid)", arxiv_info.arxiv_id)?;
             }
@@ -340,7 +345,11 @@ fn print_mismatch_block(
 }
 
 /// Build a status message describing the mismatch.
-fn build_mismatch_status_message(result: &ValidationResult, kind: MismatchKind, source: &str) -> String {
+fn build_mismatch_status_message(
+    result: &ValidationResult,
+    kind: MismatchKind,
+    source: &str,
+) -> String {
     let mut issues = Vec::new();
 
     if kind.contains(MismatchKind::AUTHOR) {

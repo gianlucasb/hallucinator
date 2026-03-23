@@ -341,37 +341,37 @@ pub async fn query_with_rate_limit(
     tracing::debug!(db = db.name(), title, "query start");
     let start = Instant::now();
 
-    let result = match execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await
-    {
-        Ok(result) => Ok(result),
-        Err(DbQueryError::RateLimited { retry_after }) => {
-            // Adapt governor to slower rate so subsequent requests are throttled
-            if let Some(lim) = limiter {
-                lim.on_rate_limited();
+    let result =
+        match execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await {
+            Ok(result) => Ok(result),
+            Err(DbQueryError::RateLimited { retry_after }) => {
+                // Adapt governor to slower rate so subsequent requests are throttled
+                if let Some(lim) = limiter {
+                    lim.on_rate_limited();
+                }
+
+                // Honor Retry-After: sleep then retry once instead of bailing.
+                // Cap at the DB timeout — sleeping longer than that makes no sense.
+                // The governor adaptation prevents cascading 429s for future requests.
+                let wait = retry_after.unwrap_or(Duration::from_secs(2));
+                let wait = wait.min(timeout);
+                tracing::info!(
+                    db = db.name(),
+                    wait_secs = wait.as_secs_f64(),
+                    "429 rate limited, retrying"
+                );
+                tokio::time::sleep(wait).await;
+
+                // Re-acquire governor token after sleeping
+                if let Some(lim) = limiter {
+                    lim.acquire().await;
+                }
+
+                // Single retry — if still 429, give up
+                execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await
             }
-
-            // Honor Retry-After: sleep then retry once instead of bailing.
-            // Cap at the DB timeout — sleeping longer than that makes no sense.
-            // The governor adaptation prevents cascading 429s for future requests.
-            let wait = retry_after.unwrap_or(Duration::from_secs(2));
-            let wait = wait.min(timeout);
-            tracing::info!(
-                db = db.name(),
-                wait_secs = wait.as_secs_f64(),
-                "429 rate limited, retrying"
-            );
-            tokio::time::sleep(wait).await;
-
-            // Re-acquire governor token after sleeping
-            if let Some(lim) = limiter {
-                lim.acquire().await;
-            }
-
-            // Single retry — if still 429, give up
-            execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await
-        }
-        Err(other) => Err(other),
-    };
+            Err(other) => Err(other),
+        };
 
     // Cache successful results (found or not-found); never cache errors.
     // Skip cache for local/offline backends.

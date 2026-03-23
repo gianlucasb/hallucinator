@@ -191,9 +191,8 @@ pub(crate) fn clean_title_with_config(
 
     // Reject titles that are actually identifiers (DOI, URL, arXiv ID, etc.)
     // These indicate a parsing failure where an identifier was extracted as title
-    static IDENTIFIER_PREFIX: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^(?:doi:|https?://|arXiv:|ISBN[:\s]|ISSN[:\s])").unwrap()
-    });
+    static IDENTIFIER_PREFIX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^(?:doi:|https?://|arXiv:|ISBN[:\s]|ISSN[:\s])").unwrap());
     if IDENTIFIER_PREFIX.is_match(title) {
         return String::new();
     }
@@ -393,10 +392,8 @@ pub(crate) fn clean_title_with_config(
             // Assembly instructions: "mov eax, ebx" or "push ecx" patterns
             // Exclude "and" and "or" since they're common English words that appear in titles
             // like "cloud and iot," - only match with semicolon delimiter for these
-            Regex::new(
-                r"(?i)\b(?:mov|push|pop|call|ret|jmp|lea|add|sub|xor)\s+[a-z]{2,3}[,;]",
-            )
-            .unwrap(),
+            Regex::new(r"(?i)\b(?:mov|push|pop|call|ret|jmp|lea|add|sub|xor)\s+[a-z]{2,3}[,;]")
+                .unwrap(),
             // "and" and "or" require semicolon (not comma) to avoid matching English text
             Regex::new(r"(?i)\b(?:and|or)\s+[a-z]{2,3};").unwrap(),
         ]
@@ -454,15 +451,13 @@ pub(crate) fn clean_title_with_config(
     title = EDITION_TRAIL.replace(&title, "").to_string();
 
     // Also strip standalone parenthesized edition: "(1 ed.)" or "(2 ed.)" at end of title
-    static PAREN_EDITION: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\s*\(\d+\s+ed\.?\)\s*$").unwrap()
-    });
+    static PAREN_EDITION: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\s*\(\d+\s+ed\.?\)\s*$").unwrap());
     title = PAREN_EDITION.replace(&title, "").to_string();
 
     // Strip trailing ", Nth edn" format (no parens)
-    static COMMA_EDN: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i),\s*\d+(?:st|nd|rd|th)\s+edn\.?\s*$").unwrap()
-    });
+    static COMMA_EDN: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i),\s*\d+(?:st|nd|rd|th)\s+edn\.?\s*$").unwrap());
     title = COMMA_EDN.replace(&title, "").to_string();
 
     // Strip publisher + city trailing info: ", Publisher, City (Year)" or ". Publisher, City"
@@ -473,40 +468,34 @@ pub(crate) fn clean_title_with_config(
     title = PUBLISHER_TRAIL.replace(&title, "").to_string();
 
     // Strip "Technical report" suffix
-    static TECH_REPORT_TRAIL: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)[.,]\s*(?:Technical\s+report|Tech\.?\s*Rep\.?).*$").unwrap()
-    });
+    static TECH_REPORT_TRAIL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)[.,]\s*(?:Technical\s+report|Tech\.?\s*Rep\.?).*$").unwrap());
     title = TECH_REPORT_TRAIL.replace(&title, "").to_string();
 
     // Strip RFC year suffix from titles like "GZIP file format specification version 4.3. RFC 1952 (1996)"
-    static RFC_YEAR_TRAIL: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"[.,]\s*RFC\s+\d+\s*\(\d{4}\)\s*$").unwrap()
-    });
+    static RFC_YEAR_TRAIL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[.,]\s*RFC\s+\d+\s*\(\d{4}\)\s*$").unwrap());
     title = RFC_YEAR_TRAIL.replace(&title, "").to_string();
 
     // Strip standalone RFC reference at end: ". RFC 1952 (1996)" when not the whole title
-    static RFC_STANDALONE_TRAIL: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\.\s+RFC\s+\d+\s*\(\d{4}\)\s*$").unwrap()
-    });
+    static RFC_STANDALONE_TRAIL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\.\s+RFC\s+\d+\s*\(\d{4}\)\s*$").unwrap());
     if title.len() > 20 {
         title = RFC_STANDALONE_TRAIL.replace(&title, "").to_string();
     }
 
     // Strip volume/issue suffixes that slipped through: ", 2017. 2(2)" or ". 36(5):219–238"
-    static VOL_ISSUE_TRAIL: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"[.,]\s*(?:19|20)\d{2}\.\s*\d+\(\d+\).*$").unwrap()
-    });
+    static VOL_ISSUE_TRAIL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[.,]\s*(?:19|20)\d{2}\.\s*\d+\(\d+\).*$").unwrap());
     title = VOL_ISSUE_TRAIL.replace(&title, "").to_string();
 
-    static VOL_ISSUE_TRAIL2: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\.\s*\d+\(\d+\)\s*:\s*\d+[\u{2013}\-]?\d*\s*$").unwrap()
-    });
+    static VOL_ISSUE_TRAIL2: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\.\s*\d+\(\d+\)\s*:\s*\d+[\u{2013}\-]?\d*\s*$").unwrap());
     title = VOL_ISSUE_TRAIL2.replace(&title, "").to_string();
 
     // Strip ": , JournalName, Vol, (Year)" pattern from Springer/Nature format
-    static COLON_COMMA_JOURNAL: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r":\s*,\s*[A-Z].*$").unwrap()
-    });
+    static COLON_COMMA_JOURNAL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r":\s*,\s*[A-Z].*$").unwrap());
     title = COLON_COMMA_JOURNAL.replace(&title, "").to_string();
 
     title = title.trim().to_string();
@@ -950,9 +939,7 @@ fn try_edited_book(ref_text: &str) -> Option<(String, bool)> {
 
     // Pattern 1: "I. I. Surname, Title" - initials followed by surname, comma, then title
     static AUTHOR_TITLE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"^([A-Z]\.\s*(?:[A-Z]\.\s*)*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),\s+(.+)$"
-        ).unwrap()
+        Regex::new(r"^([A-Z]\.\s*(?:[A-Z]\.\s*)*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),\s+(.+)$").unwrap()
     });
 
     if let Some(caps) = AUTHOR_TITLE.captures(before_edited) {
@@ -1157,8 +1144,7 @@ fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
     // Try Format 4 first: ". YYYY. Title. arXiv:ID" (year before title)
     // Common in ML papers: "Author et al. 2024. Title Here. arXiv:2412.15115"
     static RE4: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\.\s*(?:19|20)\d{2}\.\s+([^.]+(?:\.[^.]+)*)\.\s*arXiv\s*:\s*\d+\.\d+")
-            .unwrap()
+        Regex::new(r"\.\s*(?:19|20)\d{2}\.\s+([^.]+(?:\.[^.]+)*)\.\s*arXiv\s*:\s*\d+\.\d+").unwrap()
     });
 
     if let Some(caps) = RE4.captures(ref_text) {
@@ -1901,9 +1887,8 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     let mut potential_title = strip_leading_surname(sentences[1].trim());
 
     // Skip if starts with identifier (doi:, https://, arXiv:, etc.)
-    static IDENTIFIER_START: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^(?:doi:|https?://|arXiv:|ISBN[:\s]|ISSN[:\s])").unwrap()
-    });
+    static IDENTIFIER_START: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^(?:doi:|https?://|arXiv:|ISBN[:\s]|ISSN[:\s])").unwrap());
     if IDENTIFIER_START.is_match(&potential_title) {
         // Try to use previous sentence if it looks like a title
         let first = sentences[0].trim();
@@ -2099,7 +2084,11 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^({}{}+)\s*,\s*{}{}{{2,}}\s*,", uc, sc, uc, sc)).unwrap(),
             // Surname, Firstname Lastname, and Firstname (inverted format with full names)
             // Handles "Gomez, Łukasz Kaiser, and Illia" after split at "N."
-            Regex::new(&format!(r"^({}{}+)\s*,\s*{}{}+\s+{}{}+\s*,\s*and\s+{}", uc, sc, uc, sc, uc, sc, uc)).unwrap(),
+            Regex::new(&format!(
+                r"^({}{}+)\s*,\s*{}{}+\s+{}{}+\s*,\s*and\s+{}",
+                uc, sc, uc, sc, uc, sc, uc
+            ))
+            .unwrap(),
             // Surname, et al (inverted format with et al)
             // Handles "Fowl, et al" after split at "H."
             Regex::new(&format!(r"^({}{}+)\s*,\s*et\s+al", uc, sc)).unwrap(),
@@ -2121,10 +2110,18 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             .unwrap(),
             // Middle name + Surname + "and": "J. Zico Kolter, and Matt Fredrikson"
             // Matches "Zico Kolter, and M" where Zico is middle name, Kolter is surname
-            Regex::new(&format!(r"^({}{}+)\s+({}{}+),\s+and\s+{}", uc, sc, uc, sc, uc)).unwrap(),
+            Regex::new(&format!(
+                r"^({}{}+)\s+({}{}+),\s+and\s+{}",
+                uc, sc, uc, sc, uc
+            ))
+            .unwrap(),
             // Firstname Lastname + comma (not already covered): "Zico Kolter,"
             // This is more permissive - any CapWord CapWord, pattern after initial
-            Regex::new(&format!(r"^({}{}{{2,}})\s+({}{}{{2,}})\s*,", uc, sc, uc, sc)).unwrap(),
+            Regex::new(&format!(
+                r"^({}{}{{2,}})\s+({}{}{{2,}})\s*,",
+                uc, sc, uc, sc
+            ))
+            .unwrap(),
             // Middlename Surname + period: "Alex Halderman." after initial "J."
             // Handles single-author refs with middle name: "J. Alex Halderman. Title"
             Regex::new(&format!(r"^({}{}{{2,}})\s+({}{}{{2,}})\.", uc, sc, uc, sc)).unwrap(),
@@ -4282,7 +4279,6 @@ fn test_ieee_et_al_quoted_title() {
     );
 }
 
-
 #[test]
 fn test_ieee_et_al_quoted_title_cleaned() {
     // The actual text from the PDF has smart quotes and a newline in the middle
@@ -4322,9 +4318,13 @@ fn test_arxiv_year_before_title_format() {
     let ref_text = "Qwen and:, An Yang, Baosong Yang, and Zihan Qiu. 2025. Qwen2.5 Technical Report. arXiv:2412.15115 [cs.CL]";
 
     // Test the regex directly
-    let re4 = Regex::new(r"\.\s*(?:19|20)\d{2}\.\s+([^.]+(?:\.[^.]+)*)\.\s*arXiv\s*:\s*\d+\.\d+").unwrap();
+    let re4 = Regex::new(r"\.\s*(?:19|20)\d{2}\.\s+([^.]+(?:\.[^.]+)*)\.\s*arXiv\s*:\s*\d+\.\d+")
+        .unwrap();
     if let Some(caps) = re4.captures(ref_text) {
-        println!("RE4 matched, title capture: {:?}", caps.get(1).map(|m| m.as_str()));
+        println!(
+            "RE4 matched, title capture: {:?}",
+            caps.get(1).map(|m| m.as_str())
+        );
     } else {
         println!("RE4 did NOT match on input");
     }
@@ -4476,4 +4476,3 @@ fn test_colon_comma_journal_stripped() {
         cleaned
     );
 }
-

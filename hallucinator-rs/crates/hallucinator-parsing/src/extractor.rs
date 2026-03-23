@@ -92,7 +92,12 @@ impl ReferenceExtractor {
     ///
     /// `prev_authors` is used for em-dash "same authors" handling.
     pub fn parse_reference(&self, ref_text: &str, prev_authors: &[String]) -> ParsedRef {
-        parse_single_reference(ref_text, prev_authors, &self.config, self.dictionary.as_deref())
+        parse_single_reference(
+            ref_text,
+            prev_authors,
+            &self.config,
+            self.dictionary.as_deref(),
+        )
     }
 
     /// Run the extraction pipeline on already-extracted text.
@@ -118,8 +123,12 @@ impl ReferenceExtractor {
         let mut previous_authors: Vec<String> = Vec::new();
 
         for (raw_idx, ref_text) in raw_refs.iter().enumerate() {
-            let parsed =
-                parse_single_reference(ref_text, &previous_authors, &self.config, self.dictionary.as_deref());
+            let parsed = parse_single_reference(
+                ref_text,
+                &previous_authors,
+                &self.config,
+                self.dictionary.as_deref(),
+            );
             match parsed {
                 ParsedRef::Skip(reason, raw_citation, title) => {
                     match reason {
@@ -207,7 +216,10 @@ fn parse_single_reference(
         // Note: from_quotes alone is not a strong signal — most IEEE/ACM refs
         // use quoted titles, which would bypass min_title_words for nearly everything.
         let has_strong_signal = !cleaned_title.is_empty()
-            && (doi.is_some() || arxiv_id.is_some() || !urls.is_empty() || looks_like_citation(&ref_text));
+            && (doi.is_some()
+                || arxiv_id.is_some()
+                || !urls.is_empty()
+                || looks_like_citation(&ref_text));
 
         if !has_strong_signal {
             static WS_SKIP_RE2: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
@@ -622,12 +634,22 @@ mod tests {
         let parsed = ext.parse_reference(ref_text, &[]);
         match parsed {
             ParsedRef::Ref(r) => {
-                assert_eq!(r.title.as_deref(), Some("EduData"), "Title should be 'EduData'");
+                assert_eq!(
+                    r.title.as_deref(),
+                    Some("EduData"),
+                    "Title should be 'EduData'"
+                );
                 assert!(!r.urls.is_empty(), "Should have extracted GitHub URL");
-                assert!(r.urls[0].contains("github.com"), "URL should be the GitHub URL");
+                assert!(
+                    r.urls[0].contains("github.com"),
+                    "URL should be the GitHub URL"
+                );
             }
             ParsedRef::Skip(reason, _, _) => {
-                panic!("EduData with GitHub URL should not be skipped (was skipped due to {:?})", reason);
+                panic!(
+                    "EduData with GitHub URL should not be skipped (was skipped due to {:?})",
+                    reason
+                );
             }
         }
     }
@@ -674,7 +696,9 @@ mod tests {
                 assert!(!r.urls.is_empty(), "Should extract the URL");
                 assert!(r.urls[0].contains("example.com"));
             }
-            ParsedRef::Skip(..) => panic!("Reference with URL and valid title should not be skipped"),
+            ParsedRef::Skip(..) => {
+                panic!("Reference with URL and valid title should not be skipped")
+            }
         }
     }
 

@@ -9,16 +9,76 @@ use crate::dictionary::Dictionary;
 /// Used only when no dictionary is available.
 pub(crate) static COMPOUND_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "centered", "based", "driven", "directed", "aware", "oriented", "specific",
-        "related", "dependent", "independent", "like", "free", "friendly", "rich",
-        "poor", "scale", "level", "order", "class", "type", "style", "wise", "fold",
-        "shot", "step", "time", "world", "source", "domain", "task", "modal",
-        "intensive", "efficient", "agnostic", "invariant", "sensitive", "grained",
-        "agent", "site", "throughput", "flow", "assisted", "augmented", "integrated",
-        "empowered", "guided", "supervised", "training", "key", "day", "box", "end",
-        "party", "round", "size", "server", "client", "channel", "optimal", "resilient",
-        "resistant", "tolerant", "hiding", "preserving", "knowledge", "latency",
-        "precision", "centric", "aided", "authenticated",
+        "centered",
+        "based",
+        "driven",
+        "directed",
+        "aware",
+        "oriented",
+        "specific",
+        "related",
+        "dependent",
+        "independent",
+        "like",
+        "free",
+        "friendly",
+        "rich",
+        "poor",
+        "scale",
+        "level",
+        "order",
+        "class",
+        "type",
+        "style",
+        "wise",
+        "fold",
+        "shot",
+        "step",
+        "time",
+        "world",
+        "source",
+        "domain",
+        "task",
+        "modal",
+        "intensive",
+        "efficient",
+        "agnostic",
+        "invariant",
+        "sensitive",
+        "grained",
+        "agent",
+        "site",
+        "throughput",
+        "flow",
+        "assisted",
+        "augmented",
+        "integrated",
+        "empowered",
+        "guided",
+        "supervised",
+        "training",
+        "key",
+        "day",
+        "box",
+        "end",
+        "party",
+        "round",
+        "size",
+        "server",
+        "client",
+        "channel",
+        "optimal",
+        "resilient",
+        "resistant",
+        "tolerant",
+        "hiding",
+        "preserving",
+        "knowledge",
+        "latency",
+        "precision",
+        "centric",
+        "aided",
+        "authenticated",
     ]
     .into_iter()
     .collect()
@@ -53,42 +113,86 @@ fn fix_separated_diacritics_pdf(text: &str) -> String {
         let mut m = HashMap::new();
         // Umlaut/diaeresis (¨ U+00A8)
         for (letter, composed) in [
-            ('A', 'Ä'), ('a', 'ä'), ('E', 'Ë'), ('e', 'ë'),
-            ('I', 'Ï'), ('i', 'ï'), ('O', 'Ö'), ('o', 'ö'),
-            ('U', 'Ü'), ('u', 'ü'), ('Y', 'Ÿ'), ('y', 'ÿ'),
+            ('A', 'Ä'),
+            ('a', 'ä'),
+            ('E', 'Ë'),
+            ('e', 'ë'),
+            ('I', 'Ï'),
+            ('i', 'ï'),
+            ('O', 'Ö'),
+            ('o', 'ö'),
+            ('U', 'Ü'),
+            ('u', 'ü'),
+            ('Y', 'Ÿ'),
+            ('y', 'ÿ'),
         ] {
             m.insert(('\u{a8}', letter), composed);
         }
         // Acute accent (´ U+00B4)
         for (letter, composed) in [
-            ('A', 'Á'), ('a', 'á'), ('E', 'É'), ('e', 'é'),
-            ('I', 'Í'), ('i', 'í'), ('O', 'Ó'), ('o', 'ó'),
-            ('U', 'Ú'), ('u', 'ú'), ('N', 'Ń'), ('n', 'ń'),
-            ('C', 'Ć'), ('c', 'ć'), ('S', 'Ś'), ('s', 'ś'),
-            ('Z', 'Ź'), ('z', 'ź'), ('Y', 'Ý'), ('y', 'ý'),
+            ('A', 'Á'),
+            ('a', 'á'),
+            ('E', 'É'),
+            ('e', 'é'),
+            ('I', 'Í'),
+            ('i', 'í'),
+            ('O', 'Ó'),
+            ('o', 'ó'),
+            ('U', 'Ú'),
+            ('u', 'ú'),
+            ('N', 'Ń'),
+            ('n', 'ń'),
+            ('C', 'Ć'),
+            ('c', 'ć'),
+            ('S', 'Ś'),
+            ('s', 'ś'),
+            ('Z', 'Ź'),
+            ('z', 'ź'),
+            ('Y', 'Ý'),
+            ('y', 'ý'),
         ] {
             m.insert(('\u{b4}', letter), composed);
         }
         // Grave accent (` U+0060)
         for (letter, composed) in [
-            ('A', 'À'), ('a', 'à'), ('E', 'È'), ('e', 'è'),
-            ('I', 'Ì'), ('i', 'ì'), ('O', 'Ò'), ('o', 'ò'),
-            ('U', 'Ù'), ('u', 'ù'),
+            ('A', 'À'),
+            ('a', 'à'),
+            ('E', 'È'),
+            ('e', 'è'),
+            ('I', 'Ì'),
+            ('i', 'ì'),
+            ('O', 'Ò'),
+            ('o', 'ò'),
+            ('U', 'Ù'),
+            ('u', 'ù'),
         ] {
             m.insert(('`', letter), composed);
         }
         // Tilde (˜ U+02DC)
         for (letter, composed) in [
-            ('A', 'Ã'), ('a', 'ã'), ('N', 'Ñ'), ('n', 'ñ'),
-            ('O', 'Õ'), ('o', 'õ'),
+            ('A', 'Ã'),
+            ('a', 'ã'),
+            ('N', 'Ñ'),
+            ('n', 'ñ'),
+            ('O', 'Õ'),
+            ('o', 'õ'),
         ] {
             m.insert(('\u{2dc}', letter), composed);
         }
         // Caron/háček (ˇ U+02C7)
         for (letter, composed) in [
-            ('C', 'Č'), ('c', 'č'), ('S', 'Š'), ('s', 'š'),
-            ('Z', 'Ž'), ('z', 'ž'), ('E', 'Ě'), ('e', 'ě'),
-            ('R', 'Ř'), ('r', 'ř'), ('N', 'Ň'), ('n', 'ň'),
+            ('C', 'Č'),
+            ('c', 'č'),
+            ('S', 'Š'),
+            ('s', 'š'),
+            ('Z', 'Ž'),
+            ('z', 'ž'),
+            ('E', 'Ě'),
+            ('e', 'ě'),
+            ('R', 'Ř'),
+            ('r', 'ř'),
+            ('N', 'Ň'),
+            ('n', 'ň'),
         ] {
             m.insert(('\u{2c7}', letter), composed);
         }
@@ -107,14 +211,12 @@ fn fix_separated_diacritics_pdf(text: &str) -> String {
     }
 
     // Compose diacritic + optional space + letter
-    static DIACRITIC_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"([\u{a8}\u{b4}`\u{2dc}\u{2c7}\u{b8}])\s*([A-Za-z])").unwrap()
-    });
+    static DIACRITIC_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"([\u{a8}\u{b4}`\u{2dc}\u{2c7}\u{b8}])\s*([A-Za-z])").unwrap());
 
     // Also handle letter + space + diacritic (e.g., "B ¨UNZ")
-    static SPACE_BEFORE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"([A-Za-z])\s+([\u{a8}\u{b4}`\u{2dc}\u{2c7}\u{b8}])").unwrap()
-    });
+    static SPACE_BEFORE_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"([A-Za-z])\s+([\u{a8}\u{b4}`\u{2dc}\u{2c7}\u{b8}])").unwrap());
 
     // Step 1: Remove space between letter and following diacritic
     let text = SPACE_BEFORE_RE.replace_all(&text, "$1$2");
@@ -160,9 +262,7 @@ fn fix_separated_diacritics_pdf(text: &str) -> String {
 pub fn fix_hyphenation_with_dict<D: Dictionary + ?Sized>(text: &str, dict: &D) -> String {
     // Pass 1: Fix "word- word" patterns (hyphen followed by whitespace).
     // These are clearly PDF line break artifacts.
-    static RE_WITH_SPACE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(\w+)-\s+(\w+)").unwrap()
-    });
+    static RE_WITH_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w+)-\s+(\w+)").unwrap());
 
     let result = RE_WITH_SPACE
         .replace_all(text, |caps: &regex::Captures| {
@@ -188,9 +288,7 @@ pub fn fix_hyphenation_with_dict<D: Dictionary + ?Sized>(text: &str, dict: &D) -
     // This handles cases where the PDF removed the space (e.g., "Chal-lenges").
     // If the merged word is in the dictionary, it's a real word split by a
     // line break. If not, it's likely an intentional compound (e.g., "co-located").
-    static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"([a-zA-Z]+)-([a-zA-Z]+)").unwrap()
-    });
+    static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([a-zA-Z]+)-([a-zA-Z]+)").unwrap());
 
     RE_NO_SPACE
         .replace_all(&result, |caps: &regex::Captures| {
@@ -225,18 +323,107 @@ pub fn fix_hyphenation(text: &str) -> String {
 /// Only used when no dictionary is available.
 static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "tion", "tions", "tional", "sion", "sions", "sional", "ment", "ments",
-        "ness", "ance", "ence", "ency", "ity", "able", "ible", "ous", "ious",
-        "eous", "ive", "ical", "ally", "ular", "ology", "ization", "ised", "ized",
-        "ing", "ings", "ism", "isms", "ist", "ists", "ure", "ures", "age", "ages",
-        "fication", "ation", "ution", "ction", "ption", "ering", "uring", "ating",
-        "mentation", "putation", "mization", "tication", "rization", "tation",
-        "bilities", "ilities", "ming", "ning", "ring", "ping", "ting", "king",
-        "alist", "ral", "lar", "nar", "ural", "eral", "ber", "der", "ter", "ger",
-        "ver", "ner", "per", "fer", "ser", "cer", "ker", "mer", "tor", "sor",
-        "mated", "nated", "rated", "lated", "cated", "gated", "tine", "dine",
-        "rine", "line", "fier", "fiers", "ship", "ships", "hood", "hoods",
-        "archy", "ences", "ances", "morphism", "antees", "tionships", "erware",
+        "tion",
+        "tions",
+        "tional",
+        "sion",
+        "sions",
+        "sional",
+        "ment",
+        "ments",
+        "ness",
+        "ance",
+        "ence",
+        "ency",
+        "ity",
+        "able",
+        "ible",
+        "ous",
+        "ious",
+        "eous",
+        "ive",
+        "ical",
+        "ally",
+        "ular",
+        "ology",
+        "ization",
+        "ised",
+        "ized",
+        "ing",
+        "ings",
+        "ism",
+        "isms",
+        "ist",
+        "ists",
+        "ure",
+        "ures",
+        "age",
+        "ages",
+        "fication",
+        "ation",
+        "ution",
+        "ction",
+        "ption",
+        "ering",
+        "uring",
+        "ating",
+        "mentation",
+        "putation",
+        "mization",
+        "tication",
+        "rization",
+        "tation",
+        "bilities",
+        "ilities",
+        "ming",
+        "ning",
+        "ring",
+        "ping",
+        "ting",
+        "king",
+        "alist",
+        "ral",
+        "lar",
+        "nar",
+        "ural",
+        "eral",
+        "ber",
+        "der",
+        "ter",
+        "ger",
+        "ver",
+        "ner",
+        "per",
+        "fer",
+        "ser",
+        "cer",
+        "ker",
+        "mer",
+        "tor",
+        "sor",
+        "mated",
+        "nated",
+        "rated",
+        "lated",
+        "cated",
+        "gated",
+        "tine",
+        "dine",
+        "rine",
+        "line",
+        "fier",
+        "fiers",
+        "ship",
+        "ships",
+        "hood",
+        "hoods",
+        "archy",
+        "ences",
+        "ances",
+        "morphism",
+        "antees",
+        "tionships",
+        "erware",
     ]
     .into_iter()
     .collect()
@@ -244,9 +431,7 @@ static SYLLABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 /// Config-aware hyphenation fixer (no dictionary, uses heuristics).
 pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) -> String {
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(\w+)-\s+(\w+)").unwrap()
-    });
+    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w+)-\s+(\w+)").unwrap());
 
     static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| {
         // Match common syllable suffixes without space
@@ -264,7 +449,11 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
             let after_lower = after_word.to_lowercase();
 
             // If before ends with digit, keep hyphen
-            if before_word.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+            if before_word
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_digit())
+            {
                 return format!("{}-{}", before_word, after_word);
             }
 
@@ -276,8 +465,12 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
 
             // Check connector words (Over-The-Air, Plug-and-Play, etc.)
             static CONNECTORS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-                ["the", "to", "of", "in", "on", "up", "out", "at", "by", "for", "and", "or", "a", "an"]
-                    .into_iter().collect()
+                [
+                    "the", "to", "of", "in", "on", "up", "out", "at", "by", "for", "and", "or",
+                    "a", "an",
+                ]
+                .into_iter()
+                .collect()
             });
             if CONNECTORS.contains(after_word.to_lowercase().as_str()) {
                 return format!("{}-{}", before_word, after_word);
@@ -339,29 +532,68 @@ mod tests {
     #[test]
     fn test_dict_merges_valid_words() {
         let dict = MockDict::new(&[
-            "bidirectional", "membership", "convolutional", "relationships",
-            "observational", "conversational", "computational", "hierarchy",
-            "neighbourhood", "international", "differences", "preferences",
-            "functional", "considered", "stalkerware", "anthropomorphism",
-            "censorship", "multidimensional", "guarantees", "byzantine",
-            "identifier", "transformer", "automated", "detection",
+            "bidirectional",
+            "membership",
+            "convolutional",
+            "relationships",
+            "observational",
+            "conversational",
+            "computational",
+            "hierarchy",
+            "neighbourhood",
+            "international",
+            "differences",
+            "preferences",
+            "functional",
+            "considered",
+            "stalkerware",
+            "anthropomorphism",
+            "censorship",
+            "multidimensional",
+            "guarantees",
+            "byzantine",
+            "identifier",
+            "transformer",
+            "automated",
+            "detection",
         ]);
 
         // These should merge (words exist in dictionary)
-        assert_eq!(fix_hyphenation_with_dict("bidirec- tional", &dict), "bidirectional");
-        assert_eq!(fix_hyphenation_with_dict("member- ship", &dict), "membership");
-        assert_eq!(fix_hyphenation_with_dict("convolu- tional", &dict), "convolutional");
+        assert_eq!(
+            fix_hyphenation_with_dict("bidirec- tional", &dict),
+            "bidirectional"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("member- ship", &dict),
+            "membership"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("convolu- tional", &dict),
+            "convolutional"
+        );
         assert_eq!(fix_hyphenation_with_dict("hier- archy", &dict), "hierarchy");
         assert_eq!(fix_hyphenation_with_dict("Byzan- tine", &dict), "Byzantine");
-        assert_eq!(fix_hyphenation_with_dict("identi- fier", &dict), "identifier");
-        assert_eq!(fix_hyphenation_with_dict("trans- former", &dict), "transformer");
+        assert_eq!(
+            fix_hyphenation_with_dict("identi- fier", &dict),
+            "identifier"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("trans- former", &dict),
+            "transformer"
+        );
         assert_eq!(fix_hyphenation_with_dict("auto- mated", &dict), "automated");
         assert_eq!(fix_hyphenation_with_dict("detec- tion", &dict), "detection");
 
         // No-space variants ARE NOW ALSO FIXED when merged word is in dictionary
         // This catches PDF artifacts where the space after hyphen was lost
-        assert_eq!(fix_hyphenation_with_dict("bidirec-tional", &dict), "bidirectional");
-        assert_eq!(fix_hyphenation_with_dict("member-ship", &dict), "membership");
+        assert_eq!(
+            fix_hyphenation_with_dict("bidirec-tional", &dict),
+            "bidirectional"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("member-ship", &dict),
+            "membership"
+        );
     }
 
     #[test]
@@ -369,9 +601,18 @@ mod tests {
         let dict = MockDict::new(&["human", "centered", "data", "driven", "self", "supervised"]);
 
         // These should keep hyphen (merged word not in dictionary)
-        assert_eq!(fix_hyphenation_with_dict("human- centered", &dict), "human-centered");
-        assert_eq!(fix_hyphenation_with_dict("data- driven", &dict), "data-driven");
-        assert_eq!(fix_hyphenation_with_dict("self- supervised", &dict), "self-supervised");
+        assert_eq!(
+            fix_hyphenation_with_dict("human- centered", &dict),
+            "human-centered"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("data- driven", &dict),
+            "data-driven"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("self- supervised", &dict),
+            "self-supervised"
+        );
     }
 
     #[test]
@@ -380,7 +621,10 @@ mod tests {
 
         // Unknown words should keep hyphen (safe default)
         assert_eq!(fix_hyphenation_with_dict("foo- bar", &dict), "foo-bar");
-        assert_eq!(fix_hyphenation_with_dict("xyzzy- plugh", &dict), "xyzzy-plugh");
+        assert_eq!(
+            fix_hyphenation_with_dict("xyzzy- plugh", &dict),
+            "xyzzy-plugh"
+        );
     }
 
     #[test]
@@ -388,16 +632,30 @@ mod tests {
         let dict = MockDict::new(&["gpt4turbo"]);
 
         // Digit before hyphen should always keep hyphen
-        assert_eq!(fix_hyphenation_with_dict("GPT4- turbo", &dict), "GPT4-turbo");
+        assert_eq!(
+            fix_hyphenation_with_dict("GPT4- turbo", &dict),
+            "GPT4-turbo"
+        );
         assert_eq!(fix_hyphenation_with_dict("Qwen2- VL", &dict), "Qwen2-VL");
     }
 
     #[test]
     fn test_dict_real_titles() {
         let dict = MockDict::new(&[
-            "byzantine", "fault", "tolerance", "practical", "identifier",
-            "network", "access", "automated", "vulnerability", "localization",
-            "bidirectional", "transformers", "membership", "inference",
+            "byzantine",
+            "fault",
+            "tolerance",
+            "practical",
+            "identifier",
+            "network",
+            "access",
+            "automated",
+            "vulnerability",
+            "localization",
+            "bidirectional",
+            "transformers",
+            "membership",
+            "inference",
         ]);
 
         assert_eq!(
@@ -463,8 +721,14 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(fix_hyphenation_with_config("AI- powered", &config), "AI-powered");
-        assert_eq!(fix_hyphenation_with_config("detec- tion", &config), "detection");
+        assert_eq!(
+            fix_hyphenation_with_config("AI- powered", &config),
+            "AI-powered"
+        );
+        assert_eq!(
+            fix_hyphenation_with_config("detec- tion", &config),
+            "detection"
+        );
     }
 
     #[test]
@@ -473,8 +737,14 @@ mod tests {
         let dict = MockDict::new(&["models", "language", "neural", "networks"]);
 
         // With space after hyphen: these ARE fixed
-        assert_eq!(fix_hyphenation_with_dict("Language Mod- els.", &dict), "Language Models.");
-        assert_eq!(fix_hyphenation_with_dict("Neu- ral net- works", &dict), "Neural networks");
+        assert_eq!(
+            fix_hyphenation_with_dict("Language Mod- els.", &dict),
+            "Language Models."
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("Neu- ral net- works", &dict),
+            "Neural networks"
+        );
 
         // Without space: NOW ALSO FIXED when merged word is in dictionary
         assert_eq!(fix_hyphenation_with_dict("Mod-els", &dict), "Models");
@@ -487,22 +757,51 @@ mod tests {
         let dict = MockDict::new(&["human", "centered", "data", "driven", "self", "attention"]);
 
         // These should keep hyphen because merged form is NOT in dictionary
-        assert_eq!(fix_hyphenation_with_dict("human-centered", &dict), "human-centered");
-        assert_eq!(fix_hyphenation_with_dict("data-driven", &dict), "data-driven");
-        assert_eq!(fix_hyphenation_with_dict("self-attention", &dict), "self-attention");
+        assert_eq!(
+            fix_hyphenation_with_dict("human-centered", &dict),
+            "human-centered"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("data-driven", &dict),
+            "data-driven"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("self-attention", &dict),
+            "self-attention"
+        );
     }
 
     #[test]
     fn test_dict_no_space_merges_real_words() {
         // Real words split by PDF should be merged (merged form IS in dictionary)
-        let dict = MockDict::new(&["challenges", "cryptography", "photography", "methodology", "protocols"]);
+        let dict = MockDict::new(&[
+            "challenges",
+            "cryptography",
+            "photography",
+            "methodology",
+            "protocols",
+        ]);
 
-        assert_eq!(fix_hyphenation_with_dict("Chal-lenges", &dict), "Challenges");
-        assert_eq!(fix_hyphenation_with_dict("cryp-tography", &dict), "cryptography");
-        assert_eq!(fix_hyphenation_with_dict("pho-tography", &dict), "photography");
-        assert_eq!(fix_hyphenation_with_dict("method-ology", &dict), "methodology");
+        assert_eq!(
+            fix_hyphenation_with_dict("Chal-lenges", &dict),
+            "Challenges"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("cryp-tography", &dict),
+            "cryptography"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("pho-tography", &dict),
+            "photography"
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("method-ology", &dict),
+            "methodology"
+        );
         assert_eq!(fix_hyphenation_with_dict("proto-cols", &dict), "protocols");
-        assert_eq!(fix_hyphenation_with_dict("Modern adventures with legacy proto-cols", &dict),
-                   "Modern adventures with legacy protocols");
+        assert_eq!(
+            fix_hyphenation_with_dict("Modern adventures with legacy proto-cols", &dict),
+            "Modern adventures with legacy protocols"
+        );
     }
 }

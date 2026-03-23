@@ -39,7 +39,6 @@ fn status_str(s: &Status) -> &'static str {
     }
 }
 
-
 fn verdict_str(v: Option<PaperVerdict>) -> &'static str {
     match v {
         Some(PaperVerdict::Safe) => "safe",
@@ -1238,9 +1237,10 @@ fn write_html_ref(out: &mut String, ref_num: usize, r: &ValidationResult, fp: Op
         match &r.status {
             Status::Verified => ("verified".to_string(), "Verified".to_string()),
             Status::NotFound => ("not-found".to_string(), "Not Found".to_string()),
-            Status::Mismatch(kind) => {
-                ("mismatch".to_string(), format!("Mismatch ({})", kind.description()))
-            }
+            Status::Mismatch(kind) => (
+                "mismatch".to_string(),
+                format!("Mismatch ({})", kind.description()),
+            ),
         }
     };
 
@@ -1670,7 +1670,10 @@ mod tests {
             Some(make_result("Verified", Status::Verified)), // bucket 5
             Some(make_result("Not Found", Status::NotFound)), // bucket 1
             Some(retracted),                                 // bucket 0
-            Some(make_result("Mismatch", Status::Mismatch(MismatchKind::AUTHOR))), // bucket 2
+            Some(make_result(
+                "Mismatch",
+                Status::Mismatch(MismatchKind::AUTHOR),
+            )), // bucket 2
             Some(make_result("FP Paper", Status::NotFound)), // bucket 4 (FP)
             Some(doi_issue),                                 // bucket 3
         ];

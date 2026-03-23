@@ -46,8 +46,7 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     let text_fixed = PATH_SPLIT.replace_all(&text_fixed, "$1$2");
 
     // URL regex that captures common URL patterns
-    static URL_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"https?://[^\s\]>\)\},]+").unwrap());
+    static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s\]>\)\},]+").unwrap());
 
     // Academic domains to exclude (these are handled by dedicated backends)
     static ACADEMIC_DOMAINS: Lazy<Regex> = Lazy::new(|| {
@@ -120,20 +119,17 @@ fn fix_url_spacing(url_region: &str) -> String {
     // Remove spaces around dots: " . " or " ." or ". " → "."
     // But be careful: we don't want to join unrelated words
     // Only fix when surrounded by alphanumeric/URL-like chars
-    static SPACED_DOT: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(\w)\s*\.\s*(\w)").unwrap());
+    static SPACED_DOT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*\.\s*(\w)").unwrap());
     result = SPACED_DOT.replace_all(&result, "$1.$2").to_string();
 
     // Remove spaces around slashes when between URL parts: " / " → "/"
     // Only fix when the slash is between alphanumeric/URL-like characters
     // This avoids joining "url/ (visited" → "url/(visited"
-    static SPACED_SLASH: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(\w)\s*/\s*(\w)").unwrap());
+    static SPACED_SLASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*/\s*(\w)").unwrap());
     result = SPACED_SLASH.replace_all(&result, "$1/$2").to_string();
 
     // Remove spaces around hyphens in paths: "call- for- papers" → "call-for-papers"
-    static SPACED_HYPHEN: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(\w)\s*-\s*(\w)").unwrap());
+    static SPACED_HYPHEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*-\s*(\w)").unwrap());
     result = SPACED_HYPHEN.replace_all(&result, "$1-$2").to_string();
 
     result
@@ -611,7 +607,9 @@ mod tests {
 
     #[test]
     fn test_extract_urls_multiple() {
-        let urls = extract_urls("Code at https://github.com/user/repo and docs at https://example.com/docs");
+        let urls = extract_urls(
+            "Code at https://github.com/user/repo and docs at https://example.com/docs",
+        );
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://github.com/user/repo".to_string()));
         assert!(urls.contains(&"https://example.com/docs".to_string()));
@@ -639,7 +637,9 @@ mod tests {
     #[test]
     fn test_extract_urls_excludes_academic() {
         // Academic URLs should be excluded (handled by dedicated backends)
-        let urls = extract_urls("Paper at https://arxiv.org/abs/2301.12345 and code at https://github.com/user/repo");
+        let urls = extract_urls(
+            "Paper at https://arxiv.org/abs/2301.12345 and code at https://github.com/user/repo",
+        );
         assert_eq!(urls, vec!["https://github.com/user/repo"]);
 
         // doi.org should be excluded
@@ -666,7 +666,10 @@ mod tests {
     #[test]
     fn test_extract_urls_with_path() {
         let urls = extract_urls("https://github.com/user/repo/blob/main/README.md");
-        assert_eq!(urls, vec!["https://github.com/user/repo/blob/main/README.md"]);
+        assert_eq!(
+            urls,
+            vec!["https://github.com/user/repo/blob/main/README.md"]
+        );
     }
 
     #[test]
@@ -749,7 +752,10 @@ mod tests {
         // Also test academic domain - should be excluded (handled by dedicated backends)
         let text2 = "URL: https : / / www . acm . org / publications / policies/test";
         let urls2 = extract_urls(text2);
-        assert!(urls2.is_empty(), "acm.org should be excluded as academic domain");
+        assert!(
+            urls2.is_empty(),
+            "acm.org should be excluded as academic domain"
+        );
     }
 
     #[test]
@@ -772,7 +778,8 @@ mod tests {
         assert_eq!(urls1, vec!["https://www.wappalyzer.com"]);
 
         // Pattern 2: Domain split mid-word
-        let text2 = "[63] Python. 2025. Download Python. https://www.python.o\nrg/downloads Accessed";
+        let text2 =
+            "[63] Python. 2025. Download Python. https://www.python.o\nrg/downloads Accessed";
         let urls2 = extract_urls(text2);
         assert_eq!(urls2, vec!["https://www.python.org/downloads"]);
 

@@ -36,11 +36,7 @@ impl UrlChecker {
         timeout: Duration,
     ) -> UrlCheckResult {
         // Try HEAD first (cheaper, no body download)
-        let head_result = client
-            .head(url)
-            .timeout(timeout)
-            .send()
-            .await;
+        let head_result = client.head(url).timeout(timeout).send().await;
 
         match head_result {
             Ok(resp) => {
@@ -87,11 +83,7 @@ impl UrlChecker {
         client: &reqwest::Client,
         timeout: Duration,
     ) -> UrlCheckResult {
-        let get_result = client
-            .get(url)
-            .timeout(timeout)
-            .send()
-            .await;
+        let get_result = client.get(url).timeout(timeout).send().await;
 
         match get_result {
             Ok(resp) => {

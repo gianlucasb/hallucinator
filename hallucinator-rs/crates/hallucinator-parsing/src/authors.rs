@@ -246,19 +246,43 @@ fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<Stri
         // Skip venue/journal names that got into the author section
         static VENUE_WORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
             [
-                "journal", "transactions", "proceedings", "conference", "workshop",
-                "symposium", "review", "society", "association", "networks",
-                "computing", "intelligence", "engineering", "software", "systems",
-                "science", "research", "letters", "advances", "foundations",
-                "international", "quarterly", "annual", "bulletin",
+                "journal",
+                "transactions",
+                "proceedings",
+                "conference",
+                "workshop",
+                "symposium",
+                "review",
+                "society",
+                "association",
+                "networks",
+                "computing",
+                "intelligence",
+                "engineering",
+                "software",
+                "systems",
+                "science",
+                "research",
+                "letters",
+                "advances",
+                "foundations",
+                "international",
+                "quarterly",
+                "annual",
+                "bulletin",
             ]
             .into_iter()
             .collect()
         });
-        let lower_words: Vec<&str> = part.split_whitespace()
+        let lower_words: Vec<&str> = part
+            .split_whitespace()
             .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
             .collect();
-        if lower_words.len() >= 2 && lower_words.iter().any(|w| VENUE_WORDS.contains(w.to_lowercase().as_str())) {
+        if lower_words.len() >= 2
+            && lower_words
+                .iter()
+                .any(|w| VENUE_WORDS.contains(w.to_lowercase().as_str()))
+        {
             continue;
         }
 
@@ -370,7 +394,9 @@ mod tests {
         let ref_text = "Badis, L., Amad, M., A\u{00EF}ssani, D., Abbar, S.: P2PCF. Journal of High Speed Networks, 25(1), 2019.";
         let authors = extract_authors_from_reference(ref_text);
         assert!(
-            !authors.iter().any(|a| a.contains("Journal") || a.contains("Networks")),
+            !authors
+                .iter()
+                .any(|a| a.contains("Journal") || a.contains("Networks")),
             "Journal name should not be in authors: {:?}",
             authors
         );

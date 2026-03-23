@@ -77,10 +77,10 @@ impl Theme {
     /// T-800 theme: red monochrome HUD inspired by the Terminator.
     pub fn t800() -> Self {
         Self {
-            verified: Color::Rgb(0, 200, 80),         // target acquired
-            not_found: Color::Rgb(255, 60, 60),       // bright red alert
-            mismatch: Color::Rgb(255, 180, 0), // amber warning
-            retracted: Color::Rgb(255, 0, 255),       // magenta danger
+            verified: Color::Rgb(0, 200, 80),   // target acquired
+            not_found: Color::Rgb(255, 60, 60), // bright red alert
+            mismatch: Color::Rgb(255, 180, 0),  // amber warning
+            retracted: Color::Rgb(255, 0, 255), // magenta danger
 
             header_fg: Color::White,
             header_bg: Color::Rgb(140, 0, 0),   // deep red

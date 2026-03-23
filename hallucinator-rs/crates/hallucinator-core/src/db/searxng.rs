@@ -182,7 +182,7 @@ impl DatabaseBackend for Searxng {
             {
                 Ok(Some(result)) => return Ok(result),
                 Err(_) => return Ok(DbQueryResult::not_found()), // SearxNG unavailable
-                Ok(None) => {} // No match, try fallback
+                Ok(None) => {}                                   // No match, try fallback
             }
 
             // Strategy 2: Keyword search with significant words

@@ -106,15 +106,13 @@ fn is_likely_broken_hyphen(word: &str) -> bool {
 
     // Check for suspicious syllable-break patterns
     let syllable_suffixes = [
-        "tion", "sion", "ment", "ness", "ance", "ence", "ity", "ory", "ary", "ery",
-        "able", "ible", "ical", "ally", "ular", "ology", "ization", "ized", "ised",
-        "ing", "ings", "ism", "isms", "ist", "ists", "ure", "ures", "age", "ages",
-        "ous", "ive", "eous", "ious", "ant", "ent", "ful", "less", "ward", "wards",
-        "wise", "like", "ship", "hood", "dom", "let", "ling", "ette", "ess",
-        "er", "or", "ar", "ry", "ly", "ty", "cy", "sy", "ny", "my", "py",
-        "ware", "pendent", "metry", "morphism", "pology", "graphy", "scopy",
-        "ology", "ometry", "onomy", "opathy", "otherapy", "ectomy", "oscopy",
-        "els", // added for "mod-els"
+        "tion", "sion", "ment", "ness", "ance", "ence", "ity", "ory", "ary", "ery", "able", "ible",
+        "ical", "ally", "ular", "ology", "ization", "ized", "ised", "ing", "ings", "ism", "isms",
+        "ist", "ists", "ure", "ures", "age", "ages", "ous", "ive", "eous", "ious", "ant", "ent",
+        "ful", "less", "ward", "wards", "wise", "like", "ship", "hood", "dom", "let", "ling",
+        "ette", "ess", "er", "or", "ar", "ry", "ly", "ty", "cy", "sy", "ny", "my", "py", "ware",
+        "pendent", "metry", "morphism", "pology", "graphy", "scopy", "ology", "ometry", "onomy",
+        "opathy", "otherapy", "ectomy", "oscopy", "els", // added for "mod-els"
     ];
 
     for suffix in syllable_suffixes {
@@ -125,7 +123,9 @@ fn is_likely_broken_hyphen(word: &str) -> bool {
 
     // If "after" is short (2-4 chars) and looks like a word ending, flag it
     if after.len() <= 4 && before.len() >= 3 {
-        let short_endings = ["er", "or", "ar", "ry", "ly", "ty", "cy", "ny", "my", "py", "gy", "ky"];
+        let short_endings = [
+            "er", "or", "ar", "ry", "ly", "ty", "cy", "ny", "my", "py", "gy", "ky",
+        ];
         if short_endings.iter().any(|e| after == *e) {
             return true;
         }
@@ -140,7 +140,10 @@ fn usenix_dict_hyphen_check() {
     let usenix_dir = usenix_dir();
 
     if !usenix_dir.exists() {
-        eprintln!("Skipping: USENIX directory not found at {}", usenix_dir.display());
+        eprintln!(
+            "Skipping: USENIX directory not found at {}",
+            usenix_dir.display()
+        );
         return;
     }
 
@@ -150,7 +153,10 @@ fn usenix_dict_hyphen_check() {
     let dict: Arc<dyn hallucinator_parsing::Dictionary> = Arc::new(scowl);
 
     let pdfs = discover_pdfs(&usenix_dir);
-    println!("Scanning {} USENIX 2025 PDFs for broken hyphenation...\n", pdfs.len());
+    println!(
+        "Scanning {} USENIX 2025 PDFs for broken hyphenation...\n",
+        pdfs.len()
+    );
 
     let mut broken_without_dict: HashMap<String, Vec<String>> = HashMap::new();
     let mut broken_with_dict: HashMap<String, Vec<String>> = HashMap::new();
@@ -170,16 +176,19 @@ fn usenix_dict_hyphen_check() {
         }
 
         // Extract with heuristics
-        let heuristic_result = match extractor_heuristic.extract_references_via_backend(pdf_path, &LocalMupdfBackend) {
+        let heuristic_result = match extractor_heuristic
+            .extract_references_via_backend(pdf_path, &LocalMupdfBackend)
+        {
             Ok(r) => r,
             Err(_) => continue,
         };
 
         // Extract with dictionary
-        let dict_result = match extractor_dict.extract_references_via_backend(pdf_path, &LocalMupdfBackend) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
+        let dict_result =
+            match extractor_dict.extract_references_via_backend(pdf_path, &LocalMupdfBackend) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
 
         papers_checked += 1;
 
@@ -221,21 +230,31 @@ fn usenix_dict_hyphen_check() {
     println!("Broken patterns (dictionary): {}", broken_with_dict.len());
 
     // Find patterns fixed by dictionary
-    let fixed_patterns: Vec<_> = broken_without_dict.keys()
+    let fixed_patterns: Vec<_> = broken_without_dict
+        .keys()
         .filter(|k| !broken_with_dict.contains_key(*k))
         .cloned()
         .collect();
 
-    println!("\n-- Patterns FIXED by dictionary ({}) --\n", fixed_patterns.len());
+    println!(
+        "\n-- Patterns FIXED by dictionary ({}) --\n",
+        fixed_patterns.len()
+    );
     for pattern in fixed_patterns.iter().take(30) {
-        let count = broken_without_dict.get(pattern).map(|v| v.len()).unwrap_or(0);
+        let count = broken_without_dict
+            .get(pattern)
+            .map(|v| v.len())
+            .unwrap_or(0);
         let merged: String = pattern.chars().filter(|c| *c != '-').collect();
         println!("  \"{}\" → \"{}\" (x{})", pattern, merged, count);
     }
 
     // Patterns still broken with dictionary
     if !broken_with_dict.is_empty() {
-        println!("\n-- Patterns STILL broken with dictionary ({}) --\n", broken_with_dict.len());
+        println!(
+            "\n-- Patterns STILL broken with dictionary ({}) --\n",
+            broken_with_dict.len()
+        );
         let mut sorted: Vec<_> = broken_with_dict.iter().collect();
         sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 

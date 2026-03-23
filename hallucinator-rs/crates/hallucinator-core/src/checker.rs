@@ -239,7 +239,9 @@ pub async fn check_single_reference(
         let timeout = Duration::from_secs(config.db_timeout_secs);
         let start = std::time::Instant::now();
 
-        if let Some(url_result) = UrlChecker::check_first_live(&reference.urls, client, timeout).await {
+        if let Some(url_result) =
+            UrlChecker::check_first_live(&reference.urls, client, timeout).await
+        {
             let elapsed = start.elapsed();
             let paper_url = url_result.final_url.unwrap_or(url_result.url);
 

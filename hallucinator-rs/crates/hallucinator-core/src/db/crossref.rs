@@ -80,17 +80,16 @@ impl DatabaseBackend for CrossRef {
                     // Detect review articles: type is "journal-article" but the
                     // found title is short (book title) and container looks like a
                     // review journal, or the item has a "relation.is-review-of" field
-                    let is_review = item["relation"]["is-review-of"].is_array()
-                        || item_type == "peer-review";
+                    let is_review =
+                        item["relation"]["is-review-of"].is_array() || item_type == "peer-review";
 
                     // Detect when a journal article matches a book title query.
                     // CrossRef returns these when someone reviewed the book in a journal.
                     // Heuristic: if found_title closely matches query but the item is a
                     // journal-article and the container-title doesn't match at all,
                     // it's likely a review article about the queried book.
-                    let is_likely_book_review = item_type == "journal-article"
-                        && !item_container.is_empty()
-                        && {
+                    let is_likely_book_review =
+                        item_type == "journal-article" && !item_container.is_empty() && {
                             // Check if the container title is a journal (review source)
                             // while the query looks like a book title (no journal-like words)
                             let query_lower = title.to_lowercase();

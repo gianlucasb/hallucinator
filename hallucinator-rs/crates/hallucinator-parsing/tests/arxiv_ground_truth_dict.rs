@@ -439,10 +439,7 @@ fn truncate(s: &str, max: usize) -> String {
 fn arxiv_ground_truth_dict() {
     let dir = data_dir();
     if !dir.exists() {
-        eprintln!(
-            "Skipping: data directory not found at {}",
-            dir.display()
-        );
+        eprintln!("Skipping: data directory not found at {}", dir.display());
         return;
     }
 
@@ -458,7 +455,10 @@ fn arxiv_ground_truth_dict() {
     let dict: Arc<dyn hallucinator_parsing::Dictionary> = Arc::new(scowl);
 
     let total_papers = pairs.len();
-    println!("Found {total_papers} papers with ground truth in {}", dir.display());
+    println!(
+        "Found {total_papers} papers with ground truth in {}",
+        dir.display()
+    );
 
     let mut results = Vec::with_capacity(total_papers);
 

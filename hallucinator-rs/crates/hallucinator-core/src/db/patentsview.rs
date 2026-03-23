@@ -69,8 +69,8 @@ impl DatabaseBackend for PatentsView {
 
 /// Parse PatentsView JSON response and find matching patents.
 fn parse_patentsview_response(json: &str, title: &str) -> Result<DbQueryResult, DbQueryError> {
-    let data: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| DbQueryError::Other(format!("JSON error: {}", e)))?;
+    let data: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| DbQueryError::Other(format!("JSON error: {}", e)))?;
 
     let patents = data["patents"].as_array();
 

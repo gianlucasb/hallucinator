@@ -20,8 +20,8 @@ use crate::db::url_check::UrlChecker;
 use crate::orchestrator::{build_database_list, query_local_databases};
 use crate::rate_limit::{self, ArxivIdContext, DbQueryError, DoiContext};
 use crate::{
-    ArxivInfo, Config, DbResult, DbStatus, DoiInfo, MismatchKind, ProgressEvent, Reference,
-    Status, ValidationResult,
+    ArxivInfo, Config, DbResult, DbStatus, DoiInfo, MismatchKind, ProgressEvent, Reference, Status,
+    ValidationResult,
 };
 
 // ── Public API (unchanged) ──────────────────────────────────────────────
@@ -243,15 +243,14 @@ async fn drainer_loop(
         });
 
         // Build arXiv ID context if this ref has an arXiv ID (used by arXiv backend)
-        let arxiv_id_ctx =
-            collector
-                .reference
-                .arxiv_id
-                .as_deref()
-                .map(|arxiv_id| ArxivIdContext {
-                    arxiv_id,
-                    authors: &collector.reference.authors,
-                });
+        let arxiv_id_ctx = collector
+            .reference
+            .arxiv_id
+            .as_deref()
+            .map(|arxiv_id| ArxivIdContext {
+                arxiv_id,
+                authors: &collector.reference.authors,
+            });
 
         // Query (includes cache check + governor acquire + HTTP call)
         let rl_result = rate_limit::query_with_rate_limit(
@@ -484,12 +483,9 @@ async fn finalize_collector(collector: &RefCollector) {
             let timeout = Duration::from_secs(collector.config.db_timeout_secs);
             let start = std::time::Instant::now();
 
-            if let Some(url_result) = UrlChecker::check_first_live(
-                &collector.reference.urls,
-                &collector.client,
-                timeout,
-            )
-            .await
+            if let Some(url_result) =
+                UrlChecker::check_first_live(&collector.reference.urls, &collector.client, timeout)
+                    .await
             {
                 let elapsed = start.elapsed();
                 let url = url_result.final_url.unwrap_or(url_result.url);

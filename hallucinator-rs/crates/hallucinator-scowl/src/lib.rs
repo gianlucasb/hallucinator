@@ -106,7 +106,11 @@ mod tests {
     #[test]
     fn test_embedded_dictionary_loads() {
         let dict = ScowlDictionary::embedded();
-        assert!(dict.len() > 100_000, "Expected >100K words, got {}", dict.len());
+        assert!(
+            dict.len() > 100_000,
+            "Expected >100K words, got {}",
+            dict.len()
+        );
     }
 
     #[test]
@@ -137,19 +141,43 @@ mod tests {
         assert!(dict.contains("analyze"), "analyze should be in dict");
 
         // ML/AI terms from academic supplement
-        assert!(dict.contains("tokenization"), "tokenization should be in dict");
+        assert!(
+            dict.contains("tokenization"),
+            "tokenization should be in dict"
+        );
         assert!(dict.contains("analyzing"), "analyzing should be in dict");
         assert!(dict.contains("randomized"), "randomized should be in dict");
-        assert!(dict.contains("convolutional"), "convolutional should be in dict");
-        assert!(dict.contains("hyperparameter"), "hyperparameter should be in dict");
-        assert!(dict.contains("backpropagation"), "backpropagation should be in dict");
-        assert!(dict.contains("autoencoder"), "autoencoder should be in dict");
+        assert!(
+            dict.contains("convolutional"),
+            "convolutional should be in dict"
+        );
+        assert!(
+            dict.contains("hyperparameter"),
+            "hyperparameter should be in dict"
+        );
+        assert!(
+            dict.contains("backpropagation"),
+            "backpropagation should be in dict"
+        );
+        assert!(
+            dict.contains("autoencoder"),
+            "autoencoder should be in dict"
+        );
 
         // CS terms
         assert!(dict.contains("middleware"), "middleware should be in dict");
-        assert!(dict.contains("containerized"), "containerized should be in dict");
-        assert!(dict.contains("virtualization"), "virtualization should be in dict");
-        assert!(dict.contains("serialization"), "serialization should be in dict");
+        assert!(
+            dict.contains("containerized"),
+            "containerized should be in dict"
+        );
+        assert!(
+            dict.contains("virtualization"),
+            "virtualization should be in dict"
+        );
+        assert!(
+            dict.contains("serialization"),
+            "serialization should be in dict"
+        );
 
         // Security terms
         assert!(dict.contains("ciphertext"), "ciphertext should be in dict");
