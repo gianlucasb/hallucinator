@@ -1,7 +1,6 @@
 //! Tantivy search and fuzzy matching for OpenAlex queries.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
+use hallucinator_common::fuzzy;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
@@ -14,77 +13,12 @@ pub const DEFAULT_THRESHOLD: f64 = 0.90;
 
 /// Normalize a title for comparison: lowercase alphanumeric only.
 pub fn normalize_title(title: &str) -> String {
-    static NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-zA-Z0-9]").unwrap());
-    let lowered = title.to_lowercase();
-    NON_ALNUM.replace_all(&lowered, "").to_string()
+    fuzzy::normalize_title_simple(title)
 }
 
 /// Extract meaningful query words for Tantivy search (4+ chars, no stop words).
-///
-/// Duplicates DBLP's `get_query_words` logic for consistency.
 pub fn get_query_words(title: &str) -> Vec<String> {
-    // Strip BibTeX capitalization braces
-    let title = title.replace(['{', '}'], "");
-
-    static WORD_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[a-zA-Z0-9]+(?:['\u{2019}\u{2018}\-][a-zA-Z0-9]+)*").unwrap());
-    static STOP_WORDS: Lazy<std::collections::HashSet<&'static str>> = Lazy::new(|| {
-        [
-            "the", "and", "for", "with", "from", "that", "this", "have", "are", "was", "were",
-            "been", "being", "has", "had", "does", "did", "will", "would", "could", "should",
-            "may", "might", "must", "shall", "can", "not", "but", "its", "our", "their", "your",
-            "into", "over", "under", "about", "between", "through", "during", "before", "after",
-            "above", "below", "each", "every", "both", "few", "more", "most", "other", "some",
-            "such", "only", "than", "too", "very",
-        ]
-        .into_iter()
-        .collect()
-    });
-
-    let words_with_info: Vec<(String, String, usize)> = WORD_RE
-        .find_iter(&title)
-        .flat_map(|m| {
-            m.as_str()
-                .split('-')
-                .map(|s| (s.to_string(), s.to_lowercase()))
-                .collect::<Vec<_>>()
-        })
-        .enumerate()
-        .map(|(i, (orig, lower))| (orig, lower, i))
-        .filter(|(_, lower, _)| lower.len() >= 4 && !STOP_WORDS.contains(lower.as_str()))
-        .collect();
-
-    if words_with_info.len() <= 6 {
-        return words_with_info
-            .into_iter()
-            .map(|(_, lower, _)| lower)
-            .collect();
-    }
-
-    // Score words by distinctiveness and take top 6
-    let mut scored: Vec<(f64, usize, String)> = words_with_info
-        .iter()
-        .map(|(orig, lower, pos)| {
-            let mut score = lower.len() as f64;
-            if orig.starts_with(|c: char| c.is_ascii_uppercase()) {
-                score += 10.0;
-            }
-            if orig.len() >= 3
-                && orig
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-            {
-                score += 5.0;
-            }
-            score -= *pos as f64 * 0.5;
-            (score, *pos, lower.clone())
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    scored.truncate(6);
-    scored.sort_by_key(|&(_, pos, _)| pos);
-    scored.into_iter().map(|(_, _, lower)| lower).collect()
+    fuzzy::get_query_words(title, 6)
 }
 
 /// Query the Tantivy index for a title, returning the best fuzzy match above the threshold.

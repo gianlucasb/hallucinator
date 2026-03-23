@@ -9,6 +9,7 @@ description = "Offline ACL Anthology database builder and querier"
 dist = false
 
 [dependencies]
+hallucinator-common.workspace = true
 rusqlite.workspace = true
 reqwest.workspace = true
 regex.workspace = true

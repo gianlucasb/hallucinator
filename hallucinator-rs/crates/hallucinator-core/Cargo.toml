@@ -9,6 +9,7 @@ description = "Validation engine and database query backends for hallucinated re
 dist = false
 
 [dependencies]
+hallucinator-common.workspace = true
 hallucinator-dblp.workspace = true
 hallucinator-acl.workspace = true
 hallucinator-openalex.workspace = true

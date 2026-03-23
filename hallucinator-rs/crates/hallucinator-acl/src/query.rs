@@ -1,7 +1,6 @@
 //! FTS5 search and fuzzy matching for ACL Anthology queries.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
+use hallucinator_common::fuzzy;
 use rusqlite::{Connection, params};
 
 use crate::db;
@@ -12,39 +11,12 @@ pub const DEFAULT_THRESHOLD: f64 = 0.95;
 
 /// Normalize a title for comparison: lowercase alphanumeric only.
 fn normalize_title(title: &str) -> String {
-    static NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-zA-Z0-9]").unwrap());
-    let lowered = title.to_lowercase();
-    NON_ALNUM.replace_all(&lowered, "").to_string()
+    fuzzy::normalize_title_simple(title)
 }
 
 /// Extract meaningful query words for FTS5 MATCH (4+ chars, no stop words).
-///
-/// Handles digits (`L2`, `3D`), hyphens (`Machine-Learning`), and apostrophes (`What's`).
-/// Also strips BibTeX braces (`{BERT}` → `BERT`).
 fn get_query_words(title: &str) -> Vec<String> {
-    // Strip BibTeX capitalization braces
-    let title = title.replace(['{', '}'], "");
-
-    static WORD_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[a-zA-Z0-9]+(?:['\u{2019}\u{2018}\-][a-zA-Z0-9]+)*").unwrap());
-    static STOP_WORDS: Lazy<std::collections::HashSet<&'static str>> = Lazy::new(|| {
-        [
-            "the", "and", "for", "with", "from", "that", "this", "have", "are", "was", "were",
-            "been", "being", "has", "had", "does", "did", "will", "would", "could", "should",
-            "may", "might", "must", "shall", "can", "not", "but", "its", "our", "their", "your",
-            "into", "over", "under", "about", "between", "through", "during", "before", "after",
-            "above", "below", "each", "every", "both", "few", "more", "most", "other", "some",
-            "such", "only", "than", "too", "very",
-        ]
-        .into_iter()
-        .collect()
-    });
-
-    WORD_RE
-        .find_iter(&title)
-        .map(|m| m.as_str().to_lowercase())
-        .filter(|w| w.len() >= 4 && !STOP_WORDS.contains(w.as_str()))
-        .collect()
+    fuzzy::get_query_words(title, 6)
 }
 
 /// Query the FTS5 index for a title, returning the best match above the threshold.
@@ -182,13 +154,16 @@ mod tests {
     fn test_get_query_words_bibtex_braces() {
         let words = get_query_words("{BERT}: Pre-training of Deep Bidirectional Transformers");
         assert!(words.contains(&"bert".to_string()));
-        assert!(words.contains(&"pre-training".to_string()));
+        // Hyphens are split: "pre-training" → "training" (pre is <4 chars)
+        assert!(words.contains(&"training".to_string()));
     }
 
     #[test]
     fn test_get_query_words_hyphenated() {
         let words = get_query_words("Machine-Learning Approaches for Natural Language");
-        assert!(words.contains(&"machine-learning".to_string()));
+        // Hyphens are split for FTS5 compatibility
+        assert!(words.contains(&"machine".to_string()));
+        assert!(words.contains(&"learning".to_string()));
     }
 
     #[test]

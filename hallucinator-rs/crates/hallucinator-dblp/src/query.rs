@@ -1,7 +1,6 @@
 //! FTS5 search and fuzzy matching for DBLP queries.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
+use hallucinator_common::fuzzy;
 use rusqlite::{Connection, params};
 
 use crate::db;
@@ -30,122 +29,14 @@ use crate::{DblpError, DblpQueryResult, DblpRecord};
 /// even runs. This significantly reduces the false negative surface.
 pub const DEFAULT_THRESHOLD: f64 = 0.90;
 
-/// Normalize a title for comparison: lowercase alphanumeric only.
-///
-/// This is a simplified inline version to avoid depending on hallucinator-core.
+/// Re-export normalize_title from the common crate.
 pub fn normalize_title(title: &str) -> String {
-    static NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-zA-Z0-9]").unwrap());
-    let lowered = title.to_lowercase();
-    NON_ALNUM.replace_all(&lowered, "").to_string()
+    fuzzy::normalize_title_simple(title)
 }
 
-/// Strip LaTeX markup from a title string for FTS5 query extraction.
-///
-/// Handles common LaTeX commands found in BibTeX title fields:
-/// `\textquoteright` → `'`, `\textendash` → `-`, `$...$` → stripped,
-/// `\mathbb{X}` → `X`, `\text{X}` → `X`, `\command` → stripped.
-fn strip_latex_for_query(title: &str) -> String {
-    static MATH_MODE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$[^$]*\$").unwrap());
-    static CMD_WITH_ARG: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\\(?:mathbb|mathcal|mathrm|mathit|mathbf|text|textbf|textit|textsc|textrm|emph)\s*\{([^}]*)\}").unwrap()
-    });
-    static BARE_CMD: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\[a-zA-Z]+").unwrap());
-
-    let mut s = title.to_string();
-
-    // Named character commands → replacement
-    s = s.replace("\\textquoteright", "'");
-    s = s.replace("\\textquoteleft", "'");
-    s = s.replace("\\textendash", "-");
-    s = s.replace("\\textemdash", "--");
-
-    // Remove math mode entirely: $\mathbb{Z}_p$ → empty
-    s = MATH_MODE.replace_all(&s, "").to_string();
-
-    // \mathbb{X}, \text{X}, \emph{X}, etc. → X
-    s = CMD_WITH_ARG.replace_all(&s, "$1").to_string();
-
-    // Strip remaining bare \commands
-    s = BARE_CMD.replace_all(&s, "").to_string();
-
-    s
-}
-
-/// Extract meaningful query words for FTS5 MATCH (4+ chars, no stop words).
-///
-/// Handles digits (`L2`, `3D`), hyphens (`Machine-Learning`), and apostrophes (`What's`).
-/// Also strips BibTeX braces (`{BERT}` → `BERT`) and LaTeX markup.
+/// Re-export get_query_words from the common crate.
 pub fn get_query_words(title: &str) -> Vec<String> {
-    // Strip LaTeX markup and BibTeX capitalization braces
-    let title = strip_latex_for_query(title);
-    let title = title.replace(['{', '}'], "");
-
-    static WORD_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[a-zA-Z0-9]+(?:['\u{2019}\u{2018}\-][a-zA-Z0-9]+)*").unwrap());
-    static STOP_WORDS: Lazy<std::collections::HashSet<&'static str>> = Lazy::new(|| {
-        [
-            "the", "and", "for", "with", "from", "that", "this", "have", "are", "was", "were",
-            "been", "being", "has", "had", "does", "did", "will", "would", "could", "should",
-            "may", "might", "must", "shall", "can", "not", "but", "its", "our", "their", "your",
-            "into", "over", "under", "about", "between", "through", "during", "before", "after",
-            "above", "below", "each", "every", "both", "few", "more", "most", "other", "some",
-            "such", "only", "than", "too", "very",
-        ]
-        .into_iter()
-        .collect()
-    });
-
-    // Collect (original_case, lowercased) pairs with position
-    let words_with_info: Vec<(String, String, usize)> = WORD_RE
-        .find_iter(&title)
-        .flat_map(|m| {
-            // Split hyphenated words into parts since FTS5's unicode61 tokenizer
-            // splits on hyphens. "internet-of-things" → ["internet", "things"]
-            m.as_str()
-                .split('-')
-                .map(|s| (s.to_string(), s.to_lowercase()))
-                .collect::<Vec<_>>()
-        })
-        .enumerate()
-        .map(|(i, (orig, lower))| (orig, lower, i))
-        .filter(|(_, lower, _)| lower.len() >= 4 && !STOP_WORDS.contains(lower.as_str()))
-        .collect();
-
-    if words_with_info.len() <= 6 {
-        return words_with_info
-            .into_iter()
-            .map(|(_, lower, _)| lower)
-            .collect();
-    }
-
-    // Score words by distinctiveness and take top 6
-    let mut scored: Vec<(f64, usize, String)> = words_with_info
-        .iter()
-        .map(|(orig, lower, pos)| {
-            let mut score = lower.len() as f64;
-            // Proper nouns / distinctive words
-            if orig.starts_with(|c: char| c.is_ascii_uppercase()) {
-                score += 10.0;
-            }
-            // Acronyms (e.g., BERT, NLP)
-            if orig.len() >= 3
-                && orig
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-            {
-                score += 5.0;
-            }
-            // Prefer earlier words
-            score -= *pos as f64 * 0.5;
-            (score, *pos, lower.clone())
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    scored.truncate(6);
-    // Restore original order for natural query phrasing
-    scored.sort_by_key(|&(_, pos, _)| pos);
-    scored.into_iter().map(|(_, _, lower)| lower).collect()
+    fuzzy::get_query_words(title, 6)
 }
 
 /// Run an FTS5 query and return the best fuzzy match above the threshold.

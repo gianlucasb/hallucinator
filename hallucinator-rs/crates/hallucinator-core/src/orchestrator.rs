@@ -75,10 +75,7 @@ pub async fn query_local_databases(
 ) -> DbSearchResult {
     let timeout = compute_timeout(config, longer_timeout);
 
-    let all_databases: Vec<Arc<dyn DatabaseBackend>> = build_database_list(config, only_dbs)
-        .into_iter()
-        .map(Arc::from)
-        .collect();
+    let all_databases = build_database_list(config, only_dbs);
 
     if all_databases.is_empty() {
         return empty_result();
@@ -181,10 +178,7 @@ pub async fn query_remote_databases(
     let check_openalex_authors = config.check_openalex_authors;
     let timeout = compute_timeout(config, longer_timeout);
 
-    let all_databases: Vec<Arc<dyn DatabaseBackend>> = build_database_list(config, only_dbs)
-        .into_iter()
-        .map(Arc::from)
-        .collect();
+    let all_databases = build_database_list(config, only_dbs);
 
     let (local_dbs, remote_dbs): (Vec<_>, Vec<_>) =
         all_databases.into_iter().partition(|db| db.is_local());
@@ -508,10 +502,10 @@ fn emit_skipped(
 pub(crate) fn build_database_list(
     config: &Config,
     only_dbs: Option<&[String]>,
-) -> Vec<Box<dyn DatabaseBackend>> {
+) -> Vec<Arc<dyn DatabaseBackend>> {
     use crate::db::*;
 
-    let mut databases: Vec<Box<dyn DatabaseBackend>> = Vec::new();
+    let mut databases: Vec<Arc<dyn DatabaseBackend>> = Vec::new();
 
     let should_include = |name: &str| -> bool {
         if config
@@ -528,54 +522,54 @@ pub(crate) fn build_database_list(
     };
 
     if should_include("CrossRef") {
-        databases.push(Box::new(crossref::CrossRef {
+        databases.push(Arc::new(crossref::CrossRef {
             mailto: config.crossref_mailto.clone(),
         }));
     }
     if should_include("arXiv") {
-        databases.push(Box::new(arxiv::Arxiv));
+        databases.push(Arc::new(arxiv::Arxiv));
     }
     if should_include("DBLP") {
         if let Some(ref db) = config.dblp_offline_db {
-            databases.push(Box::new(dblp::DblpOffline {
+            databases.push(Arc::new(dblp::DblpOffline {
                 db: std::sync::Arc::clone(db),
             }));
         } else {
-            databases.push(Box::new(dblp::DblpOnline));
+            databases.push(Arc::new(dblp::DblpOnline));
         }
     }
     if should_include("Semantic Scholar") {
-        databases.push(Box::new(semantic_scholar::SemanticScholar {
+        databases.push(Arc::new(semantic_scholar::SemanticScholar {
             api_key: config.s2_api_key.clone(),
         }));
     }
     if should_include("ACL Anthology") {
         if let Some(ref db) = config.acl_offline_db {
-            databases.push(Box::new(acl::AclOffline {
+            databases.push(Arc::new(acl::AclOffline {
                 db: std::sync::Arc::clone(db),
             }));
         } else {
-            databases.push(Box::new(acl::AclAnthology));
+            databases.push(Arc::new(acl::AclAnthology));
         }
     }
     if should_include("Europe PMC") {
-        databases.push(Box::new(europe_pmc::EuropePmc));
+        databases.push(Arc::new(europe_pmc::EuropePmc));
     }
     if should_include("PubMed") {
-        databases.push(Box::new(pubmed::PubMed));
+        databases.push(Arc::new(pubmed::PubMed));
     }
     if should_include("DOI") {
-        databases.push(Box::new(doi_resolver::DoiResolver));
+        databases.push(Arc::new(doi_resolver::DoiResolver));
     }
     if should_include("OpenAlex") {
         if let Some(ref db) = config.openalex_offline_db {
-            databases.push(Box::new(openalex_offline::OpenAlexOffline {
+            databases.push(Arc::new(openalex_offline::OpenAlexOffline {
                 db: std::sync::Arc::clone(db),
             }));
         } else if let Some(ref key) = config.openalex_key {
             databases.insert(
                 0,
-                Box::new(openalex::OpenAlex {
+                Arc::new(openalex::OpenAlex {
                     api_key: key.clone(),
                 }),
             );
@@ -585,7 +579,7 @@ pub(crate) fn build_database_list(
     if should_include("GovInfo")
         && let Some(ref key) = config.govinfo_key
     {
-        databases.push(Box::new(govinfo::GovInfo::new(key.clone())));
+        databases.push(Arc::new(govinfo::GovInfo::new(key.clone())));
     }
     // PatentsView - DISABLED: API key grants are currently suspended
     // See: https://patentsview.org/apis/keyrequest
@@ -593,8 +587,11 @@ pub(crate) fn build_database_list(
     // if should_include("PatentsView")
     //     && let Some(ref key) = config.patentsview_key
     // {
-    //     databases.push(Box::new(patentsview::PatentsView::new(key.clone())));
+    //     databases.push(Arc::new(patentsview::PatentsView::new(key.clone())));
     // }
+
+    // Append any extra backends injected by the consumer
+    databases.extend(config.extra_backends.iter().cloned());
 
     databases
 }

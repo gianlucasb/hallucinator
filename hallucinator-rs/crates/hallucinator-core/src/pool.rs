@@ -59,10 +59,7 @@ impl ValidationPool {
             .unwrap_or_else(|_| reqwest::Client::new());
 
         // Build database list and partition into local/remote
-        let all_dbs: Vec<Arc<dyn DatabaseBackend>> = build_database_list(&config, None)
-            .into_iter()
-            .map(Arc::from)
-            .collect();
+        let all_dbs = build_database_list(&config, None);
         let (local_dbs, remote_dbs): (Vec<_>, Vec<_>) =
             all_dbs.into_iter().partition(|db| db.is_local());
 

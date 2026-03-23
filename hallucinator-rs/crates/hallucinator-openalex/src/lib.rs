@@ -193,6 +193,24 @@ impl OpenAlexDatabase {
     }
 }
 
+impl hallucinator_common::TitleIndex for OpenAlexDatabase {
+    type Error = OpenAlexError;
+
+    fn search(
+        &self,
+        title: &str,
+        threshold: f64,
+    ) -> Result<Option<hallucinator_common::QueryResult>, OpenAlexError> {
+        let result = query::query_index(&self.index, &self.reader, title, threshold)?;
+        Ok(result.map(|qr| hallucinator_common::QueryResult {
+            title: qr.record.title,
+            authors: qr.record.authors,
+            url: qr.record.url,
+            score: qr.score,
+        }))
+    }
+}
+
 /// Download and build (or incrementally update) the offline OpenAlex database.
 ///
 /// Downloads work records from the public OpenAlex S3 snapshot, filters by

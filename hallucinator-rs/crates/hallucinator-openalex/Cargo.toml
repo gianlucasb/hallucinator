@@ -9,6 +9,7 @@ description = "Offline OpenAlex database builder and querier using Tantivy"
 dist = false
 
 [dependencies]
+hallucinator-common.workspace = true
 tantivy.workspace = true
 reqwest.workspace = true
 quick-xml.workspace = true

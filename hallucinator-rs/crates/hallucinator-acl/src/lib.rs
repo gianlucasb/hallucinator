@@ -9,6 +9,7 @@
 mod builder;
 mod db;
 mod query;
+pub mod sqlite_sink;
 mod xml_parser;
 
 use std::path::{Path, PathBuf};
@@ -169,6 +170,24 @@ impl AclDatabase {
     /// Get the path to the database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+impl hallucinator_common::TitleIndex for AclDatabase {
+    type Error = AclError;
+
+    fn search(
+        &self,
+        title: &str,
+        threshold: f64,
+    ) -> Result<Option<hallucinator_common::QueryResult>, AclError> {
+        let result = query::query_fts(&self.conn, title, threshold)?;
+        Ok(result.map(|qr| hallucinator_common::QueryResult {
+            title: qr.record.title,
+            authors: qr.record.authors,
+            url: qr.record.url,
+            score: qr.score,
+        }))
     }
 }
 

@@ -1225,6 +1225,7 @@ version = "0.1.1"
 dependencies = [
  "flate2",
  "futures-util",
+ "hallucinator-common",
  "once_cell",
  "quick-xml",
  "rapidfuzz",
@@ -1274,6 +1275,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-common"
+version = "0.1.1"
+dependencies = [
+ "once_cell",
+ "rapidfuzz",
+ "regex",
+ "thiserror 2.0.18",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "hallucinator-core"
 version = "0.1.1"
 dependencies = [
@@ -1285,6 +1297,7 @@ dependencies = [
  "fastrand",
  "governor",
  "hallucinator-acl",
+ "hallucinator-common",
  "hallucinator-dblp",
  "hallucinator-openalex",
  "http",
@@ -1312,6 +1325,7 @@ version = "0.1.1"
 dependencies = [
  "flate2",
  "futures-util",
+ "hallucinator-common",
  "once_cell",
  "quick-xml",
  "rapidfuzz",
@@ -1349,6 +1363,7 @@ dependencies = [
  "async-compression",
  "flate2",
  "futures-util",
+ "hallucinator-common",
  "once_cell",
  "quick-xml",
  "rapidfuzz",

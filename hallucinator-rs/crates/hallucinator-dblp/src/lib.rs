@@ -10,6 +10,7 @@ mod builder;
 pub mod db;
 pub mod parser;
 pub mod query;
+pub mod sqlite_sink;
 pub mod xml_parser;
 
 use std::path::{Path, PathBuf};
@@ -199,6 +200,36 @@ impl DblpDatabase {
     /// Get the path to the database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+impl hallucinator_common::TitleIndex for DblpDatabase {
+    type Error = DblpError;
+
+    fn search(
+        &self,
+        title: &str,
+        threshold: f64,
+    ) -> Result<Option<hallucinator_common::QueryResult>, DblpError> {
+        let result = query::query_fts(&self.conn, title, threshold)?;
+        Ok(result.map(|qr| hallucinator_common::QueryResult {
+            title: qr.record.title,
+            authors: qr.record.authors,
+            url: qr.record.url,
+            score: qr.score,
+        }))
+    }
+}
+
+impl From<xml_parser::Publication> for hallucinator_common::ParsedRecord {
+    fn from(pub_record: xml_parser::Publication) -> Self {
+        Self {
+            source_id: pub_record.key,
+            title: pub_record.title,
+            authors: pub_record.authors,
+            url: pub_record.url,
+            doi: None,
+        }
     }
 }
 

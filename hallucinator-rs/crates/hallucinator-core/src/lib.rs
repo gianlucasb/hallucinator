@@ -302,6 +302,9 @@ pub struct Config {
     pub cache_positive_ttl_secs: u64,
     /// TTL in seconds for negative (not-found) cache entries. Default: 24 hours.
     pub cache_negative_ttl_secs: u64,
+    /// Additional database backends injected by the consumer (e.g., Postgres-backed).
+    /// These are appended to the built-in database list during orchestration.
+    pub extra_backends: Vec<Arc<dyn db::DatabaseBackend>>,
 }
 
 impl std::fmt::Debug for Config {
@@ -347,6 +350,7 @@ impl std::fmt::Debug for Config {
             .field("cache_path", &self.cache_path)
             .field("cache_positive_ttl_secs", &self.cache_positive_ttl_secs)
             .field("cache_negative_ttl_secs", &self.cache_negative_ttl_secs)
+            .field("extra_backends", &self.extra_backends.len())
             .finish()
     }
 }
@@ -377,6 +381,7 @@ impl Default for Config {
             cache_path: None,
             cache_positive_ttl_secs: DEFAULT_POSITIVE_TTL.as_secs(),
             cache_negative_ttl_secs: DEFAULT_NEGATIVE_TTL.as_secs(),
+            extra_backends: vec![],
         }
     }
 }

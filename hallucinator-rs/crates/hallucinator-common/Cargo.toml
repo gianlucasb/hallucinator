@@ -1,0 +1,14 @@
+[package]
+name = "hallucinator-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared types, traits, and fuzzy matching for hallucinator crates"
+
+[dependencies]
+thiserror.workspace = true
+rapidfuzz.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+unicode-normalization = "0.1"
