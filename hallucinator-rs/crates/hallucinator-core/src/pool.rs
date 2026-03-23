@@ -366,8 +366,41 @@ async fn report_result(
                     paper_url: paper_url.clone(),
                     error_message: None,
                 });
+                // For short/ambiguous titles, suppress mismatch
+                let title = collector.reference.title.as_deref().unwrap_or("");
+                let is_short_title = title.split_whitespace().count() < 6;
+
+                // Suppress mismatch when zero surname overlap from fuzzy DBs
+                let zero_overlap =
+                    if !ref_authors.is_empty() && !found_authors.is_empty() {
+                        let ref_surnames: std::collections::HashSet<String> = ref_authors
+                            .iter()
+                            .filter_map(|a| {
+                                let s = crate::authors::get_last_name_public(a);
+                                if s.is_empty() { None } else { Some(s) }
+                            })
+                            .collect();
+                        let found_surnames: std::collections::HashSet<String> = found_authors
+                            .iter()
+                            .filter_map(|a| {
+                                let s = crate::authors::get_last_name_public(a);
+                                if s.is_empty() { None } else { Some(s) }
+                            })
+                            .collect();
+                        ref_surnames.is_disjoint(&found_surnames)
+                    } else {
+                        false
+                    };
+                let is_fuzzy_db = matches!(
+                    db_name,
+                    "CrossRef" | "Semantic Scholar" | "Europe PMC" | "PubMed"
+                );
+                let suppress_zero_overlap = zero_overlap && is_fuzzy_db;
+
                 if state.first_mismatch.is_none()
                     && (db_name != "OpenAlex" || check_openalex_authors)
+                    && !is_short_title
+                    && !suppress_zero_overlap
                 {
                     state.first_mismatch = Some(MismatchInfo {
                         source: db_name.to_string(),
@@ -787,7 +820,39 @@ fn pre_check_remote_cache(
                         paper_url: qr.paper_url.clone(),
                         error_message: None,
                     });
-                    if first_mismatch.is_none() && (db_name != "OpenAlex" || check_openalex_authors)
+                    // Apply short-title and zero-overlap suppression
+                    let is_short_title = title.split_whitespace().count() < 6;
+                    let zero_overlap_cache =
+                        if !ref_authors.is_empty() && !qr.authors.is_empty() {
+                            let ref_surnames: std::collections::HashSet<String> = ref_authors
+                                .iter()
+                                .filter_map(|a| {
+                                    let s = crate::authors::get_last_name_public(a);
+                                    if s.is_empty() { None } else { Some(s) }
+                                })
+                                .collect();
+                            let found_surnames: std::collections::HashSet<String> = qr
+                                .authors
+                                .iter()
+                                .filter_map(|a| {
+                                    let s = crate::authors::get_last_name_public(a);
+                                    if s.is_empty() { None } else { Some(s) }
+                                })
+                                .collect();
+                            ref_surnames.is_disjoint(&found_surnames)
+                        } else {
+                            false
+                        };
+                    let is_fuzzy_db_cache = matches!(
+                        db_name.as_str(),
+                        "CrossRef" | "Semantic Scholar" | "Europe PMC" | "PubMed"
+                    );
+                    let suppress = zero_overlap_cache && is_fuzzy_db_cache;
+
+                    if first_mismatch.is_none()
+                        && (db_name != "OpenAlex" || check_openalex_authors)
+                        && !is_short_title
+                        && !suppress
                     {
                         first_mismatch = Some(MismatchInfo {
                             source: db_name.clone(),

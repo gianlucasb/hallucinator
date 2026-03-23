@@ -1,5 +1,6 @@
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
+use unicode_normalization::UnicodeNormalization;
 
 /// Common surname prefixes (case-insensitive).
 static SURNAME_PREFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
@@ -112,7 +113,47 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
         let ref_set: HashSet<String> = ref_authors.iter().map(|a| normalize_author(a)).collect();
         let found_set: HashSet<String> =
             found_authors.iter().map(|a| normalize_author(a)).collect();
-        !ref_set.is_disjoint(&found_set)
+
+        if !ref_set.is_disjoint(&found_set) {
+            return true;
+        }
+
+        // Surname-based fallback: compare just last names when initial-based
+        // comparison fails. This handles format mismatches like:
+        // - "C. Gregory" (Initial + Surname) vs "Gregory Cohen" (FirstName + Surname)
+        //   where the surname "Gregory" appears as a first name in the other format
+        // - Accent differences already handled by strip_diacritics in get_last_name
+        let ref_surnames: HashSet<String> = ref_authors
+            .iter()
+            .filter_map(|a| {
+                let s = get_last_name(a);
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .collect();
+        let found_surnames: HashSet<String> = found_authors
+            .iter()
+            .filter_map(|a| {
+                let s = get_last_name(a);
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .collect();
+
+        if !ref_surnames.is_disjoint(&found_surnames) {
+            return true;
+        }
+
+        // Handle truncated author lists ("et al."):
+        // If the reference has significantly fewer authors than the DB result,
+        // check if ALL extracted authors appear in the found authors (subset match).
+        // This handles cases where the PDF says "Gentry et al." (1 author) but
+        // the DB returns all 5 authors including Gentry.
+        if ref_authors.len() < found_authors.len() && ref_authors.len() <= 3 {
+            if !ref_surnames.is_empty() && ref_surnames.is_subset(&found_surnames) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -151,8 +192,16 @@ fn get_surname_from_parts(parts: &[&str]) -> String {
     parts.last().unwrap().to_string()
 }
 
+/// Strip diacritics from a string using Unicode NFKD decomposition.
+/// "Müller" → "Muller", "Crépeau" → "Crepeau", "Doupé" → "Doupe"
+fn strip_diacritics(s: &str) -> String {
+    s.nfkd().filter(|c| c.is_ascii()).collect()
+}
+
 /// Normalize an author name to "FirstInitial surname" format for comparison.
 fn normalize_author(name: &str) -> String {
+    // Strip diacritics first so comparisons are accent-insensitive
+    let name = strip_diacritics(name.trim());
     let name = name.trim();
 
     // AAAI "Surname, Initials" format
@@ -185,8 +234,15 @@ fn normalize_author(name: &str) -> String {
     format!("{} {}", first_initial, surname.to_lowercase())
 }
 
+/// Get the last name from an author name string (public API for orchestrator).
+pub fn get_last_name_public(name: &str) -> String {
+    get_last_name(name)
+}
+
 /// Get the last name from an author name string.
 fn get_last_name(name: &str) -> String {
+    // Strip diacritics for accent-insensitive comparison
+    let name = strip_diacritics(name.trim());
     let name = name.trim();
 
     // AAAI "Surname, Initials" format
@@ -361,6 +417,88 @@ mod tests {
         assert!(validate_authors(
             &s(&["DeepSeek-AI"]),
             &s(&["Some Author"]),
+        ));
+    }
+
+    #[test]
+    fn test_accent_insensitive_muller() {
+        // "Müller" from PDF should match "Muller" from DB
+        assert!(validate_authors(
+            &s(&["Nicolas M. Müller"]),
+            &s(&["Nicolas M. Muller"]),
+        ));
+    }
+
+    #[test]
+    fn test_accent_insensitive_crepeau() {
+        // "Crépeau" should match "Crepeau"
+        assert!(validate_authors(
+            &s(&["C. Crépeau", "D. Gottesman"]),
+            &s(&["Claude Crepeau", "Daniel Gottesman"]),
+        ));
+    }
+
+    #[test]
+    fn test_accent_insensitive_doupe() {
+        // "Doupé" should match "Doupe"
+        assert!(validate_authors(
+            &s(&["Huahong Tu", "Adam Doupé"]),
+            &s(&["Huahong Tu", "Adam Doupe"]),
+        ));
+    }
+
+    #[test]
+    fn test_accent_insensitive_tramer() {
+        // "Tramèr" should match "Tramer"
+        assert!(validate_authors(
+            &s(&["Florian Tramèr"]),
+            &s(&["Florian Tramer"]),
+        ));
+    }
+
+    #[test]
+    fn test_accent_insensitive_last_name_only() {
+        // Last-name-only mode with accents
+        assert!(validate_authors(
+            &s(&["Müller", "Köbis"]),
+            &s(&["Nicolas Muller", "Nils Kobis"]),
+        ));
+    }
+
+    #[test]
+    fn test_et_al_subset_single_author() {
+        // PDF says "Gentry" (et al. truncated), DB has "Boneh, Gentry"
+        assert!(validate_authors(
+            &s(&["Craig Gentry"]),
+            &s(&["Dan Boneh", "Craig Gentry"]),
+        ));
+    }
+
+    #[test]
+    fn test_et_al_subset_two_authors() {
+        // PDF says "Dwork, Roth" (et al. truncated), DB has "Dwork, Roth, Others"
+        assert!(validate_authors(
+            &s(&["Cynthia Dwork", "Aaron Roth"]),
+            &s(&["Cynthia Dwork", "Aaron Roth", "Guy Rothblum"]),
+        ));
+    }
+
+    #[test]
+    fn test_et_al_no_false_positive() {
+        // Subset match should NOT match when ref authors are NOT in found authors
+        assert!(!validate_authors(
+            &s(&["John Smith"]),
+            &s(&["Alice Jones", "Bob Brown"]),
+        ));
+    }
+
+    #[test]
+    fn test_et_al_many_ref_authors_no_subset() {
+        // When ref has many authors (>3), subset match is disabled,
+        // so completely different authors should NOT match
+        assert!(!validate_authors(
+            &s(&["X. Alpha", "Y. Beta", "Z. Gamma", "W. Delta"]),
+            &s(&["A. One", "B. Two", "C. Three", "D. Four", "E. Five", "F. Six"]),
         ));
     }
 }

@@ -190,6 +190,10 @@ fn parse_single_reference(
     let doi = identifiers::extract_doi(ref_text);
     let arxiv_id = identifiers::extract_arxiv_id(ref_text);
 
+    // Extract non-academic URLs BEFORE hyphenation fixing, which can mangle URLs
+    // by removing hyphens inside domain names (e.g., "Cisco-Talos" → "CiscoTalos")
+    let urls = identifiers::extract_urls(ref_text);
+
     // Remove standalone page/column numbers on their own lines
     static PAGE_NUM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\d{1,4}\n").unwrap());
     let ref_text = PAGE_NUM_RE.replace_all(ref_text, "\n");
@@ -200,9 +204,6 @@ fn parse_single_reference(
     } else {
         text_processing::fix_hyphenation_with_config(&ref_text, config)
     };
-
-    // Extract non-academic URLs (for URL liveness check fallback)
-    let urls = identifiers::extract_urls(&ref_text);
 
     // Extract title
     let (extracted_title, from_quotes) =

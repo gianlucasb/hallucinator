@@ -37,6 +37,13 @@ pub(crate) fn extract_authors_from_reference_with_config(
     let ref_text = WS_RE.replace_all(&ref_text, " ");
     let ref_text = ref_text.trim();
 
+    // Fix "word{and}" patterns where a space was lost between a name and "and"
+    // e.g., "E. Dasand J. W. Burdick" → "E. Das and J. W. Burdick"
+    static MERGED_AND_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"([a-z])and ([A-Z])").unwrap());
+    let ref_text = MERGED_AND_RE.replace_all(ref_text, "$1 and $2");
+    let ref_text = ref_text.as_ref();
+
     // Check for em-dash pattern meaning "same authors as previous"
     static EM_DASH_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"^[\u{2014}\u{2013}\-]{2,}\s*,").unwrap());
@@ -398,6 +405,23 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("Journal") || a.contains("Networks")),
             "Journal name should not be in authors: {:?}",
+            authors
+        );
+    }
+
+    #[test]
+    fn test_merged_and_fixed() {
+        // "Dasand" should be split to "Das and" when followed by uppercase
+        let ref_text = r#"E. Dasand J. W. Burdick, "Robust control barrier functions," in IEEE, 2023."#;
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Das")),
+            "Should split 'Dasand' into 'Das' and next author: {:?}",
+            authors
+        );
+        assert!(
+            authors.iter().any(|a| a.contains("Burdick")),
+            "Should extract Burdick: {:?}",
             authors
         );
     }

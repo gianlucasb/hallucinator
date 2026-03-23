@@ -190,6 +190,9 @@ impl RateLimiters {
         // PatentsView: no documented limit, use 5/sec to be polite
         limiters.insert("PatentsView", AdaptiveDbLimiter::per_second(5));
 
+        // Open Library: no documented rate limit, use 1/sec to be polite
+        limiters.insert("Open Library", AdaptiveDbLimiter::per_second(1));
+
         // SSRN: disabled, skip limiter
         // NeurIPS: disabled, skip limiter
         // Offline DBs (DBLP offline, ACL offline) share names but don't make HTTP requests

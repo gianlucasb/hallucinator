@@ -9,6 +9,7 @@ pub mod europe_pmc;
 pub mod govinfo;
 pub mod neurips;
 pub mod openalex;
+pub mod openlibrary;
 pub mod openalex_offline;
 pub mod patentsview;
 pub mod pubmed;

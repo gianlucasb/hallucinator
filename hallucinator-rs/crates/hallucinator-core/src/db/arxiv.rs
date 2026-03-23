@@ -7,6 +7,28 @@ use std::time::Duration;
 
 pub struct Arxiv;
 
+/// Check arXiv response status, treating 429 and 503 as rate limiting.
+/// arXiv returns 503 Service Unavailable when overloaded.
+fn check_arxiv_status(resp: &reqwest::Response) -> Result<(), DbQueryError> {
+    let status = resp.status().as_u16();
+    if status == 429 || status == 503 {
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_secs);
+        // Default to 3s backoff for arXiv (their API is rate-sensitive)
+        Err(DbQueryError::RateLimited {
+            retry_after: retry_after.or(Some(Duration::from_secs(3))),
+        })
+    } else if !resp.status().is_success() {
+        Err(DbQueryError::Other(format!("HTTP {}", resp.status())))
+    } else {
+        Ok(())
+    }
+}
+
 impl DatabaseBackend for Arxiv {
     fn name(&self) -> &str {
         "arXiv"
@@ -33,9 +55,7 @@ impl DatabaseBackend for Arxiv {
                 .await
                 .map_err(|e| DbQueryError::Other(e.to_string()))?;
 
-            if !resp.status().is_success() {
-                return Err(DbQueryError::Other(format!("HTTP {}", resp.status())));
-            }
+            check_arxiv_status(&resp)?;
 
             let body = resp
                 .text()
@@ -67,8 +87,8 @@ impl DatabaseBackend for Arxiv {
                 Err(e) => return Some(Err(DbQueryError::Other(e.to_string()))),
             };
 
-            if !resp.status().is_success() {
-                return Some(Err(DbQueryError::Other(format!("HTTP {}", resp.status()))));
+            if let Err(e) = check_arxiv_status(&resp) {
+                return Some(Err(e));
             }
 
             let body = match resp.text().await {

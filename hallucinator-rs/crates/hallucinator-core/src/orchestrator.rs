@@ -448,9 +448,41 @@ fn process_query_result(
                 let is_short_title =
                     title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD;
 
+                // Also suppress mismatch when there is zero surname overlap
+                // from fuzzy-matching databases. This prevents false mismatches
+                // where CrossRef/Semantic Scholar/Europe PMC return a completely
+                // different paper that happens to have a similar title.
+                let zero_overlap = if !ref_authors.is_empty() && !found_authors.is_empty() {
+                    let ref_surnames: HashSet<String> = ref_authors
+                        .iter()
+                        .filter_map(|a| {
+                            let s = crate::authors::get_last_name_public(a);
+                            if s.is_empty() { None } else { Some(s) }
+                        })
+                        .collect();
+                    let found_surnames: HashSet<String> = found_authors
+                        .iter()
+                        .filter_map(|a| {
+                            let s = crate::authors::get_last_name_public(a);
+                            if s.is_empty() { None } else { Some(s) }
+                        })
+                        .collect();
+                    ref_surnames.is_disjoint(&found_surnames)
+                } else {
+                    false
+                };
+
+                // Suppress for fuzzy DBs with zero overlap - likely wrong paper
+                let is_fuzzy_db = matches!(
+                    name.as_str(),
+                    "CrossRef" | "Semantic Scholar" | "Europe PMC" | "PubMed"
+                );
+                let suppress_zero_overlap = zero_overlap && is_fuzzy_db;
+
                 if first_mismatch.is_none()
                     && (name != "OpenAlex" || check_openalex_authors)
                     && !is_short_title
+                    && !suppress_zero_overlap
                 {
                     *first_mismatch = Some(DbSearchResult {
                         status: Status::Mismatch(MismatchKind::AUTHOR),
@@ -615,6 +647,11 @@ pub(crate) fn build_database_list(
     //     databases.push(Box::new(patentsview::PatentsView::new(key.clone())));
     // }
 
+    // Open Library - books and technical reports not in academic databases
+    if should_include("Open Library") {
+        databases.push(Box::new(openlibrary::OpenLibrary));
+    }
+
     databases
 }
 
@@ -636,6 +673,7 @@ mod tests {
                 "OpenAlex".into(),
                 "DOI".into(),
                 "GovInfo".into(),
+                "Open Library".into(),
             ],
             ..Config::default()
         }
@@ -655,6 +693,7 @@ mod tests {
             "Europe PMC",
             "PubMed",
             "DOI",
+            "Open Library",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
@@ -878,6 +917,76 @@ mod tests {
             first_mismatch.is_none(),
             "Short title should suppress author mismatch, got: {:?}",
             first_mismatch.as_ref().map(|m| &m.status)
+        );
+    }
+
+    #[tokio::test]
+    async fn fuzzy_db_zero_overlap_mismatch_suppressed() {
+        // When a fuzzy DB (e.g., Europe PMC) returns a completely different paper
+        // (zero author surname overlap), the mismatch should be suppressed.
+        let mock: Arc<dyn DatabaseBackend> = Arc::new(MockDb::new(
+            "Europe PMC",
+            MockResponse::Found {
+                title: "Secure multiparty quantum computation".into(),
+                authors: vec!["Song X".into(), "Gou R".into(), "Wen A.".into()],
+                url: None,
+            },
+        ));
+        let config = config_all_disabled();
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let rate_limiters = config.rate_limiters.clone();
+
+        let title = "Secure multiparty quantum computation";
+        let ref_authors_owned: Vec<String> =
+            vec!["C. Crepeau".into(), "D. Gottesman".into(), "A. Smith".into()];
+        let db = mock;
+        let rate_limiters_clone = rate_limiters.clone();
+        let ref_authors_clone = ref_authors_owned.clone();
+
+        let mut join_set = tokio::task::JoinSet::new();
+        join_set.spawn(async move {
+            let name = db.name().to_string();
+            let rl_result = crate::rate_limit::query_with_retry(
+                db.as_ref(),
+                title,
+                &client,
+                timeout,
+                &rate_limiters_clone,
+                config.max_rate_limit_retries,
+                None,
+            )
+            .await;
+            (name, rl_result.result, ref_authors_clone, rl_result.elapsed)
+        });
+
+        let mut db_results = vec![];
+        let mut failed_dbs = vec![];
+        let mut first_mismatch: Option<DbSearchResult> = None;
+
+        while let Some(result) = join_set.join_next().await {
+            let (name, query_result, ref_authors, elapsed) = result.unwrap();
+            match process_query_result(
+                name,
+                query_result,
+                elapsed,
+                title,
+                &ref_authors,
+                false,
+                None,
+                &mut db_results,
+                &mut failed_dbs,
+                &mut first_mismatch,
+            ) {
+                Some(verified) => panic!("Should not verify: {:?}", verified.status),
+                None => {}
+            }
+        }
+
+        assert!(
+            first_mismatch.is_none(),
+            "Zero overlap from fuzzy DB should suppress mismatch, got: {:?}",
+            first_mismatch.as_ref().map(|m| (&m.status, &m.source))
         );
     }
 
