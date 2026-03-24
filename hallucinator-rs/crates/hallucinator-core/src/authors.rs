@@ -26,6 +26,11 @@ static ORG_AUTHOR_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "darpa", "ftc", "nasa", "nist", "ieee", "acm",
         "who", "oecd", "unesco", "european commission",
         "mistralai", "mistral",
+        // Government departments/agencies (returned by GovInfo)
+        "commerce department", "department of commerce",
+        "department of defense", "department of energy",
+        "department of homeland security", "department of justice",
+        "congress", "senate", "gao", "cisa", "fda", "epa", "fcc", "sec",
     ]
     .into_iter()
     .collect()
