@@ -4,7 +4,7 @@
 
 Created by Gianluca Stringhini with Claude Code and ChatGPT.
 
-> **Why this exists:** Academia is under attack from AI-generated slop—fake citations, fabricated papers, LLM-written reviews. We observed several papers with hallucinated citations submitted to ACSAC 2025, but the [November 2025 OpenReview incident](https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/) exposed how deep the rot goes: 21% of ICLR reviews were likely AI-generated, 199 papers were likely completely written by an AI. This tool is one line of defense. It's not perfect—that's the point. We use AI to fight misuse of AI, openly and honestly. **[Read the full manifesto.](MANIFESTO.md)**
+> **Why this exists:** Academia is under attack from AI-generated slop—fake citations, fabricated papers, LLM-written reviews. We observed several papers with hallucinated citations submitted to ACSAC 2025, but the [November 2025 OpenReview incident](https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/) exposed how deep the rot goes: 21% of ICLR reviews were likely AI-generated, 199 papers were likely completely written by an AI. In March 2026, [ICML caught 506 reviewers](https://www.nature.com/articles/d41586-026-00893-2) using LLMs in violation of review policies and [desk-rejected 497 papers](https://blog.icml.cc/2026/03/18/on-violations-of-llm-review-policies/). This tool is one line of defense. It's not perfect—that's the point. We use AI to fight misuse of AI, openly and honestly. **[Read the full manifesto.](MANIFESTO.md)**
 >
 > (See those em dashes? They're a known tell of AI-generated text. This README was written with Claude. We're not hiding it—we're proving a point. **[Read why this matters, even if you're an AI absolutist.](MANIFESTO.md#why-ai-should-care)**)
 
@@ -18,7 +18,7 @@ The TUI includes a full terminal UI for batch-processing PDFs and archives inter
 
 You can install it with:
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/gianlucasb/hallucinator/releases/latest/download/hallucinator-tui-installer.sh | sh
+curl -sSf https://hallucinator.science/install.sh | sh
 ```
 
 ![demo](https://github.com/user-attachments/assets/b879eb66-5b94-4a75-9e34-79a024c5646e)
@@ -31,7 +31,7 @@ See **[hallucinator-rs/README.md](hallucinator-rs/README.md)** for full document
 
 When the TUI is not suitable, there's a pure CLI available too:
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/gianlucasb/hallucinator/releases/latest/download/hallucinator-cli-installer.sh | sh
+curl -sSf https://hallucinator.science/install-cli.sh | sh
 ```
 
 ## Python Bindings (Early Release)

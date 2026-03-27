@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hallucinator - Detect Fake Citations in Academic Papers</title>
+  <meta name="description" content="Open-source tool that detects hallucinated references in academic PDFs by validating against 10+ academic databases.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --bg-card: #12121a;
+      --border: #1e1e2e;
+      --text: #e0e0e8;
+      --text-dim: #8888a0;
+      --accent: #ff4444;
+      --accent-dim: #cc2222;
+      --green: #44cc66;
+      --yellow: #ccaa33;
+      --mono: 'IBM Plex Mono', monospace;
+      --sans: 'Inter', system-ui, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Header */
+    header {
+      padding: 80px 0 40px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h1 {
+      font-family: var(--mono);
+      font-size: 2.4rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+
+    h1 .red { color: var(--accent); }
+
+    .tagline {
+      font-size: 1.15rem;
+      color: var(--text-dim);
+      max-width: 600px;
+      margin-bottom: 28px;
+    }
+
+    .links {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 0.9rem;
+      font-weight: 600;
+      transition: background 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--accent-dim); text-decoration: none; }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover { border-color: var(--text-dim); text-decoration: none; }
+
+    /* Install */
+    .install {
+      padding: 48px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .install h2 {
+      font-family: var(--mono);
+      font-size: 1.1rem;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .code-block {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px 24px;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      overflow-x: auto;
+      position: relative;
+      margin-bottom: 12px;
+    }
+
+    .code-block .comment { color: var(--text-dim); }
+    .code-block .cmd { color: var(--text); }
+
+    .install-note {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    /* Demo */
+    .demo {
+      padding: 48px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .demo h2 {
+      font-family: var(--mono);
+      font-size: 1.1rem;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .demo img {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    /* What it does */
+    .what {
+      padding: 48px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .what h2 {
+      font-family: var(--mono);
+      font-size: 1.1rem;
+      color: var(--text-dim);
+      margin-bottom: 24px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .steps {
+      display: grid;
+      gap: 16px;
+    }
+
+    .step {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .step-num {
+      font-family: var(--mono);
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 0.9rem;
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-top: 2px;
+    }
+
+    .step p { color: var(--text); }
+    .step strong { color: var(--text); font-weight: 600; }
+
+    /* Databases */
+    .databases {
+      padding: 48px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .databases h2 {
+      font-family: var(--mono);
+      font-size: 1.1rem;
+      color: var(--text-dim);
+      margin-bottom: 24px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .db-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+    }
+
+    .db-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-size: 0.9rem;
+    }
+
+    .db-item strong {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    .db-item span {
+      color: var(--text-dim);
+      font-size: 0.8rem;
+    }
+
+    /* Results */
+    .results {
+      padding: 48px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .results h2 {
+      font-family: var(--mono);
+      font-size: 1.1rem;
+      color: var(--text-dim);
+      margin-bottom: 24px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .result-types {
+      display: grid;
+      gap: 12px;
+    }
+
+    .result-type {
+      display: flex;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .result-badge {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 2px 10px;
+      border-radius: 4px;
+      flex-shrink: 0;
+      min-width: 110px;
+      text-align: center;
+    }
+
+    .badge-verified { background: #1a3322; color: var(--green); }
+    .badge-mismatch { background: #332b1a; color: var(--yellow); }
+    .badge-notfound { background: #331a1a; color: var(--accent); }
+    .badge-retracted { background: #33101a; color: #ff6688; }
+
+    /* Why */
+    .why {
+      padding: 48px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .why h2 {
+      font-family: var(--mono);
+      font-size: 1.1rem;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .why p {
+      color: var(--text-dim);
+      margin-bottom: 12px;
+      max-width: 640px;
+    }
+
+    .why p strong { color: var(--text); }
+
+    /* Footer */
+    footer {
+      padding: 40px 0;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+
+    footer .footer-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    footer a { color: var(--text-dim); }
+    footer a:hover { color: var(--text); }
+
+    @media (max-width: 600px) {
+      header { padding: 48px 0 32px; }
+      h1 { font-size: 1.6rem; }
+      .tagline { font-size: 1rem; }
+      .db-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header>
+      <h1><span class="red">hallucinator</span></h1>
+      <p class="tagline">Detect fake citations in academic papers. Extract references from PDFs and validate them against 10+ academic databases. If a reference doesn't exist anywhere, it's probably hallucinated.</p>
+      <div class="links">
+        <a href="https://github.com/gianlucasb/hallucinator" class="btn btn-primary">GitHub</a>
+        <a href="https://docs.hallucinator.science" class="btn btn-secondary">Documentation</a>
+        <a href="https://github.com/gianlucasb/hallucinator/blob/main/MANIFESTO.md" class="btn btn-secondary">Manifesto</a>
+      </div>
+    </header>
+
+    <section class="install">
+      <h2>Install</h2>
+      <div class="code-block">
+        <span class="comment"># TUI (recommended &mdash; interactive terminal UI)</span><br>
+        <span class="cmd">curl -sSf https://hallucinator.science/install.sh | sh</span>
+      </div>
+      <div class="code-block">
+        <span class="comment"># CLI</span><br>
+        <span class="cmd">curl -sSf https://hallucinator.science/install-cli.sh | sh</span>
+      </div>
+      <div class="code-block">
+        <span class="comment"># Python</span><br>
+        <span class="cmd">pip install hallucinator</span>
+      </div>
+      <p class="install-note">Pre-built binaries for Linux, macOS, and Windows. Python wheels for 3.12+.</p>
+    </section>
+
+    <section class="demo">
+      <h2>Demo</h2>
+      <img src="https://github.com/user-attachments/assets/b879eb66-5b94-4a75-9e34-79a024c5646e" alt="Hallucinator TUI demo showing reference validation in progress">
+    </section>
+
+    <section class="what">
+      <h2>How it works</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <p><strong>Extract text</strong> from PDF and locate the references section</p>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <p><strong>Parse each reference</strong> &mdash; extract titles and authors from IEEE, ACM, USENIX, AAAI, and other formats</p>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <p><strong>Query all databases in parallel</strong> &mdash; 4 references at a time, all databases simultaneously</p>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <p><strong>Report results</strong> &mdash; verified, author mismatch, not found, or retracted</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="databases">
+      <h2>Databases checked</h2>
+      <div class="db-grid">
+        <div class="db-item"><strong>CrossRef</strong><span>DOIs, journals, conferences</span></div>
+        <div class="db-item"><strong>arXiv</strong><span>CS, physics, math preprints</span></div>
+        <div class="db-item"><strong>DBLP</strong><span>CS bibliography</span></div>
+        <div class="db-item"><strong>Semantic Scholar</strong><span>200M+ papers</span></div>
+        <div class="db-item"><strong>ACL Anthology</strong><span>Computational linguistics</span></div>
+        <div class="db-item"><strong>Europe PMC</strong><span>Life sciences, 42M+ abstracts</span></div>
+        <div class="db-item"><strong>PubMed</strong><span>Biomedical literature</span></div>
+        <div class="db-item"><strong>OpenAlex</strong><span>250M+ works</span></div>
+        <div class="db-item"><strong>GovInfo</strong><span>US federal documents</span></div>
+        <div class="db-item"><strong>Web Search</strong><span>SearxNG fallback</span></div>
+      </div>
+    </section>
+
+    <section class="results">
+      <h2>Result types</h2>
+      <div class="result-types">
+        <div class="result-type">
+          <span class="result-badge badge-verified">Verified</span>
+          <span>Found in a database with matching authors. The reference exists.</span>
+        </div>
+        <div class="result-type">
+          <span class="result-badge badge-mismatch">Mismatch</span>
+          <span>Title found but with different authors. Worth investigating.</span>
+        </div>
+        <div class="result-type">
+          <span class="result-badge badge-notfound">Not Found</span>
+          <span>Not in any database. Potential hallucination.</span>
+        </div>
+        <div class="result-type">
+          <span class="result-badge badge-retracted">Retracted</span>
+          <span>Paper exists but has been retracted. Flagged via CrossRef.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="why">
+      <h2>Why this exists</h2>
+      <p><strong>Academia is under attack from AI-generated slop</strong> &mdash; fake citations, fabricated papers, LLM-written reviews.</p>
+      <p>The <strong>November 2025 OpenReview incident</strong> exposed the scale: 21% of ICLR reviews were likely AI-generated, 199 submitted papers were likely completely fabricated. Reviewer identities were leaked, leading to harassment and bribery.</p>
+      <p>In March 2026, <a href="https://blog.icml.cc/2026/03/18/on-violations-of-llm-review-policies/">ICML caught 506 reviewers</a> using LLMs in violation of review policies, desk-rejected 497 papers, and banned repeat offenders. <a href="https://www.nature.com/articles/d41586-026-00893-2">Nature covered the crackdown.</a></p>
+      <p>This tool is one line of defense. It's not perfect &mdash; that's the point. We use AI to fight misuse of AI, openly and honestly. <a href="https://github.com/gianlucasb/hallucinator/blob/main/MANIFESTO.md">Read the manifesto.</a></p>
+    </section>
+
+    <footer>
+      <div class="footer-inner">
+        <span><a href="https://github.com/gianlucasb/hallucinator">GitHub</a> &middot; <a href="https://docs.hallucinator.science">Docs</a></span>
+      </div>
+    </footer>
+
+  </div>
+</body>
+</html>
