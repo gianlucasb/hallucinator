@@ -2,7 +2,7 @@
 
 Rust implementation of the Hallucinated Reference Detector. Includes a CLI and an interactive terminal UI (TUI) for batch-processing PDFs and archives.
 
-Same validation engine as the Python version — queries 10 academic databases in parallel, fuzzy-matches titles, checks for retractions — but with a native async runtime and a full-screen TUI for working through large batches interactively.
+Same validation engine as the Python version — queries 13 databases in parallel (academic APIs, DOI resolution, book catalogs, government documents, and web search fallback), fuzzy-matches titles, checks for retractions — but with a native async runtime and a full-screen TUI for working through large batches interactively.
 
 ---
 
@@ -207,24 +207,23 @@ If no path is specified, the tool checks:
 
 ## Databases
 
-Same 10 databases as the Python version:
+| Database | Coverage | Notes |
+|----------|----------|-------|
+| CrossRef | DOIs, journal articles, conference papers | |
+| arXiv | Preprints (CS, physics, math, etc.) | |
+| DBLP | Computer science bibliography | Online API or offline SQLite + FTS5 |
+| Semantic Scholar | Aggregates Academia.edu, SSRN, PubMed, and more | Optional API key for higher rate limits |
+| ACL Anthology | Computational linguistics | Online API or offline SQLite + FTS5 |
+| Europe PMC | Life science literature (42M+ abstracts) | |
+| PubMed | Biomedical literature via NCBI | |
+| DOI Resolver | Validates references by resolving DOIs via doi.org | Only used when a DOI is present |
+| OpenAlex | 250M+ works | Online (needs API key) or offline SQLite |
+| Open Library | Books, technical reports, and non-academic publications | |
+| GovInfo | US federal laws, regulations, court opinions | Optional, needs free API key from api.data.gov |
+| URL Checker | Liveness check for non-academic URLs (GitHub, blogs, etc.) | Weaker verification — confirms URL is reachable |
+| Web Search | SearxNG metasearch fallback (Google, Bing, Google Scholar) | Optional, self-hosted, no author verification |
 
-| Database | Coverage |
-|----------|----------|
-| CrossRef | DOIs, journal articles, conference papers |
-| arXiv | Preprints (CS, physics, math, etc.) |
-| DBLP | Computer science bibliography (online + offline) |
-| Semantic Scholar | Aggregates Academia.edu, SSRN, PubMed, and more |
-| ACL Anthology | Computational linguistics (online + offline) |
-| NeurIPS | NeurIPS proceedings |
-| SSRN | Social science research |
-| Europe PMC | Life science literature (42M+ abstracts) |
-| PubMed | Biomedical literature via NCBI |
-| OpenAlex | 250M+ works (optional, needs API key) |
-| GovInfo | US federal laws, regulations, court opinions (optional, needs free API key) |
-| Web Search | SearxNG fallback (optional, weaker than DB matches) |
-
-Each reference is checked against all enabled databases concurrently. First verified match wins (early exit).
+Each reference is checked against all enabled databases concurrently. First verified match wins (early exit). SearxNG and URL checks are used as fallbacks only when no academic database match is found.
 
 ---
 
