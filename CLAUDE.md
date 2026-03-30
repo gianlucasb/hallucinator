@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Hallucinated Reference Detector** - Detects potentially fabricated references in academic PDF papers by validating against multiple academic databases (CrossRef, arXiv, DBLP, Semantic Scholar, ACL Anthology, NeurIPS, Europe PMC, PubMed, and optionally OpenAlex). Also checks for retracted papers via CrossRef.
+**Hallucinated Reference Detector** - Detects potentially fabricated references in academic PDF papers by validating against multiple databases (CrossRef, arXiv, DBLP, Semantic Scholar, ACL Anthology, Europe PMC, PubMed, DOI Resolver, OpenAlex, Open Library, GovInfo, plus optional SearXNG web search and URL liveness fallbacks). Also checks for retracted papers via CrossRef.
 
 **Read [MANIFESTO.md](MANIFESTO.md)** for the mission statement and context on why this tool exists, including documentation of the November 2025 OpenReview incident and a note on human-AI collaboration written by Claude during development.
 
@@ -57,22 +57,26 @@ docker run -p 5001:5001 hallucinator
 
 ### Concurrency Model
 - **4 references checked in parallel** (configurable via `max_concurrent_refs`)
-- **10 databases queried concurrently** per reference (all at once)
+- **All enabled databases queried concurrently** per reference
 - **Early exit** - Returns immediately when verified match found
 - **Request timeouts** - 10s default (`DB_TIMEOUT`), 5s short timeout (`DB_TIMEOUT_SHORT`)
 - **Configurable timeouts** - Set `DB_TIMEOUT` and `DB_TIMEOUT_SHORT` env vars for testing
 
 ### Database Sources
-- OpenAlex (optional, needs API key)
-- CrossRef
-- arXiv
-- DBLP (online API or offline SQLite database)
-- ~~OpenReview~~ (disabled - API unreachable after Nov 2025 incident; see [MANIFESTO.md](MANIFESTO.md) for details)
-- Semantic Scholar
-- ACL Anthology
-- NeurIPS
+- CrossRef (DOIs, journal articles, conference papers)
+- arXiv (preprints)
+- DBLP (CS bibliography; online API or offline SQLite + FTS5)
+- Semantic Scholar (aggregates multiple sources; optional API key)
+- ACL Anthology (computational linguistics; online or offline SQLite + FTS5)
 - Europe PMC (life science/biomedical literature)
 - PubMed (biomedical literature via NCBI)
+- DOI Resolver (validates references by resolving DOIs via doi.org)
+- OpenAlex (250M+ works; online with API key, or offline SQLite)
+- Open Library (books, technical reports, non-academic publications)
+- GovInfo (US federal laws, regulations, court opinions; optional, needs free API key)
+- ~~OpenReview~~ (disabled - API unreachable after Nov 2025 incident; see [MANIFESTO.md](MANIFESTO.md) for details)
+- URL Checker (liveness check for non-academic URLs; fallback only)
+- Web Search / SearXNG (self-hosted metasearch fallback; optional, no author verification)
 
 ### Offline DBLP Database
 - Downloads from https://dblp.org/rdf/dblp.nt.gz (~4.6GB compressed)
