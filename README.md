@@ -70,14 +70,17 @@ The tool queries these databases simultaneously:
 |----------|----------------|
 | **CrossRef** | DOIs, journal articles, conference papers |
 | **arXiv** | Preprints (CS, physics, math, etc.) |
-| **DBLP** | Computer science bibliography |
+| **DBLP** | Computer science bibliography (online or offline) |
 | **Semantic Scholar** | Aggregates Academia.edu, SSRN, PubMed, and more |
-| **ACL Anthology** | Computational linguistics papers |
+| **ACL Anthology** | Computational linguistics papers (online or offline) |
 | **Europe PMC** | Life science literature (42M+ abstracts, mirrors PubMed/PMC) |
 | **PubMed** | Biomedical literature via NCBI E-utilities |
-| **OpenAlex** | 250M+ works (optional, needs free API key) |
+| **DOI Resolver** | Validates references by resolving DOIs via doi.org |
+| **OpenAlex** | 250M+ works (online with free API key, or offline) |
+| **Open Library** | Books, technical reports, and non-academic publications |
 | **GovInfo** | US federal laws, regulations, court opinions (optional, needs free API key) |
-| **Web Search** | SearxNG fallback for unindexed papers (optional, see below) |
+| **URL Checker** | Liveness check for non-academic URLs like GitHub repos (fallback) |
+| **Web Search** | SearxNG metasearch fallback for unindexed papers (optional, see below) |
 
 ~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
 
