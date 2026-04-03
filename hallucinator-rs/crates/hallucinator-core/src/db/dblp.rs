@@ -13,13 +13,12 @@ use std::time::Duration;
 /// the same name. See <https://dblp.org/faq/1474704.html>.
 fn strip_dblp_suffix(name: &str) -> String {
     let name = name.trim();
-    if name.len() > 5 {
-        let (prefix, suffix) = name.split_at(name.len() - 5);
-        if suffix.starts_with(' ')
-            && suffix[1..].len() == 4
-            && suffix[1..].chars().all(|c| c.is_ascii_digit())
-        {
-            return prefix.to_string();
+    // Match a trailing " NNNN" (space + exactly 4 ASCII digits).
+    // Use rfind to locate the last space — avoids byte-indexing into multi-byte chars.
+    if let Some(pos) = name.rfind(' ') {
+        let suffix = &name[pos + 1..];
+        if suffix.len() == 4 && suffix.bytes().all(|b| b.is_ascii_digit()) {
+            return name[..pos].to_string();
         }
     }
     name.to_string()
@@ -192,5 +191,18 @@ mod tests {
     fn strip_suffix_handles_whitespace() {
         assert_eq!(strip_dblp_suffix("  Nuno Santos 0001  "), "Nuno Santos");
         assert_eq!(strip_dblp_suffix("  Alice  "), "Alice");
+    }
+
+    #[test]
+    fn strip_suffix_handles_non_ascii_names() {
+        // Issue #254: multi-byte UTF-8 characters caused byte-index panics
+        assert_eq!(strip_dblp_suffix("Max Mühlhäuser 0001"), "Max Mühlhäuser");
+        assert_eq!(strip_dblp_suffix("Lars Müller 0002"), "Lars Müller");
+        assert_eq!(
+            strip_dblp_suffix("Christian Eichenmüller"),
+            "Christian Eichenmüller"
+        );
+        assert_eq!(strip_dblp_suffix("José García 0003"), "José García");
+        assert_eq!(strip_dblp_suffix("Ján Ślusarczyk 0001"), "Ján Ślusarczyk");
     }
 }
