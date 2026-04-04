@@ -57,11 +57,29 @@ pub(crate) fn find_references_section_with_config(
 
     let header_re = config.section_header_re.as_ref().unwrap_or(&HEADER_RE);
 
-    // Use the LAST "References" header, not the first.
-    // Some papers have multiple "References" headers (e.g., table headers like
-    // "Table 2: References to related work") before the actual reference list.
+    // When multiple header matches exist (e.g. "Bibliography" appears as both
+    // a section heading AND as running headers on subsequent pages), pick the
+    // match whose subsequent text contains the most bracketed reference markers
+    // like [1], [2], etc. This prefers the real section heading (which captures
+    // all references) over running headers (which only capture a tail).
+    //
+    // If no match has bracketed markers, fall back to the last match (handles
+    // the case where "References" appears in table headers before the real list).
+    static BRACKET_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\n\s*\[\d+\]").unwrap());
+
     let matches: Vec<_> = header_re.find_iter(text).collect();
-    if let Some(m) = matches.last() {
+    let best = if matches.len() > 1 {
+        matches
+            .iter()
+            .max_by_key(|m| {
+                let rest = &text[m.end()..];
+                BRACKET_RE.find_iter(rest).count()
+            })
+    } else {
+        matches.last()
+    };
+    if let Some(m) = best {
         let ref_start = m.end();
         let rest = &text[ref_start..];
 
@@ -189,6 +207,16 @@ fn strip_page_headers(text: &str) -> String {
         ).unwrap()
     });
 
+    // Thesis/book running headers: "Bibliography" or "References" repeated at the
+    // top of each page, adjacent to a page number. Two orderings:
+    //   "84\nBIBLIOGRAPHY\n"  (page number before header)
+    //   "BIBLIOGRAPHY\n85\n"  (header before page number)
+    static THESIS_RUNNING_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?im)(?:\n\s*\d{1,4}\s*\n\s*(?:bibliography|references)\s*\n|\n\s*(?:bibliography|references)\s*\n\s*\d{1,4}\s*\n)"
+        ).unwrap()
+    });
+
     let mut result = USENIX_HEADER.replace_all(text, "\n").to_string();
     result = USENIX_ASSOC_ONLY.replace_all(&result, "\n").to_string();
     result = IEEE_HEADER.replace_all(&result, "\n").to_string();
@@ -196,6 +224,7 @@ fn strip_page_headers(text: &str) -> String {
     result = CCS_HEADER.replace_all(&result, "\n").to_string();
     result = ACM_CONF_HEADER.replace_all(&result, "\n").to_string();
     result = ACM_AUTHOR_HEADER.replace_all(&result, "\n").to_string();
+    result = THESIS_RUNNING_HEADER.replace_all(&result, "\n").to_string();
 
     result
 }
@@ -749,6 +778,28 @@ mod tests {
         assert!(section.contains("Some refs here."));
     }
 
+    #[test]
+    fn test_find_references_running_header_bibliography() {
+        // Simulate a thesis where "Bibliography" appears as the section heading
+        // on the first page, then "BIBLIOGRAPHY" as a running header on subsequent pages.
+        let text = concat!(
+            "Body text.\n\n",
+            "Bibliography\n\n",
+            "[1] Author A. Title one. In Conf, 2020.\n",
+            "[2] Author B. Title two. In Conf, 2021.\n",
+            "[3] Author C. Title three. In Conf, 2022.\n\n",
+            "BIBLIOGRAPHY\n\n",
+            "[4] Author D. Title four. In Conf, 2023.\n",
+            "[5] Author E. Title five. In Conf, 2024.\n\n",
+            "BIBLIOGRAPHY\n\n",
+            "[6] Author F. Title six. In Conf, 2025.\n",
+        );
+        let section = find_references_section(text).unwrap();
+        // Should capture ALL references, not just [6] from the last running header
+        assert!(section.contains("[1]"));
+        assert!(section.contains("[6]"));
+    }
+
     // ── Config-aware tests ──
 
     #[test]
@@ -972,6 +1023,38 @@ mod tests {
         );
         assert!(stripped.contains("some text before"));
         assert!(stripped.contains("some text after"));
+    }
+
+    #[test]
+    fn test_strip_page_headers_thesis_running_header() {
+        // "84\nBIBLIOGRAPHY\n" (page number before header)
+        let text = "some text before\n84\nBIBLIOGRAPHY\nsome text after\n";
+        let stripped = strip_page_headers(text);
+        assert!(
+            !stripped.contains("BIBLIOGRAPHY"),
+            "Should strip running header: {}",
+            stripped
+        );
+        assert!(stripped.contains("some text before"));
+        assert!(stripped.contains("some text after"));
+
+        // "BIBLIOGRAPHY\n85\n" (header before page number)
+        let text2 = "some text before\nBIBLIOGRAPHY\n85\nsome text after\n";
+        let stripped2 = strip_page_headers(text2);
+        assert!(
+            !stripped2.contains("BIBLIOGRAPHY"),
+            "Should strip running header: {}",
+            stripped2
+        );
+
+        // Case-insensitive "References" variant
+        let text3 = "some text before\n42\nReferences\nsome text after\n";
+        let stripped3 = strip_page_headers(text3);
+        assert!(
+            !stripped3.contains("References"),
+            "Should strip References running header: {}",
+            stripped3
+        );
     }
 
     #[test]
