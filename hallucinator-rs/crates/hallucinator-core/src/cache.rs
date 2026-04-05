@@ -772,6 +772,7 @@ fn cached_to_query_result(cached: &CachedResult) -> DbQueryResult {
             authors: authors.clone(),
             paper_url: url.clone(),
             retraction: retraction.clone(),
+            source_label: None,
         },
         CachedResult::NotFound => DbQueryResult::not_found(),
     }

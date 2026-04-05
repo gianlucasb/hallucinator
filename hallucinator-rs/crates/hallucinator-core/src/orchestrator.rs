@@ -647,6 +647,12 @@ pub(crate) fn build_database_list(
     //     databases.push(Box::new(patentsview::PatentsView::new(key.clone())));
     // }
 
+    // Standards documents (RFCs, 3GPP, IEEE, ITU-T, ISO, ETSI, etc.)
+    // No API key required; pattern-based pre-filter means zero cost for non-standards refs.
+    if should_include("Standards") {
+        databases.push(Box::new(standards::StandardsVerifier));
+    }
+
     // Open Library - books and technical reports not in academic databases
     if should_include("Open Library") {
         databases.push(Box::new(openlibrary::OpenLibrary));
@@ -673,6 +679,7 @@ mod tests {
                 "OpenAlex".into(),
                 "DOI".into(),
                 "GovInfo".into(),
+                "Standards".into(),
                 "Open Library".into(),
             ],
             ..Config::default()
@@ -693,6 +700,7 @@ mod tests {
             "Europe PMC",
             "PubMed",
             "DOI",
+            "Standards",
             "Open Library",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
