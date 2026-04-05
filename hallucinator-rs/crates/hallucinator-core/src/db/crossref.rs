@@ -148,6 +148,7 @@ impl DatabaseBackend for CrossRef {
                         authors,
                         paper_url,
                         retraction: Some(retraction),
+                        source_label: None,
                     });
                 }
             }

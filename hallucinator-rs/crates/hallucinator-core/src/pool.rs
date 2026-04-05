@@ -335,7 +335,7 @@ async fn report_result(
                 });
                 if state.verified_info.is_none() {
                     state.verified_info = Some(VerifiedInfo {
-                        source: db_name.to_string(),
+                        source: qr.source_label.clone().unwrap_or_else(|| db_name.to_string()),
                         found_authors: found_authors.clone(),
                         paper_url: paper_url.clone(),
                     });
@@ -403,7 +403,7 @@ async fn report_result(
                     && !suppress_zero_overlap
                 {
                     state.first_mismatch = Some(MismatchInfo {
-                        source: db_name.to_string(),
+                        source: qr.source_label.clone().unwrap_or_else(|| db_name.to_string()),
                         found_authors: found_authors.clone(),
                         paper_url: paper_url.clone(),
                     });
@@ -806,7 +806,7 @@ fn pre_check_remote_cache(
                     });
                     if verified_info.is_none() {
                         verified_info = Some(VerifiedInfo {
-                            source: db_name.clone(),
+                            source: qr.source_label.clone().unwrap_or_else(|| db_name.clone()),
                             found_authors: qr.authors,
                             paper_url: qr.paper_url,
                         });
@@ -855,7 +855,7 @@ fn pre_check_remote_cache(
                         && !suppress
                     {
                         first_mismatch = Some(MismatchInfo {
-                            source: db_name.clone(),
+                            source: qr.source_label.clone().unwrap_or_else(|| db_name.clone()),
                             found_authors: qr.authors,
                             paper_url: qr.paper_url,
                         });
