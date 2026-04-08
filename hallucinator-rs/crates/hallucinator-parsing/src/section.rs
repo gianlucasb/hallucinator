@@ -217,6 +217,19 @@ fn strip_page_headers(text: &str) -> String {
         ).unwrap()
     });
 
+    // ACM acmart template placeholder running header. When authors don't fill in
+    // \acmConference, the default placeholder appears at the top of every page:
+    //   "[Paper short title]
+    //    Conference'17, July 2017, Washington, DC, USA"
+    // Both lines must be stripped (the line above "Conference'YY" is the paper
+    // title running header, paired with the conference info in acmart format).
+    // Also handles real conference info with day ranges (e.g., "July 14-18, 2017").
+    static ACM_PLACEHOLDER_HEADER: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?m)\n[^\n]+\n\s*Conference\s*['\u{2018}\u{2019}]?\d{2,4},\s*\w+\s+(?:\d{1,2}(?:[-–]\d{1,2})?,\s*)?\d{4},\s*[^\n]+"
+        ).unwrap()
+    });
+
     let mut result = USENIX_HEADER.replace_all(text, "\n").to_string();
     result = USENIX_ASSOC_ONLY.replace_all(&result, "\n").to_string();
     result = IEEE_HEADER.replace_all(&result, "\n").to_string();
@@ -225,6 +238,7 @@ fn strip_page_headers(text: &str) -> String {
     result = ACM_CONF_HEADER.replace_all(&result, "\n").to_string();
     result = ACM_AUTHOR_HEADER.replace_all(&result, "\n").to_string();
     result = THESIS_RUNNING_HEADER.replace_all(&result, "\n").to_string();
+    result = ACM_PLACEHOLDER_HEADER.replace_all(&result, "\n").to_string();
 
     result
 }
@@ -1055,6 +1069,43 @@ mod tests {
             "Should strip References running header: {}",
             stripped3
         );
+    }
+
+    #[test]
+    fn test_strip_page_headers_acm_placeholder() {
+        // ACM acmart template default running header (two lines: paper title + conference info)
+        // appearing in the middle of a reference at a page break.
+        // Real-world variant uses curly apostrophe (U+2019) from PDF text extraction.
+        let text = concat!(
+            "[23] Martin Kleppmann et al. 2024. Bluesky and the\n",
+            "Blocking in the Bluesky with Diamonds\n",
+            "Conference\u{2019}17, July 2017, Washington, DC, USA\n",
+            "at protocol: Usable decentralized social media. In Workshop.\n",
+        );
+        let stripped = strip_page_headers(text);
+        assert!(
+            !stripped.contains("Conference\u{2019}17") && !stripped.contains("Conference'17"),
+            "Should strip Conference'17 placeholder: {}",
+            stripped
+        );
+        assert!(
+            !stripped.contains("Blocking in the Bluesky with Diamonds"),
+            "Should strip paper title running header above conference info: {}",
+            stripped
+        );
+        assert!(stripped.contains("Bluesky and the"));
+        assert!(stripped.contains("at protocol"));
+
+        // ASCII apostrophe variant with day range
+        let text2 = concat!(
+            "before text\n",
+            "Some Paper Title\n",
+            "Conference '24, October 14-18, 2024, Salt Lake City, UT, USA\n",
+            "after text\n",
+        );
+        let stripped2 = strip_page_headers(text2);
+        assert!(!stripped2.contains("Conference '24"));
+        assert!(!stripped2.contains("Some Paper Title"));
     }
 
     #[test]
