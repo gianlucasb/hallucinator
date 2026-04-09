@@ -65,17 +65,14 @@ pub(crate) fn find_references_section_with_config(
     //
     // If no match has bracketed markers, fall back to the last match (handles
     // the case where "References" appears in table headers before the real list).
-    static BRACKET_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\n\s*\[\d+\]").unwrap());
+    static BRACKET_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n\s*\[\d+\]").unwrap());
 
     let matches: Vec<_> = header_re.find_iter(text).collect();
     let best = if matches.len() > 1 {
-        matches
-            .iter()
-            .max_by_key(|m| {
-                let rest = &text[m.end()..];
-                BRACKET_RE.find_iter(rest).count()
-            })
+        matches.iter().max_by_key(|m| {
+            let rest = &text[m.end()..];
+            BRACKET_RE.find_iter(rest).count()
+        })
     } else {
         matches.last()
     };
@@ -94,32 +91,32 @@ pub(crate) fn find_references_section_with_config(
             // NOT followed by a colon (e.g., "Artifact Appendix: Title" in a reference).
             Regex::new(concat!(
                 r"(?i)\n\s*(?:",
-                    // Explicit "Appendix" header (not followed by colon to avoid matching reference titles)
-                    r"Appendix(?:\s+[A-Z0-9]|\s*\n|\s*$)|",
-                    // Common post-bibliography section headers
-                    r"Acknowledgments|Acknowledgements|Supplementary|",
-                    r"Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|",
-                    // Conference checklists
-                    r"(?:\w+\s+)?(?:Paper\s+)?Checklist|",
-                    // Single-letter appendix sections: "A\nTechnical Lemmas" (NeurIPS style)
-                    r"[A-Z]\n\s*(?:Appendix|Technical|Proofs?|Additional|Extended|Experimental|",
-                    r"Derivations?|Algorithms?|Detailed?|Implementation|Analysis|Benchmark|",
-                    r"Datasets?|Ablation|Hyperparameters?|Prompt|Annotation|Evaluation|",
-                    r"Training|Baseline|Reproducibility|Limitations?|Discussion|",
-                    r"Examples?|Supplementary|Survey|Questionnaire|Full|Further|",
-                    r"Post-Processing|Human|Category|Scoring|Results)|",
-                    // "A.\n\nTitle" pattern (ACM/LREC appendix with period after letter)
-                    r"[A-Z]\.\s*\n\s*(?:Prompt|Annotation|Evaluation|Training|Baseline|",
-                    r"Full|Further|Additional|Detailed?|Post-Processing|Human|Category|",
-                    r"Scoring|Results|Supplementary|Survey|Questionnaire|Examples?|",
-                    r"Reproducibility|Implementation|Limitations?|Discussion|",
-                    r"Proof|Derivation|Algorithm|Benchmark|Dataset|Ablation|",
-                    r"Hyperparameter|Extended|Experimental|Analysis|Error)|",
-                    // "A.1", "B.2" numbered appendix sub-sections on their own line
-                    r"[A-Z]\.\d+\s*\n",
+                // Explicit "Appendix" header (not followed by colon to avoid matching reference titles)
+                r"Appendix(?:\s+[A-Z0-9]|\s*\n|\s*$)|",
+                // Common post-bibliography section headers
+                r"Acknowledgments|Acknowledgements|Supplementary|",
+                r"Ethics\s+Statement|Ethical\s+Considerations|Broader\s+Impact|",
+                // Conference checklists
+                r"(?:\w+\s+)?(?:Paper\s+)?Checklist|",
+                // Single-letter appendix sections: "A\nTechnical Lemmas" (NeurIPS style)
+                r"[A-Z]\n\s*(?:Appendix|Technical|Proofs?|Additional|Extended|Experimental|",
+                r"Derivations?|Algorithms?|Detailed?|Implementation|Analysis|Benchmark|",
+                r"Datasets?|Ablation|Hyperparameters?|Prompt|Annotation|Evaluation|",
+                r"Training|Baseline|Reproducibility|Limitations?|Discussion|",
+                r"Examples?|Supplementary|Survey|Questionnaire|Full|Further|",
+                r"Post-Processing|Human|Category|Scoring|Results)|",
+                // "A.\n\nTitle" pattern (ACM/LREC appendix with period after letter)
+                r"[A-Z]\.\s*\n\s*(?:Prompt|Annotation|Evaluation|Training|Baseline|",
+                r"Full|Further|Additional|Detailed?|Post-Processing|Human|Category|",
+                r"Scoring|Results|Supplementary|Survey|Questionnaire|Examples?|",
+                r"Reproducibility|Implementation|Limitations?|Discussion|",
+                r"Proof|Derivation|Algorithm|Benchmark|Dataset|Ablation|",
+                r"Hyperparameter|Extended|Experimental|Analysis|Error)|",
+                // "A.1", "B.2" numbered appendix sub-sections on their own line
+                r"[A-Z]\.\d+\s*\n",
                 r")",
             ))
-                .unwrap()
+            .unwrap()
         });
 
         let end_re = config.section_end_re.as_ref().unwrap_or(&END_RE);

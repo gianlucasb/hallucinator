@@ -361,9 +361,8 @@ pub(crate) fn clean_title_with_config(
     }
 
     // Strip trailing edition markers: "(1st ed.)" or "(2nd edition)"
-    static TRAILING_EDITION_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\s*\(\d+(?:st|nd|rd|th)\s+(?:ed\.?|edition)\)\s*$").unwrap()
-    });
+    static TRAILING_EDITION_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\s*\(\d+(?:st|nd|rd|th)\s+(?:ed\.?|edition)\)\s*$").unwrap());
     if let Some(m) = TRAILING_EDITION_RE.find(&title) {
         title = title[..m.start()].to_string();
     }
@@ -1182,16 +1181,16 @@ fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
         Regex::new(r"\.\s*(?:19|20)\d{2}\.\s+([^.]+(?:\.[^.]+)*)\.\s*arXiv\s*:\s*\d+\.\d+").unwrap()
     });
 
-    if let Some(caps) = RE4.captures(ref_text) {
-        if let Some(title_match) = caps.get(1) {
-            let title = title_match.as_str().trim();
-            // Ensure it's a reasonable title (not just venue info)
-            if title.split_whitespace().count() >= 2
-                && !title.starts_with("In ")
-                && !title.starts_with("Proceedings")
-            {
-                return Some((title.to_string(), false));
-            }
+    if let Some(caps) = RE4.captures(ref_text)
+        && let Some(title_match) = caps.get(1)
+    {
+        let title = title_match.as_str().trim();
+        // Ensure it's a reasonable title (not just venue info)
+        if title.split_whitespace().count() >= 2
+            && !title.starts_with("In ")
+            && !title.starts_with("Proceedings")
+        {
+            return Some((title.to_string(), false));
         }
     }
 
@@ -3820,7 +3819,10 @@ mod tests {
     #[test]
     fn test_clean_title_strips_publisher() {
         assert_eq!(
-            clean_title("The Book of Why: The New Science of Cause and Effect. Basic Books", false),
+            clean_title(
+                "The Book of Why: The New Science of Cause and Effect. Basic Books",
+                false
+            ),
             "The Book of Why: The New Science of Cause and Effect"
         );
     }

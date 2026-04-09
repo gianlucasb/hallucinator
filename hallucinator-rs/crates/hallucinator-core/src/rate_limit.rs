@@ -304,6 +304,7 @@ async fn execute_query(
     db.query(title, client, timeout).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn query_with_rate_limit(
     db: &dyn DatabaseBackend,
     title: &str,

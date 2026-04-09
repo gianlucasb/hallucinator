@@ -121,11 +121,9 @@ mod tests {
     #[test]
     fn test_parse_matching_book() {
         let json = r#"{"numFound": 1, "docs": [{"title": "Social Engineering: The Science of Human Hacking", "author_name": ["Christopher Hadnagy"], "key": "/works/OL123W"}]}"#;
-        let result = parse_openlibrary_response(
-            json,
-            "Social Engineering: The Science of Human Hacking",
-        )
-        .unwrap();
+        let result =
+            parse_openlibrary_response(json, "Social Engineering: The Science of Human Hacking")
+                .unwrap();
         assert!(result.is_found());
         assert_eq!(result.authors, vec!["Christopher Hadnagy"]);
     }

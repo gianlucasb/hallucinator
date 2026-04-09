@@ -167,12 +167,9 @@ impl DatabaseBackend for Searxng {
             // Normalize smart quotes/apostrophes for better matching
             // Also remove colons which some search engines interpret as field specifiers
             let clean_title = title
-                .replace('\u{2019}', "'") // Right single quote
-                .replace('\u{2018}', "'") // Left single quote
-                .replace('\u{201C}', "\"") // Left double quote
-                .replace('\u{201D}', "\"") // Right double quote
-                .replace('\u{2013}', "-") // En-dash to hyphen
-                .replace('\u{2014}', "-") // Em-dash to hyphen
+                .replace(['\u{2019}', '\u{2018}'], "'") // Curly single quotes
+                .replace(['\u{201C}', '\u{201D}'], "\"") // Curly double quotes
+                .replace(['\u{2013}', '\u{2014}'], "-") // En/em-dash to hyphen
                 .replace(':', ""); // Remove colons (interpreted as field specifiers)
             let exact_query = format!("\"{}\"", clean_title);
 
@@ -191,12 +188,11 @@ impl DatabaseBackend for Searxng {
             if keywords.len() >= 3 {
                 let keyword_query = keywords.join(" ");
 
-                match self
+                if let Ok(Some(result)) = self
                     .search_and_match(&keyword_query, title, client, timeout)
                     .await
                 {
-                    Ok(Some(result)) => return Ok(result),
-                    Ok(None) | Err(_) => {}
+                    return Ok(result);
                 }
             }
 
@@ -208,12 +204,11 @@ impl DatabaseBackend for Searxng {
                 let rfc_num = caps.get(1).unwrap().as_str();
                 let rfc_query = format!("\"RFC {}\"", rfc_num);
 
-                match self
+                if let Ok(Some(result)) = self
                     .search_and_match(&rfc_query, title, client, timeout)
                     .await
                 {
-                    Ok(Some(result)) => return Ok(result),
-                    Ok(None) | Err(_) => {}
+                    return Ok(result);
                 }
             }
 
