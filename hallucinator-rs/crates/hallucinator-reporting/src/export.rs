@@ -779,16 +779,16 @@ fn export_text(
                     r.ref_authors.join(", ")
                 ));
             }
-            if let Status::Mismatch(kind) = &r.status {
-                if kind.contains(MismatchKind::AUTHOR) {
-                    if !r.found_authors.is_empty() {
-                        out.push_str(&format!(
-                            "       Authors (DB):  {}\n",
-                            r.found_authors.join(", ")
-                        ));
-                    } else {
-                        out.push_str("       Authors (DB):  (no authors returned)\n");
-                    }
+            if let Status::Mismatch(kind) = &r.status
+                && kind.contains(MismatchKind::AUTHOR)
+            {
+                if !r.found_authors.is_empty() {
+                    out.push_str(&format!(
+                        "       Authors (DB):  {}\n",
+                        r.found_authors.join(", ")
+                    ));
+                } else {
+                    out.push_str("       Authors (DB):  (no authors returned)\n");
                 }
             }
 
@@ -1275,24 +1275,24 @@ fn write_html_ref(out: &mut String, ref_num: usize, r: &ValidationResult, fp: Op
     }
 
     // Author comparison for mismatches
-    if let Status::Mismatch(kind) = &r.status {
-        if kind.contains(MismatchKind::AUTHOR) {
-            out.push_str("<div class=\"author-compare\">\n");
-            out.push_str(&format!(
-                "<div class=\"pdf-authors\"><strong>PDF:</strong> {}</div>\n",
-                html_escape(&r.ref_authors.join(", "))
-            ));
-            let db_authors_text = if r.found_authors.is_empty() {
-                "<em>(no authors returned)</em>".to_string()
-            } else {
-                html_escape(&r.found_authors.join(", "))
-            };
-            out.push_str(&format!(
-                "<div class=\"db-authors\"><strong>DB:</strong> {}</div>\n",
-                db_authors_text
-            ));
-            out.push_str("</div>\n");
-        }
+    if let Status::Mismatch(kind) = &r.status
+        && kind.contains(MismatchKind::AUTHOR)
+    {
+        out.push_str("<div class=\"author-compare\">\n");
+        out.push_str(&format!(
+            "<div class=\"pdf-authors\"><strong>PDF:</strong> {}</div>\n",
+            html_escape(&r.ref_authors.join(", "))
+        ));
+        let db_authors_text = if r.found_authors.is_empty() {
+            "<em>(no authors returned)</em>".to_string()
+        } else {
+            html_escape(&r.found_authors.join(", "))
+        };
+        out.push_str(&format!(
+            "<div class=\"db-authors\"><strong>DB:</strong> {}</div>\n",
+            db_authors_text
+        ));
+        out.push_str("</div>\n");
     }
 
     // DOI / arXiv

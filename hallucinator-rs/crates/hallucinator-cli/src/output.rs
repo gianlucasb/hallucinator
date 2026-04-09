@@ -306,32 +306,32 @@ fn print_mismatch_block(
     }
 
     // Show DOI mismatch details if applicable
-    if kind.contains(MismatchKind::DOI) {
-        if let Some(doi_info) = &result.doi_info {
-            if color.enabled() {
-                writeln!(w, "{} {} (invalid)", "DOI:".bold(), doi_info.doi)?;
-            } else {
-                writeln!(w, "DOI: {} (invalid)", doi_info.doi)?;
-            }
-            writeln!(w)?;
+    if kind.contains(MismatchKind::DOI)
+        && let Some(doi_info) = &result.doi_info
+    {
+        if color.enabled() {
+            writeln!(w, "{} {} (invalid)", "DOI:".bold(), doi_info.doi)?;
+        } else {
+            writeln!(w, "DOI: {} (invalid)", doi_info.doi)?;
         }
+        writeln!(w)?;
     }
 
     // Show arXiv ID mismatch details if applicable
-    if kind.contains(MismatchKind::ARXIV_ID) {
-        if let Some(arxiv_info) = &result.arxiv_info {
-            if color.enabled() {
-                writeln!(
-                    w,
-                    "{} {} (invalid)",
-                    "arXiv ID:".bold(),
-                    arxiv_info.arxiv_id
-                )?;
-            } else {
-                writeln!(w, "arXiv ID: {} (invalid)", arxiv_info.arxiv_id)?;
-            }
-            writeln!(w)?;
+    if kind.contains(MismatchKind::ARXIV_ID)
+        && let Some(arxiv_info) = &result.arxiv_info
+    {
+        if color.enabled() {
+            writeln!(
+                w,
+                "{} {} (invalid)",
+                "arXiv ID:".bold(),
+                arxiv_info.arxiv_id
+            )?;
+        } else {
+            writeln!(w, "arXiv ID: {} (invalid)", arxiv_info.arxiv_id)?;
         }
+        writeln!(w)?;
     }
 
     let dash_sep = "-".repeat(60);

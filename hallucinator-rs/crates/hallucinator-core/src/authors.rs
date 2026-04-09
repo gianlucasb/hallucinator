@@ -21,16 +21,46 @@ static NAME_SUFFIXES: Lazy<HashSet<&'static str>> =
 /// of doing normal name matching.
 static ORG_AUTHOR_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "openai", "meta", "google", "deepmind", "anthropic", "microsoft",
-        "deepseek", "deepseekai", "alibaba", "baidu", "tencent", "nvidia", "apple",
-        "darpa", "ftc", "nasa", "nist", "ieee", "acm",
-        "who", "oecd", "unesco", "european commission",
-        "mistralai", "mistral",
+        "openai",
+        "meta",
+        "google",
+        "deepmind",
+        "anthropic",
+        "microsoft",
+        "deepseek",
+        "deepseekai",
+        "alibaba",
+        "baidu",
+        "tencent",
+        "nvidia",
+        "apple",
+        "darpa",
+        "ftc",
+        "nasa",
+        "nist",
+        "ieee",
+        "acm",
+        "who",
+        "oecd",
+        "unesco",
+        "european commission",
+        "mistralai",
+        "mistral",
         // Government departments/agencies (returned by GovInfo)
-        "commerce department", "department of commerce",
-        "department of defense", "department of energy",
-        "department of homeland security", "department of justice",
-        "congress", "senate", "gao", "cisa", "fda", "epa", "fcc", "sec",
+        "commerce department",
+        "department of commerce",
+        "department of defense",
+        "department of energy",
+        "department of homeland security",
+        "department of justice",
+        "congress",
+        "senate",
+        "gao",
+        "cisa",
+        "fda",
+        "epa",
+        "fcc",
+        "sec",
     ]
     .into_iter()
     .collect()
@@ -156,10 +186,12 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
         // the DB returns all 5 authors including Gentry.
         // Threshold is 5 because ACM format typically shows up to 5 authors
         // before "et al.", and USENIX/IEEE show up to 3.
-        if ref_authors.len() < found_authors.len() && ref_authors.len() <= 5 {
-            if !ref_surnames.is_empty() && ref_surnames.is_subset(&found_surnames) {
-                return true;
-            }
+        if ref_authors.len() < found_authors.len()
+            && ref_authors.len() <= 5
+            && !ref_surnames.is_empty()
+            && ref_surnames.is_subset(&found_surnames)
+        {
+            return true;
         }
 
         false
@@ -207,10 +239,8 @@ fn strip_diacritics(s: &str) -> String {
     // Normalize curly quotes/apostrophes to ASCII before NFKD
     // (NFKD doesn't decompose U+2019 RIGHT SINGLE QUOTATION MARK)
     let s = s
-        .replace('\u{2019}', "'") // right single quote → apostrophe
-        .replace('\u{2018}', "'") // left single quote → apostrophe
-        .replace('\u{201C}', "\"") // left double quote
-        .replace('\u{201D}', "\""); // right double quote
+        .replace(['\u{2019}', '\u{2018}'], "'") // curly single quotes → apostrophe
+        .replace(['\u{201C}', '\u{201D}'], "\""); // curly double quotes → straight
     s.nfkd().filter(|c| c.is_ascii()).collect()
 }
 
@@ -430,10 +460,7 @@ mod tests {
     #[test]
     fn test_org_author_deepseek() {
         // "DeepSeek-AI" with hyphen should also match
-        assert!(validate_authors(
-            &s(&["DeepSeek-AI"]),
-            &s(&["Some Author"]),
-        ));
+        assert!(validate_authors(&s(&["DeepSeek-AI"]), &s(&["Some Author"]),));
     }
 
     #[test]
@@ -532,7 +559,9 @@ mod tests {
         // so completely different authors should NOT match
         assert!(!validate_authors(
             &s(&["X. Alpha", "Y. Beta", "Z. Gamma", "W. Delta"]),
-            &s(&["A. One", "B. Two", "C. Three", "D. Four", "E. Five", "F. Six"]),
+            &s(&[
+                "A. One", "B. Two", "C. Three", "D. Four", "E. Five", "F. Six"
+            ]),
         ));
     }
 }

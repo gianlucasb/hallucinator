@@ -9,13 +9,14 @@ pub mod europe_pmc;
 pub mod govinfo;
 pub mod neurips;
 pub mod openalex;
-pub mod openlibrary;
 pub mod openalex_offline;
+pub mod openlibrary;
 pub mod patentsview;
 pub mod pubmed;
 pub mod searxng;
 pub mod semantic_scholar;
 pub mod ssrn;
+pub mod standards;
 pub mod url_check;
 
 #[cfg(test)]
@@ -37,6 +38,9 @@ pub struct DbQueryResult {
     pub authors: Vec<String>,
     pub paper_url: Option<String>,
     pub retraction: Option<crate::retraction::RetractionResult>,
+    /// Optional override for the source label shown in results.
+    /// When set, the pool uses this instead of `db.name()` (e.g., "Standards (pattern)").
+    pub source_label: Option<String>,
 }
 
 impl DbQueryResult {
@@ -47,12 +51,35 @@ impl DbQueryResult {
             authors,
             paper_url: url,
             retraction: None,
+            source_label: None,
+        }
+    }
+
+    /// Construct a "found" result with a custom source label.
+    pub fn found_with_source(
+        title: impl Into<String>,
+        authors: Vec<String>,
+        url: Option<String>,
+        source_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            found_title: Some(title.into()),
+            authors,
+            paper_url: url,
+            retraction: None,
+            source_label: Some(source_label.into()),
         }
     }
 
     /// Construct a "not found" result.
     pub fn not_found() -> Self {
-        Self::default()
+        Self {
+            found_title: None,
+            authors: Vec::new(),
+            paper_url: None,
+            retraction: None,
+            source_label: None,
+        }
     }
 
     /// Whether this result represents a found paper.

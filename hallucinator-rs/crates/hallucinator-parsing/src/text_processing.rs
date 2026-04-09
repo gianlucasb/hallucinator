@@ -219,7 +219,7 @@ fn fix_separated_diacritics_pdf(text: &str) -> String {
         Lazy::new(|| Regex::new(r"([A-Za-z])\s+([\u{a8}\u{b4}`\u{2dc}\u{2c7}\u{b8}])").unwrap());
 
     // Step 1: Remove space between letter and following diacritic
-    let text = SPACE_BEFORE_RE.replace_all(&text, "$1$2");
+    let text = SPACE_BEFORE_RE.replace_all(text, "$1$2");
 
     // Step 2: Compose diacritic + letter
     DIACRITIC_RE

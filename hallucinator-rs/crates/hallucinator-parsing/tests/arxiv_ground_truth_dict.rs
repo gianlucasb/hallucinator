@@ -168,32 +168,30 @@ fn refs_to_titles(result: &ExtractionResult) -> Vec<String> {
 
 fn build_ground_truth(pair: &PaperPair) -> Option<GroundTruth> {
     // Prefer .bbl — it reflects exactly what's compiled into the PDF.
-    if let Some(bbl_path) = &pair.bbl_path {
-        if let Ok(content) = std::fs::read_to_string(bbl_path) {
-            if let Ok(result) = extract_references_from_bbl_str(&content) {
-                let titles = deduplicate_titles(refs_to_titles(&result));
-                if !titles.is_empty() {
-                    return Some(GroundTruth {
-                        source: "bbl",
-                        titles,
-                    });
-                }
-            }
+    if let Some(bbl_path) = &pair.bbl_path
+        && let Ok(content) = std::fs::read_to_string(bbl_path)
+        && let Ok(result) = extract_references_from_bbl_str(&content)
+    {
+        let titles = deduplicate_titles(refs_to_titles(&result));
+        if !titles.is_empty() {
+            return Some(GroundTruth {
+                source: "bbl",
+                titles,
+            });
         }
     }
 
     // Fall back to .bib (superset — may contain uncited entries).
-    if let Some(bib_path) = &pair.bib_path {
-        if let Ok(content) = std::fs::read_to_string(bib_path) {
-            if let Ok(result) = extract_references_from_bib_str(&content) {
-                let titles = deduplicate_titles(refs_to_titles(&result));
-                if !titles.is_empty() {
-                    return Some(GroundTruth {
-                        source: "bib",
-                        titles,
-                    });
-                }
-            }
+    if let Some(bib_path) = &pair.bib_path
+        && let Ok(content) = std::fs::read_to_string(bib_path)
+        && let Ok(result) = extract_references_from_bib_str(&content)
+    {
+        let titles = deduplicate_titles(refs_to_titles(&result));
+        if !titles.is_empty() {
+            return Some(GroundTruth {
+                source: "bib",
+                titles,
+            });
         }
     }
 

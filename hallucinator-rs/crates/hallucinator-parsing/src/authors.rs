@@ -42,8 +42,7 @@ pub(crate) fn extract_authors_from_reference_with_config(
 
     // Fix "word{and}" patterns where a space was lost between a name and "and"
     // e.g., "E. Dasand J. W. Burdick" → "E. Das and J. W. Burdick"
-    static MERGED_AND_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"([a-z])and ([A-Z])").unwrap());
+    static MERGED_AND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([a-z])and ([A-Z])").unwrap());
     let ref_text = MERGED_AND_RE.replace_all(ref_text, "$1 and $2");
     let ref_text = ref_text.as_ref();
 
@@ -415,7 +414,8 @@ mod tests {
     #[test]
     fn test_merged_and_fixed() {
         // "Dasand" should be split to "Das and" when followed by uppercase
-        let ref_text = r#"E. Dasand J. W. Burdick, "Robust control barrier functions," in IEEE, 2023."#;
+        let ref_text =
+            r#"E. Dasand J. W. Burdick, "Robust control barrier functions," in IEEE, 2023."#;
         let authors = extract_authors_from_reference(ref_text);
         assert!(
             authors.iter().any(|a| a.contains("Das")),

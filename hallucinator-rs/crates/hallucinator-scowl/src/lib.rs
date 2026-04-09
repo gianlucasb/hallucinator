@@ -66,6 +66,7 @@ impl ScowlDictionary {
     ///
     /// Each line should contain one word. Empty lines and lines starting
     /// with '#' are ignored.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Self {
         let words = content
             .lines()

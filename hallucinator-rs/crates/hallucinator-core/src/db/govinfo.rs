@@ -55,8 +55,10 @@ enum GovDocType {
 /// structured information for targeted querying.
 fn detect_gov_doc(title: &str) -> Option<GovDocType> {
     // NIST Special Publication: "NIST SP 800-82", "SP 800-53 Rev. 5"
-    static NIST_SP: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)(?:NIST\s+)?SP\s+(\d{3,4}[-‐]\d+[A-Za-z]?(?:\s*[Rr]ev\.?\s*\d*)?)").unwrap());
+    static NIST_SP: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)(?:NIST\s+)?SP\s+(\d{3,4}[-‐]\d+[A-Za-z]?(?:\s*[Rr]ev\.?\s*\d*)?)")
+            .unwrap()
+    });
     if let Some(m) = NIST_SP.captures(title) {
         return Some(GovDocType::NistSp(m[1].to_string()));
     }
@@ -69,8 +71,9 @@ fn detect_gov_doc(title: &str) -> Option<GovDocType> {
     }
 
     // NIST Internal/Interagency Report: "NIST IR 8214C", "NISTIR 8413"
-    static NIST_IR: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)NIST\s*(?:IR|Interagency)\s+(?:Report\s+)?(\d{4}[A-Za-z]?)").unwrap());
+    static NIST_IR: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)NIST\s*(?:IR|Interagency)\s+(?:Report\s+)?(\d{4}[A-Za-z]?)").unwrap()
+    });
     if let Some(m) = NIST_IR.captures(title) {
         return Some(GovDocType::NistIr(m[1].to_string()));
     }
@@ -113,7 +116,8 @@ fn detect_gov_doc(title: &str) -> Option<GovDocType> {
 
     // Common US law acronyms as standalone titles
     static LAW_ACRONYM: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\b(?:HIPAA|COPPA|CCPA|FERPA|ECPA|CFAA|DMCA|GLBA|FISMA|SOX|CIPA)\b").unwrap()
+        Regex::new(r"(?i)\b(?:HIPAA|COPPA|CCPA|FERPA|ECPA|CFAA|DMCA|GLBA|FISMA|SOX|CIPA)\b")
+            .unwrap()
     });
     if LAW_ACRONYM.is_match(title) {
         return Some(GovDocType::Generic(title.to_string()));
@@ -126,11 +130,39 @@ fn detect_gov_doc(title: &str) -> Option<GovDocType> {
 fn title_keywords(title: &str, max: usize) -> String {
     static STOP_WORDS: Lazy<std::collections::HashSet<&str>> = Lazy::new(|| {
         [
-            "the", "and", "for", "with", "from", "that", "this", "are", "was",
-            "not", "but", "its", "our", "into", "over", "about", "rev", "vol",
-            "report", "standard", "special", "publication", "internal", "interagency",
-            "department", "commerce", "institute", "national", "technology", "standards",
-            "online", "available", "accessed",
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "that",
+            "this",
+            "are",
+            "was",
+            "not",
+            "but",
+            "its",
+            "our",
+            "into",
+            "over",
+            "about",
+            "rev",
+            "vol",
+            "report",
+            "standard",
+            "special",
+            "publication",
+            "internal",
+            "interagency",
+            "department",
+            "commerce",
+            "institute",
+            "national",
+            "technology",
+            "standards",
+            "online",
+            "available",
+            "accessed",
         ]
         .into_iter()
         .collect()
@@ -225,8 +257,7 @@ fn gov_title_matches(
             // For NIST documents: accept if the result is from GOVPUB and authored by NIST.
             // The API search already filtered by document number, so the first NIST result
             // from a "SP 800-82" query is very likely the right document.
-            (collection == "GOVPUB" || collection == "NIST")
-                && gov_authors.contains("nist")
+            (collection == "GOVPUB" || collection == "NIST") && gov_authors.contains("nist")
         }
         GovDocType::Cfr(_) => collection == "CFR" || collection == "ECFR",
         GovDocType::Usc(_) => collection == "USCODE",
@@ -384,8 +415,14 @@ mod tests {
 
     #[test]
     fn detect_nist_sp() {
-        assert!(matches!(detect_gov_doc("NIST SP 800-82 Rev"), Some(GovDocType::NistSp(_))));
-        assert!(matches!(detect_gov_doc("SP 800-53 Rev. 5"), Some(GovDocType::NistSp(_))));
+        assert!(matches!(
+            detect_gov_doc("NIST SP 800-82 Rev"),
+            Some(GovDocType::NistSp(_))
+        ));
+        assert!(matches!(
+            detect_gov_doc("SP 800-53 Rev. 5"),
+            Some(GovDocType::NistSp(_))
+        ));
         assert!(matches!(
             detect_gov_doc("Guide to OT Security, NIST SP 800-82"),
             Some(GovDocType::NistSp(_))
@@ -394,8 +431,14 @@ mod tests {
 
     #[test]
     fn detect_nist_fips() {
-        assert!(matches!(detect_gov_doc("FIPS 198-1"), Some(GovDocType::NistFips(_))));
-        assert!(matches!(detect_gov_doc("NIST FIPS 140-3"), Some(GovDocType::NistFips(_))));
+        assert!(matches!(
+            detect_gov_doc("FIPS 198-1"),
+            Some(GovDocType::NistFips(_))
+        ));
+        assert!(matches!(
+            detect_gov_doc("NIST FIPS 140-3"),
+            Some(GovDocType::NistFips(_))
+        ));
         assert!(matches!(
             detect_gov_doc("FIPS PUB 180-4"),
             Some(GovDocType::NistFips(_))
@@ -408,7 +451,10 @@ mod tests {
             detect_gov_doc("NIST Interagency Report 8214C"),
             Some(GovDocType::NistIr(_))
         ));
-        assert!(matches!(detect_gov_doc("NIST IR 8413"), Some(GovDocType::NistIr(_))));
+        assert!(matches!(
+            detect_gov_doc("NIST IR 8413"),
+            Some(GovDocType::NistIr(_))
+        ));
     }
 
     #[test]
@@ -417,13 +463,22 @@ mod tests {
             detect_gov_doc("21 CFR Part 11: Electronic Records"),
             Some(GovDocType::Cfr(_))
         ));
-        assert!(matches!(detect_gov_doc("47 C.F.R. § 1.1307"), Some(GovDocType::Cfr(_))));
+        assert!(matches!(
+            detect_gov_doc("47 C.F.R. § 1.1307"),
+            Some(GovDocType::Cfr(_))
+        ));
     }
 
     #[test]
     fn detect_usc() {
-        assert!(matches!(detect_gov_doc("47 U.S.C. § 230"), Some(GovDocType::Usc(_))));
-        assert!(matches!(detect_gov_doc("15 USC 1681"), Some(GovDocType::Usc(_))));
+        assert!(matches!(
+            detect_gov_doc("47 U.S.C. § 230"),
+            Some(GovDocType::Usc(_))
+        ));
+        assert!(matches!(
+            detect_gov_doc("15 USC 1681"),
+            Some(GovDocType::Usc(_))
+        ));
     }
 
     #[test]
@@ -432,7 +487,10 @@ mod tests {
             detect_gov_doc("Public Law 104-191"),
             Some(GovDocType::PublicLaw(_))
         ));
-        assert!(matches!(detect_gov_doc("Pub. L. 117-263"), Some(GovDocType::PublicLaw(_))));
+        assert!(matches!(
+            detect_gov_doc("Pub. L. 117-263"),
+            Some(GovDocType::PublicLaw(_))
+        ));
     }
 
     #[test]
@@ -441,7 +499,10 @@ mod tests {
             detect_gov_doc("Executive Order 14110"),
             Some(GovDocType::ExecutiveOrder(_))
         ));
-        assert!(matches!(detect_gov_doc("E.O. 13960"), Some(GovDocType::ExecutiveOrder(_))));
+        assert!(matches!(
+            detect_gov_doc("E.O. 13960"),
+            Some(GovDocType::ExecutiveOrder(_))
+        ));
     }
 
     #[test]
@@ -503,12 +564,9 @@ mod tests {
                 "packageLink": "https://api.govinfo.gov/packages/BILLS-117hr1234"
             }]
         }"#;
-        let result = parse_govinfo_response(
-            json,
-            "Test Document Title",
-            &GovDocType::Generic("".into()),
-        )
-        .unwrap();
+        let result =
+            parse_govinfo_response(json, "Test Document Title", &GovDocType::Generic("".into()))
+                .unwrap();
         assert!(result.is_found());
         assert_eq!(result.found_title.unwrap(), "Test Document Title");
     }
@@ -526,10 +584,16 @@ mod tests {
                 "resultLink": "https://api.govinfo.gov/packages/GOVPUB-C13-abc/summary"
             }]
         }"#;
-        let result =
-            parse_govinfo_response(json, "NIST SP 800-82 Rev", &GovDocType::NistSp("800-82".into()))
-                .unwrap();
-        assert!(result.is_found(), "Should match NIST SP by collection+author");
+        let result = parse_govinfo_response(
+            json,
+            "NIST SP 800-82 Rev",
+            &GovDocType::NistSp("800-82".into()),
+        )
+        .unwrap();
+        assert!(
+            result.is_found(),
+            "Should match NIST SP by collection+author"
+        );
         assert!(result.authors.iter().any(|a| a.contains("NIST")));
     }
 
@@ -597,7 +661,10 @@ mod tests {
     #[test]
     fn gov_match_nist_sp_by_collection() {
         // NIST SP from GOVPUB collection authored by NIST should match
-        let result = mock_result("GOVPUB", "National Institute of Standards and Technology (NIST)");
+        let result = mock_result(
+            "GOVPUB",
+            "National Institute of Standards and Technology (NIST)",
+        );
         assert!(gov_title_matches(
             "NIST SP 800-82 Rev",
             "Guide to Operational Technology (OT) Security",

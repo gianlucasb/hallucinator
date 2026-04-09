@@ -445,8 +445,7 @@ fn process_query_result(
                 // For short/ambiguous titles, suppress author mismatch — a title-only
                 // match on a short title is unreliable (likely a different paper with
                 // the same common title like "Gemma", "Sentience", "Interactions").
-                let is_short_title =
-                    title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD;
+                let is_short_title = title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD;
 
                 // Also suppress mismatch when there is zero surname overlap
                 // from fuzzy-matching databases. This prevents false mismatches
@@ -647,6 +646,12 @@ pub(crate) fn build_database_list(
     //     databases.push(Box::new(patentsview::PatentsView::new(key.clone())));
     // }
 
+    // Standards documents (RFCs, 3GPP, IEEE, ITU-T, ISO, ETSI, etc.)
+    // No API key required; pattern-based pre-filter means zero cost for non-standards refs.
+    if should_include("Standards") {
+        databases.push(Box::new(standards::StandardsVerifier));
+    }
+
     // Open Library - books and technical reports not in academic databases
     if should_include("Open Library") {
         databases.push(Box::new(openlibrary::OpenLibrary));
@@ -673,6 +678,7 @@ mod tests {
                 "OpenAlex".into(),
                 "DOI".into(),
                 "GovInfo".into(),
+                "Standards".into(),
                 "Open Library".into(),
             ],
             ..Config::default()
@@ -693,6 +699,7 @@ mod tests {
             "Europe PMC",
             "PubMed",
             "DOI",
+            "Standards",
             "Open Library",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
@@ -895,7 +902,7 @@ mod tests {
 
         while let Some(result) = join_set.join_next().await {
             let (name, query_result, ref_authors, elapsed) = result.unwrap();
-            match process_query_result(
+            if let Some(verified) = process_query_result(
                 name,
                 query_result,
                 elapsed,
@@ -907,8 +914,7 @@ mod tests {
                 &mut failed_dbs,
                 &mut first_mismatch,
             ) {
-                Some(verified) => panic!("Should not verify: {:?}", verified.status),
-                None => {}
+                panic!("Should not verify: {:?}", verified.status);
             }
         }
 
@@ -938,8 +944,11 @@ mod tests {
         let rate_limiters = config.rate_limiters.clone();
 
         let title = "Secure multiparty quantum computation";
-        let ref_authors_owned: Vec<String> =
-            vec!["C. Crepeau".into(), "D. Gottesman".into(), "A. Smith".into()];
+        let ref_authors_owned: Vec<String> = vec![
+            "C. Crepeau".into(),
+            "D. Gottesman".into(),
+            "A. Smith".into(),
+        ];
         let db = mock;
         let rate_limiters_clone = rate_limiters.clone();
         let ref_authors_clone = ref_authors_owned.clone();
@@ -966,7 +975,7 @@ mod tests {
 
         while let Some(result) = join_set.join_next().await {
             let (name, query_result, ref_authors, elapsed) = result.unwrap();
-            match process_query_result(
+            if let Some(verified) = process_query_result(
                 name,
                 query_result,
                 elapsed,
@@ -978,8 +987,7 @@ mod tests {
                 &mut failed_dbs,
                 &mut first_mismatch,
             ) {
-                Some(verified) => panic!("Should not verify: {:?}", verified.status),
-                None => {}
+                panic!("Should not verify: {:?}", verified.status);
             }
         }
 

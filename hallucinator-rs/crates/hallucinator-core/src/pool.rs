@@ -335,7 +335,10 @@ async fn report_result(
                 });
                 if state.verified_info.is_none() {
                     state.verified_info = Some(VerifiedInfo {
-                        source: db_name.to_string(),
+                        source: qr
+                            .source_label
+                            .clone()
+                            .unwrap_or_else(|| db_name.to_string()),
                         found_authors: found_authors.clone(),
                         paper_url: paper_url.clone(),
                     });
@@ -371,26 +374,25 @@ async fn report_result(
                 let is_short_title = title.split_whitespace().count() < 6;
 
                 // Suppress mismatch when zero surname overlap from fuzzy DBs
-                let zero_overlap =
-                    if !ref_authors.is_empty() && !found_authors.is_empty() {
-                        let ref_surnames: std::collections::HashSet<String> = ref_authors
-                            .iter()
-                            .filter_map(|a| {
-                                let s = crate::authors::get_last_name_public(a);
-                                if s.is_empty() { None } else { Some(s) }
-                            })
-                            .collect();
-                        let found_surnames: std::collections::HashSet<String> = found_authors
-                            .iter()
-                            .filter_map(|a| {
-                                let s = crate::authors::get_last_name_public(a);
-                                if s.is_empty() { None } else { Some(s) }
-                            })
-                            .collect();
-                        ref_surnames.is_disjoint(&found_surnames)
-                    } else {
-                        false
-                    };
+                let zero_overlap = if !ref_authors.is_empty() && !found_authors.is_empty() {
+                    let ref_surnames: std::collections::HashSet<String> = ref_authors
+                        .iter()
+                        .filter_map(|a| {
+                            let s = crate::authors::get_last_name_public(a);
+                            if s.is_empty() { None } else { Some(s) }
+                        })
+                        .collect();
+                    let found_surnames: std::collections::HashSet<String> = found_authors
+                        .iter()
+                        .filter_map(|a| {
+                            let s = crate::authors::get_last_name_public(a);
+                            if s.is_empty() { None } else { Some(s) }
+                        })
+                        .collect();
+                    ref_surnames.is_disjoint(&found_surnames)
+                } else {
+                    false
+                };
                 let is_fuzzy_db = matches!(
                     db_name,
                     "CrossRef" | "Semantic Scholar" | "Europe PMC" | "PubMed"
@@ -403,7 +405,10 @@ async fn report_result(
                     && !suppress_zero_overlap
                 {
                     state.first_mismatch = Some(MismatchInfo {
-                        source: db_name.to_string(),
+                        source: qr
+                            .source_label
+                            .clone()
+                            .unwrap_or_else(|| db_name.to_string()),
                         found_authors: found_authors.clone(),
                         paper_url: paper_url.clone(),
                     });
@@ -658,15 +663,15 @@ async fn finalize_collector(collector: &RefCollector) {
     // Add DOI/arXiv mismatch flags if paper is verified but identifiers are invalid
     let status = if status == Status::Verified {
         let mut mismatch_kind = MismatchKind::empty();
-        if let Some(ref di) = doi_info {
-            if !di.valid {
-                mismatch_kind |= MismatchKind::DOI;
-            }
+        if let Some(ref di) = doi_info
+            && !di.valid
+        {
+            mismatch_kind |= MismatchKind::DOI;
         }
-        if let Some(ref ai) = arxiv_info {
-            if !ai.valid {
-                mismatch_kind |= MismatchKind::ARXIV_ID;
-            }
+        if let Some(ref ai) = arxiv_info
+            && !ai.valid
+        {
+            mismatch_kind |= MismatchKind::ARXIV_ID;
         }
         if mismatch_kind.is_empty() {
             Status::Verified
@@ -806,7 +811,7 @@ fn pre_check_remote_cache(
                     });
                     if verified_info.is_none() {
                         verified_info = Some(VerifiedInfo {
-                            source: db_name.clone(),
+                            source: qr.source_label.clone().unwrap_or_else(|| db_name.clone()),
                             found_authors: qr.authors,
                             paper_url: qr.paper_url,
                         });
@@ -822,27 +827,26 @@ fn pre_check_remote_cache(
                     });
                     // Apply short-title and zero-overlap suppression
                     let is_short_title = title.split_whitespace().count() < 6;
-                    let zero_overlap_cache =
-                        if !ref_authors.is_empty() && !qr.authors.is_empty() {
-                            let ref_surnames: std::collections::HashSet<String> = ref_authors
-                                .iter()
-                                .filter_map(|a| {
-                                    let s = crate::authors::get_last_name_public(a);
-                                    if s.is_empty() { None } else { Some(s) }
-                                })
-                                .collect();
-                            let found_surnames: std::collections::HashSet<String> = qr
-                                .authors
-                                .iter()
-                                .filter_map(|a| {
-                                    let s = crate::authors::get_last_name_public(a);
-                                    if s.is_empty() { None } else { Some(s) }
-                                })
-                                .collect();
-                            ref_surnames.is_disjoint(&found_surnames)
-                        } else {
-                            false
-                        };
+                    let zero_overlap_cache = if !ref_authors.is_empty() && !qr.authors.is_empty() {
+                        let ref_surnames: std::collections::HashSet<String> = ref_authors
+                            .iter()
+                            .filter_map(|a| {
+                                let s = crate::authors::get_last_name_public(a);
+                                if s.is_empty() { None } else { Some(s) }
+                            })
+                            .collect();
+                        let found_surnames: std::collections::HashSet<String> = qr
+                            .authors
+                            .iter()
+                            .filter_map(|a| {
+                                let s = crate::authors::get_last_name_public(a);
+                                if s.is_empty() { None } else { Some(s) }
+                            })
+                            .collect();
+                        ref_surnames.is_disjoint(&found_surnames)
+                    } else {
+                        false
+                    };
                     let is_fuzzy_db_cache = matches!(
                         db_name.as_str(),
                         "CrossRef" | "Semantic Scholar" | "Europe PMC" | "PubMed"
@@ -855,7 +859,7 @@ fn pre_check_remote_cache(
                         && !suppress
                     {
                         first_mismatch = Some(MismatchInfo {
-                            source: db_name.clone(),
+                            source: qr.source_label.clone().unwrap_or_else(|| db_name.clone()),
                             found_authors: qr.authors,
                             paper_url: qr.paper_url,
                         });
