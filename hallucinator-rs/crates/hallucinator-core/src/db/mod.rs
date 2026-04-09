@@ -9,8 +9,8 @@ pub mod europe_pmc;
 pub mod govinfo;
 pub mod neurips;
 pub mod openalex;
-pub mod openlibrary;
 pub mod openalex_offline;
+pub mod openlibrary;
 pub mod patentsview;
 pub mod pubmed;
 pub mod searxng;
@@ -73,7 +73,13 @@ impl DbQueryResult {
 
     /// Construct a "not found" result.
     pub fn not_found() -> Self {
-        Self::default()
+        Self {
+            found_title: None,
+            authors: Vec::new(),
+            paper_url: None,
+            retraction: None,
+            source_label: None,
+        }
     }
 
     /// Whether this result represents a found paper.

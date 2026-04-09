@@ -15,7 +15,6 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use super::{DatabaseBackend, DbQueryError, DbQueryResult};
-use crate::matching::titles_match;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -31,26 +30,17 @@ pub(crate) enum StandardType {
     /// IETF Internet-Draft (e.g., "draft-ietf-tls-esni-22")
     InternetDraft(String),
     /// 3GPP Technical Specification or Report (e.g., "TS 38.300", "TR 22.926")
-    ThreeGpp {
-        kind: String,
-        number: String,
-    },
+    ThreeGpp { kind: String, number: String },
     /// 3GPP working group contribution (e.g., "R1-1913017")
     ThreeGppContrib(String),
     /// IEEE Standard (e.g., "IEEE 802.11ax-2021", "IEEE 1588")
     Ieee(String),
     /// ITU-T Recommendation (e.g., "ITU-T G.711", "ITU-T X.509")
-    ItuT {
-        series: String,
-        number: String,
-    },
+    ItuT { series: String, number: String },
     /// ISO or ISO/IEC standard (e.g., "ISO 27001", "ISO/IEC 14882:2020")
     Iso(String),
     /// ETSI standard (e.g., "ETSI TS 103 645", "ETSI EN 300 328")
-    Etsi {
-        kind: String,
-        number: String,
-    },
+    Etsi { kind: String, number: String },
     /// W3C specification referenced by URL
     W3c(String),
     /// NIST Special Publication (e.g., "NIST SP 800-53")
@@ -64,12 +54,11 @@ pub(crate) enum StandardType {
 /// Returns `Some(StandardType)` with the parsed identifier if recognized.
 pub(crate) fn detect_standard(text: &str) -> Option<StandardType> {
     // IETF RFC: "RFC 8446", "RFC8446", "rfc 791"
-    static RFC_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)\bRFC\s*(\d{1,5})\b").unwrap());
-    if let Some(m) = RFC_RE.captures(text) {
-        if let Ok(num) = m[1].parse::<u32>() {
-            return Some(StandardType::Rfc(num));
-        }
+    static RFC_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bRFC\s*(\d{1,5})\b").unwrap());
+    if let Some(m) = RFC_RE.captures(text)
+        && let Ok(num) = m[1].parse::<u32>()
+    {
+        return Some(StandardType::Rfc(num));
     }
 
     // IETF Internet-Draft: "draft-ietf-tls-esni-22"
@@ -81,9 +70,8 @@ pub(crate) fn detect_standard(text: &str) -> Option<StandardType> {
 
     // 3GPP TS/TR: "3GPP TS 38.300", "TS38.300", "TR 22.926", "3GPP. TR22.926:"
     // Also matches "3GPP. TS36.321:" format from parsed references
-    static THREEGPP_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\b(?:3GPP\.?\s+)?(TS|TR)\s*(\d{2}\.\d{3})\b").unwrap()
-    });
+    static THREEGPP_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\b(?:3GPP\.?\s+)?(TS|TR)\s*(\d{2}\.\d{3})\b").unwrap());
     if let Some(m) = THREEGPP_RE.captures(text) {
         return Some(StandardType::ThreeGpp {
             kind: m[1].to_uppercase(),
@@ -104,8 +92,7 @@ pub(crate) fn detect_standard(text: &str) -> Option<StandardType> {
 
     // IEEE Standards: "IEEE 802.11", "IEEE Std 1588-2019", "IEEE 802.11ax-2021"
     static IEEE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\bIEEE\s+(?:Std\.?\s+)?(\d{3,5}(?:\.\d+[a-z]*)?(?:-\d{4})?)\b")
-            .unwrap()
+        Regex::new(r"(?i)\bIEEE\s+(?:Std\.?\s+)?(\d{3,5}(?:\.\d+[a-z]*)?(?:-\d{4})?)\b").unwrap()
     });
     if let Some(m) = IEEE_RE.captures(text) {
         return Some(StandardType::Ieee(m[1].to_string()));
@@ -157,9 +144,8 @@ pub(crate) fn detect_standard(text: &str) -> Option<StandardType> {
     }
 
     // NIST FIPS: "FIPS 140-3", "FIPS PUB 180-4"
-    static NIST_FIPS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)(?:NIST\s+)?FIPS\s+(?:PUB\s+)?(\d{2,4}[-‐]?\d*)").unwrap()
-    });
+    static NIST_FIPS_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)(?:NIST\s+)?FIPS\s+(?:PUB\s+)?(\d{2,4}[-‐]?\d*)").unwrap());
     if let Some(m) = NIST_FIPS_RE.captures(text) {
         return Some(StandardType::NistFips(m[1].to_string()));
     }
@@ -187,7 +173,7 @@ fn standard_label(st: &StandardType) -> String {
 /// Query the RFC Editor JSON API for an RFC.
 async fn query_rfc(
     number: u32,
-    title: &str,
+    _title: &str,
     client: &reqwest::Client,
     timeout: Duration,
 ) -> Result<DbQueryResult, DbQueryError> {
@@ -240,15 +226,11 @@ async fn query_rfc(
 
     let paper_url = format!("https://www.rfc-editor.org/rfc/rfc{}", number);
 
-    // Use relaxed title matching — RFC titles in citations are often abbreviated
-    // or reformatted. Since we already matched by number, a loose match suffices.
-    if titles_match(title, rfc_title) || title.len() < 10 {
-        Ok(DbQueryResult::found(rfc_title, authors, Some(paper_url)))
-    } else {
-        // Title didn't match, but the RFC number was valid — still return found
-        // with the registry title so the caller can compare authors
-        Ok(DbQueryResult::found(rfc_title, authors, Some(paper_url)))
-    }
+    // RFC matched by number — always accept if the registry returned a title.
+    // `source_label` intentionally omitted (uses default `None`) so this displays
+    // as plain "Standards" (registry-verified), unlike Tier 1 pattern matches
+    // which show "Standards (pattern)".
+    Ok(DbQueryResult::found(rfc_title, authors, Some(paper_url)))
 }
 
 /// Query the IETF Datatracker for an Internet-Draft.
@@ -295,13 +277,22 @@ async fn query_internet_draft(
         return Ok(DbQueryResult::not_found());
     }
 
+    // Extract authors from the Datatracker response (same structure as RFC editor API)
+    let authors: Vec<String> = json["authors"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let paper_url = format!("https://datatracker.ietf.org/doc/{}/", name);
 
-    Ok(DbQueryResult::found(
-        draft_title,
-        vec![],
-        Some(paper_url),
-    ))
+    // `source_label` intentionally omitted (uses default `None`) so this displays
+    // as plain "Standards" (registry-verified), unlike Tier 1 pattern matches
+    // which show "Standards (pattern)".
+    Ok(DbQueryResult::found(draft_title, authors, Some(paper_url)))
 }
 
 impl DatabaseBackend for StandardsVerifier {
@@ -502,6 +493,246 @@ mod tests {
     fn test_detect_no_match() {
         assert!(detect_standard("A Study of Network Security").is_none());
         assert!(detect_standard("Machine Learning for Beginners").is_none());
+    }
+
+    // ── Group 1: StandardsVerifier::query() end-to-end (Tier 1, no network) ──
+
+    #[tokio::test]
+    async fn test_query_tier1_ieee_returns_found_with_source() {
+        let verifier = StandardsVerifier;
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(5);
+        let result = verifier
+            .query("IEEE 802.11ax-2021", &client, timeout)
+            .await
+            .unwrap();
+        assert!(result.is_found());
+        assert_eq!(result.source_label.as_deref(), Some("Standards (pattern)"));
+        assert_eq!(result.found_title.as_deref(), Some("IEEE 802.11ax-2021"));
+        assert!(result.authors.is_empty());
+        assert!(result.paper_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_query_tier1_3gpp_returns_found_with_source() {
+        let verifier = StandardsVerifier;
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(5);
+        let result = verifier
+            .query("3GPP TS 38.300", &client, timeout)
+            .await
+            .unwrap();
+        assert!(result.is_found());
+        assert_eq!(result.source_label.as_deref(), Some("Standards (pattern)"));
+        assert_eq!(result.found_title.as_deref(), Some("3GPP TS 38.300"));
+        assert!(result.authors.is_empty());
+        assert!(result.paper_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_query_tier1_iso_returns_found_with_source() {
+        let verifier = StandardsVerifier;
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(5);
+        let result = verifier
+            .query("ISO/IEC 14882:2020", &client, timeout)
+            .await
+            .unwrap();
+        assert!(result.is_found());
+        assert_eq!(result.source_label.as_deref(), Some("Standards (pattern)"));
+        assert_eq!(result.found_title.as_deref(), Some("ISO 14882:2020"));
+        assert!(result.authors.is_empty());
+        assert!(result.paper_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_query_non_standard_returns_not_found() {
+        let verifier = StandardsVerifier;
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(5);
+        let result = verifier
+            .query("A Study of Network Security", &client, timeout)
+            .await
+            .unwrap();
+        assert!(!result.is_found());
+        assert!(result.source_label.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_query_empty_string_returns_not_found() {
+        let verifier = StandardsVerifier;
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(5);
+        let result = verifier.query("", &client, timeout).await.unwrap();
+        assert!(!result.is_found());
+    }
+
+    #[tokio::test]
+    async fn test_query_name_is_standards() {
+        let verifier = StandardsVerifier;
+        assert_eq!(verifier.name(), "Standards");
+    }
+
+    // ── Group 2: DbQueryResult constructor tests ──
+
+    #[test]
+    fn test_found_with_source_sets_all_fields() {
+        let r = DbQueryResult::found_with_source(
+            "Title",
+            vec!["Auth".into()],
+            Some("http://x".into()),
+            "Custom",
+        );
+        assert_eq!(r.found_title.as_deref(), Some("Title"));
+        assert_eq!(r.authors, vec!["Auth"]);
+        assert_eq!(r.paper_url.as_deref(), Some("http://x"));
+        assert_eq!(r.source_label.as_deref(), Some("Custom"));
+        assert!(r.retraction.is_none());
+        assert!(r.is_found());
+    }
+
+    #[test]
+    fn test_found_has_no_source_label() {
+        let r = DbQueryResult::found("T", vec![], None);
+        assert!(r.source_label.is_none());
+    }
+
+    #[test]
+    fn test_not_found_has_all_none() {
+        let r = DbQueryResult::not_found();
+        assert!(!r.is_found());
+        assert!(r.found_title.is_none());
+        assert!(r.authors.is_empty());
+        assert!(r.paper_url.is_none());
+        assert!(r.source_label.is_none());
+        assert!(r.retraction.is_none());
+    }
+
+    // ── Group 3: Pattern detection edge cases ──
+
+    #[test]
+    fn test_detect_empty_string() {
+        assert!(detect_standard("").is_none());
+    }
+
+    #[test]
+    fn test_detect_whitespace_only() {
+        assert!(detect_standard("   ").is_none());
+    }
+
+    #[test]
+    fn test_detect_rfc_in_sentence() {
+        assert_eq!(
+            detect_standard("As described in RFC 8446, the protocol..."),
+            Some(StandardType::Rfc(8446))
+        );
+    }
+
+    #[test]
+    fn test_detect_rfc_too_large() {
+        // 6 digits exceeds \d{1,5}
+        assert!(detect_standard("RFC 999999").is_none());
+    }
+
+    #[test]
+    fn test_detect_rfc_no_false_positive_on_prefix() {
+        // "RFCA" won't match \bRFC\s*\d because "A" breaks it
+        assert!(detect_standard("RFCA 8446").is_none());
+    }
+
+    #[test]
+    fn test_detect_ieee_in_sentence() {
+        match detect_standard("The IEEE 802.11 standard defines...") {
+            Some(StandardType::Ieee(num)) => assert_eq!(num, "802.11"),
+            other => panic!("Expected Ieee, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_case_insensitive_iso() {
+        assert!(detect_standard("iso 27001").is_some());
+    }
+
+    #[test]
+    fn test_detect_case_insensitive_etsi() {
+        assert!(detect_standard("etsi ts 103 645").is_some());
+    }
+
+    #[test]
+    fn test_detect_multiple_standards_returns_first() {
+        // RFC checked before IEEE, so "RFC 8446 and IEEE 802.11" returns Rfc
+        assert_eq!(
+            detect_standard("RFC 8446 and IEEE 802.11"),
+            Some(StandardType::Rfc(8446))
+        );
+    }
+
+    #[test]
+    fn test_detect_w3c_without_trailing_slash() {
+        match detect_standard("https://www.w3.org/TR/css-grid-1") {
+            Some(StandardType::W3c(name)) => assert_eq!(name, "css-grid-1"),
+            other => panic!("Expected W3c, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_fips_pub_variant() {
+        match detect_standard("FIPS PUB 180-4") {
+            Some(StandardType::NistFips(num)) => assert_eq!(num, "180-4"),
+            other => panic!("Expected NistFips, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_nist_sp_without_prefix() {
+        // NIST prefix is optional in the regex
+        assert!(detect_standard("SP 800-53").is_some());
+    }
+
+    // ── Group 4: Remaining standard_label coverage ──
+
+    #[test]
+    fn test_standard_label_all_variants() {
+        assert_eq!(
+            standard_label(&StandardType::InternetDraft(
+                "draft-ietf-tls-esni-22".into()
+            )),
+            "Internet-Draft draft-ietf-tls-esni-22"
+        );
+        assert_eq!(
+            standard_label(&StandardType::ThreeGppContrib("R1-1913017".into())),
+            "3GPP R1-1913017"
+        );
+        assert_eq!(
+            standard_label(&StandardType::ItuT {
+                series: "G".into(),
+                number: "711".into()
+            }),
+            "ITU-T G.711"
+        );
+        assert_eq!(
+            standard_label(&StandardType::Iso("27001".into())),
+            "ISO 27001"
+        );
+        assert_eq!(
+            standard_label(&StandardType::Etsi {
+                kind: "TS".into(),
+                number: "103 645".into()
+            }),
+            "ETSI TS 103 645"
+        );
+        assert_eq!(
+            standard_label(&StandardType::W3c("css-grid-1".into())),
+            "W3C css-grid-1"
+        );
+        assert_eq!(
+            standard_label(&StandardType::NistSp("800-53".into())),
+            "NIST SP 800-53"
+        );
+        assert_eq!(
+            standard_label(&StandardType::NistFips("140-3".into())),
+            "FIPS 140-3"
+        );
     }
 
     #[test]

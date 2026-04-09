@@ -445,8 +445,7 @@ fn process_query_result(
                 // For short/ambiguous titles, suppress author mismatch — a title-only
                 // match on a short title is unreliable (likely a different paper with
                 // the same common title like "Gemma", "Sentience", "Interactions").
-                let is_short_title =
-                    title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD;
+                let is_short_title = title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD;
 
                 // Also suppress mismatch when there is zero surname overlap
                 // from fuzzy-matching databases. This prevents false mismatches
@@ -903,7 +902,7 @@ mod tests {
 
         while let Some(result) = join_set.join_next().await {
             let (name, query_result, ref_authors, elapsed) = result.unwrap();
-            match process_query_result(
+            if let Some(verified) = process_query_result(
                 name,
                 query_result,
                 elapsed,
@@ -915,8 +914,7 @@ mod tests {
                 &mut failed_dbs,
                 &mut first_mismatch,
             ) {
-                Some(verified) => panic!("Should not verify: {:?}", verified.status),
-                None => {}
+                panic!("Should not verify: {:?}", verified.status);
             }
         }
 
@@ -946,8 +944,11 @@ mod tests {
         let rate_limiters = config.rate_limiters.clone();
 
         let title = "Secure multiparty quantum computation";
-        let ref_authors_owned: Vec<String> =
-            vec!["C. Crepeau".into(), "D. Gottesman".into(), "A. Smith".into()];
+        let ref_authors_owned: Vec<String> = vec![
+            "C. Crepeau".into(),
+            "D. Gottesman".into(),
+            "A. Smith".into(),
+        ];
         let db = mock;
         let rate_limiters_clone = rate_limiters.clone();
         let ref_authors_clone = ref_authors_owned.clone();
@@ -974,7 +975,7 @@ mod tests {
 
         while let Some(result) = join_set.join_next().await {
             let (name, query_result, ref_authors, elapsed) = result.unwrap();
-            match process_query_result(
+            if let Some(verified) = process_query_result(
                 name,
                 query_result,
                 elapsed,
@@ -986,8 +987,7 @@ mod tests {
                 &mut failed_dbs,
                 &mut first_mismatch,
             ) {
-                Some(verified) => panic!("Should not verify: {:?}", verified.status),
-                None => {}
+                panic!("Should not verify: {:?}", verified.status);
             }
         }
 
