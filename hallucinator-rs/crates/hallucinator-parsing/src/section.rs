@@ -235,7 +235,9 @@ fn strip_page_headers(text: &str) -> String {
     result = ACM_CONF_HEADER.replace_all(&result, "\n").to_string();
     result = ACM_AUTHOR_HEADER.replace_all(&result, "\n").to_string();
     result = THESIS_RUNNING_HEADER.replace_all(&result, "\n").to_string();
-    result = ACM_PLACEHOLDER_HEADER.replace_all(&result, "\n").to_string();
+    result = ACM_PLACEHOLDER_HEADER
+        .replace_all(&result, "\n")
+        .to_string();
 
     result
 }
