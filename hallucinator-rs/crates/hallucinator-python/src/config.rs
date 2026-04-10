@@ -102,6 +102,8 @@ impl PyValidatorConfig {
             cache_positive_ttl_secs: self.cache_positive_ttl_secs,
             cache_negative_ttl_secs: self.cache_negative_ttl_secs,
             searxng_url: self.searxng_url.clone(),
+            govinfo_key: None,
+            patentsview_key: None,
             query_cache: Some(hallucinator_core::build_query_cache(
                 self.cache_path.as_ref().map(std::path::Path::new),
                 self.cache_positive_ttl_secs,

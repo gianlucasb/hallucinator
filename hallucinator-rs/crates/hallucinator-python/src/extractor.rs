@@ -263,7 +263,6 @@ impl PyPdfExtractor {
             }
             hallucinator_parsing::extractor::ParsedRef::Skip(reason, _, _) => {
                 let reason_str = match reason {
-                    hallucinator_parsing::extractor::SkipReason::UrlOnly => "url_only",
                     hallucinator_parsing::extractor::SkipReason::ShortTitle => "short_title",
                 };
                 Ok((None, Some(reason_str.to_string())))
