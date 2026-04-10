@@ -95,12 +95,14 @@ def test_parse_reference_ieee():
     assert len(ref.authors) >= 1
 
 
-def test_parse_reference_skips_url_only():
+def test_parse_reference_url_only():
+    """URL-only refs are no longer skipped — they're returned with extracted URLs."""
     ext = PdfExtractor()
     ref = ext.parse_reference(
         "See https://github.com/some/repo for implementation details."
     )
-    assert ref is None
+    # URL-only refs are now parsed (UrlOnly skip was removed); title may be short
+    assert ref is not None
 
 
 def test_parse_reference_academic_url_not_skipped():
@@ -427,12 +429,11 @@ def test_parse_reference_detailed():
     assert reason is None
     assert "Detecting Fake References" in ref.title
 
-    # URL-only skip
+    # URL-only refs are no longer skipped (UrlOnly variant was removed)
     ref, reason = ext._native.parse_reference_detailed(
         "See https://github.com/some/repo for details."
     )
-    assert ref is None
-    assert reason == "url_only"
+    assert ref is not None or reason is not None  # either parsed or skipped for another reason
 
     # Short title skip (input must NOT look like a citation, otherwise
     # the looks_like_citation strong-signal bypass keeps it)

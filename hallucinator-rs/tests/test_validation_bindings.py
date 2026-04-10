@@ -351,6 +351,10 @@ def _disabled_config(**overrides):
         "Europe PMC",
         "PubMed",
         "OpenAlex",
+        "DOI",
+        "GovInfo",
+        "Standards",
+        "Open Library",
     ]
     for k, v in overrides.items():
         setattr(config, k, v)
