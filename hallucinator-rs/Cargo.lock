@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-acl"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-bbl"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "biblatex",
  "hallucinator-core",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "async-channel",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-dblp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1326,12 +1326,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-grobid"
+version = "0.1.2"
+dependencies = [
+ "hallucinator-core",
+ "quick-xml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "hallucinator-ingest"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flate2",
  "hallucinator-bbl",
  "hallucinator-core",
+ "hallucinator-grobid",
  "hallucinator-parsing",
  "hallucinator-pdf-mupdf",
  "hallucinator-scowl",
@@ -1344,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-openalex"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-compression",
  "flate2",
@@ -1365,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-parsing"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1385,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-pdf-mupdf"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hallucinator-core",
  "mupdf",
@@ -1393,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-reporting"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hallucinator-core",
 ]
@@ -1407,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-tui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-channel",
