@@ -1346,12 +1346,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-grobid"
+version = "0.1.2"
+dependencies = [
+ "hallucinator-core",
+ "quick-xml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "hallucinator-ingest"
 version = "0.1.2"
 dependencies = [
  "flate2",
  "hallucinator-bbl",
  "hallucinator-core",
+ "hallucinator-grobid",
  "hallucinator-parsing",
  "hallucinator-pdf-mupdf",
  "hallucinator-scowl",

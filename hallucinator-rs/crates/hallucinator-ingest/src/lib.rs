@@ -22,6 +22,8 @@ pub enum IngestError {
     Pdf(#[from] hallucinator_parsing::ParsingError),
     #[error("BBL/BIB extraction error: {0}")]
     Bbl(#[from] hallucinator_bbl::BblError),
+    #[error("GROBID XML extraction error: {0}")]
+    Grobid(#[from] hallucinator_grobid::GrobidError),
     #[cfg(not(feature = "pdf"))]
     #[error("PDF support not compiled in (enable the `pdf` feature of hallucinator-ingest)")]
     NoPdfSupport,
@@ -43,6 +45,9 @@ pub fn extract_references(path: &Path) -> Result<ExtractionResult, IngestError> 
     match ext.as_str() {
         "bbl" => hallucinator_bbl::extract_references_from_bbl(path).map_err(IngestError::Bbl),
         "bib" => hallucinator_bbl::extract_references_from_bib(path).map_err(IngestError::Bbl),
+        "xml" => {
+            hallucinator_grobid::extract_references_from_grobid(path).map_err(IngestError::Grobid)
+        }
         _ => extract_pdf(path),
     }
 }

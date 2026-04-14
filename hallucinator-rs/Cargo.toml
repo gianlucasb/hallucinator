@@ -14,6 +14,7 @@ members = [
     "crates/hallucinator-tui",
     "crates/hallucinator-reporting",
     "crates/hallucinator-scowl",
+    "crates/hallucinator-grobid",
 ]
 exclude = [
     # Python bindings are built separately via maturin; exclude from workspace
@@ -44,6 +45,7 @@ hallucinator-openalex = { path = "crates/hallucinator-openalex" }
 hallucinator-ingest = { path = "crates/hallucinator-ingest" }
 hallucinator-reporting = { path = "crates/hallucinator-reporting" }
 hallucinator-scowl = { path = "crates/hallucinator-scowl" }
+hallucinator-grobid = { path = "crates/hallucinator-grobid" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }

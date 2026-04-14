@@ -17,6 +17,7 @@ hallucinator-core.workspace = true
 hallucinator-parsing.workspace = true
 hallucinator-pdf-mupdf = { workspace = true, optional = true }
 hallucinator-bbl.workspace = true
+hallucinator-grobid.workspace = true
 hallucinator-scowl.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
