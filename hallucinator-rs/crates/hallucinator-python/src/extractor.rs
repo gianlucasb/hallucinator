@@ -28,6 +28,8 @@ use crate::types::{PyExtractionResult, PyReference};
 pub struct PyPdfExtractor {
     builder: ParsingConfigBuilder,
     cached: Option<ReferenceExtractor>,
+    footer_exclusion_ratio: Option<f64>,
+    header_exclusion_ratio: Option<f64>,
 }
 
 impl PyPdfExtractor {
@@ -57,6 +59,8 @@ impl PyPdfExtractor {
         Self {
             builder: ParsingConfigBuilder::new(),
             cached: None,
+            footer_exclusion_ratio: Some(0.05),
+            header_exclusion_ratio: Some(0.04),
         }
     }
 
@@ -157,6 +161,26 @@ impl PyPdfExtractor {
         self.invalidate();
     }
 
+    /// Set the footer exclusion height ratio (0.0–1.0).
+    ///
+    /// This excludes text in the bottom portion of each page from extraction.
+    /// For example, 0.1 excludes the bottom 10% of each page.
+    /// Default is 0.05 (5%). Set to 0.0 or None to disable footer exclusion.
+    #[setter]
+    fn set_footer_exclusion_height_ratio(&mut self, ratio: Option<f64>) {
+        self.footer_exclusion_ratio = ratio.filter(|&r| r > 0.0);
+    }
+
+    /// Set the header exclusion height ratio (0.0–1.0).
+    ///
+    /// This excludes text in the top portion of each page from extraction.
+    /// For example, 0.04 excludes the top 4% of each page.
+    /// Default is 0.04 (4%). Set to 0.0 or None to disable header exclusion.
+    #[setter]
+    fn set_header_exclusion_height_ratio(&mut self, ratio: Option<f64>) {
+        self.header_exclusion_ratio = ratio.filter(|&r| r > 0.0);
+    }
+
     // ── Extraction methods ──
 
     /// Run the full extraction pipeline on a PDF file.
@@ -207,7 +231,13 @@ impl PyPdfExtractor {
     /// Extract raw text from a PDF file (step 1).
     #[cfg(feature = "pdf")]
     fn extract_text(&mut self, path: &str) -> PyResult<String> {
-        let backend = hallucinator_pdf_mupdf::MupdfBackend;
+        let mut backend = hallucinator_pdf_mupdf::MupdfBackend::default();
+        if let Some(r) = self.footer_exclusion_ratio {
+            backend = backend.with_footer_exclusion(r as f32);
+        }
+        if let Some(r) = self.header_exclusion_ratio {
+            backend = backend.with_header_exclusion(r as f32);
+        }
         backend
             .extract_text(&PathBuf::from(path))
             .map_err(backend_error_to_py)

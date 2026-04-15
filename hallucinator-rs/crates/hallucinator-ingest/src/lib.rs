@@ -49,7 +49,7 @@ pub fn extract_references(path: &Path) -> Result<ExtractionResult, IngestError> 
 
 #[cfg(feature = "pdf")]
 fn extract_pdf(path: &Path) -> Result<ExtractionResult, IngestError> {
-    let backend = hallucinator_pdf_mupdf::MupdfBackend;
+    let backend = hallucinator_pdf_mupdf::MupdfBackend::default();
     // Use SCOWL dictionary for accurate hyphenation fixing
     let extractor =
         hallucinator_parsing::ReferenceExtractor::new().with_shared_dictionary(SCOWL_DICT.clone());
