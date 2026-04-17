@@ -58,17 +58,24 @@ impl DatabaseBackend for DblpOffline {
             .map_err(|e| DbQueryError::Other(e.to_string()))??;
 
             match result {
-                Some(qr) if !qr.record.authors.is_empty() => Ok(DbQueryResult::found(
-                    qr.record.title,
-                    qr.record
+                Some(qr) => {
+                    // Some legitimate DBLP records have no joined authors (older
+                    // handbook chapters like `books/sp/voecking2011/Blomer11`,
+                    // anonymised-organisation entries like `journals/ccr/X12`).
+                    // Previously these were dropped as "not found", which turned
+                    // real matches into potential hallucinations. Return the
+                    // match with an empty author list; the orchestrator treats
+                    // DBLP-with-no-authors as a title-only verification (see
+                    // `skip_author_check` in orchestrator.rs).
+                    let authors: Vec<String> = qr
+                        .record
                         .authors
                         .into_iter()
                         .map(|a| strip_dblp_suffix(&a))
-                        .collect(),
-                    qr.record.url,
-                )),
-                // Skip results with empty authors - let other DBs verify
-                _ => Ok(DbQueryResult::not_found()),
+                        .collect();
+                    Ok(DbQueryResult::found(qr.record.title, authors, qr.record.url))
+                }
+                None => Ok(DbQueryResult::not_found()),
             }
         })
     }
@@ -141,11 +148,11 @@ impl DatabaseBackend for DblpOnline {
                         _ => vec![],
                     };
 
-                    // Skip results with empty authors - let other DBs verify
-                    if authors.is_empty() {
-                        continue;
-                    }
-
+                    // Return DBLP matches even when authors are empty — the
+                    // orchestrator treats DBLP-with-no-authors as title-only
+                    // verification. Previously these were dropped, turning
+                    // real matches (e.g. `journals/ccr/X12` anonymised entries)
+                    // into false-negative "not found" results.
                     let authors: Vec<String> =
                         authors.into_iter().map(|a| strip_dblp_suffix(&a)).collect();
                     let paper_url = info["url"].as_str().map(String::from);

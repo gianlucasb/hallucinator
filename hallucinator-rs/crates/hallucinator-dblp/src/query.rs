@@ -30,6 +30,43 @@ use crate::{DblpError, DblpQueryResult, DblpRecord};
 /// even runs. This significantly reduces the false negative surface.
 pub const DEFAULT_THRESHOLD: f64 = 0.90;
 
+/// Strip DBLP-style annotation prefixes and suffixes that don't appear in
+/// the cited form of a title.
+///
+/// DBLP routinely stores variants like
+///   - `Extended Abstract: HotStuff-2: Optimal Two-Phase Responsive BFT.`
+///   - `Brief Announcement: Byzantine Agreement, Broadcast and State Machine Replication ...`
+///   - `LTE-advanced: next-generation wireless broadband technology [Invited Paper].`
+///   - `Another Advantage of Free Choice: Completely Asynchronous Agreement Protocols (Extended Abstract)`
+///   - `The square lattice shuffle, correction.`
+///
+/// References cite the core title without these annotations, so comparing them
+/// literally drops the rapidfuzz ratio below the 0.90 threshold. Stripping on
+/// both sides before normalisation lets real matches cross the threshold while
+/// preserving precision on truly different titles.
+pub fn strip_title_decorations(title: &str) -> String {
+    static PREFIX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)^\s*(?:extended abstract|brief announcement|invited paper|keynote(?: talk)?|tutorial|short paper|work[- ]in[- ]progress|wip|poster)\s*:\s*",
+        )
+        .unwrap()
+    });
+    static SUFFIX_BRACKET: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\s*\[(?:invited paper|extended abstract)\]\s*\.?\s*$").unwrap());
+    static SUFFIX_PAREN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\s*\((?:extended abstract|invited paper|short paper)\)\s*\.?\s*$")
+            .unwrap()
+    });
+    static SUFFIX_CORRECTION: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i),\s*correction\s*\.?\s*$").unwrap());
+
+    let s = PREFIX.replace(title, "");
+    let s = SUFFIX_BRACKET.replace(&s, "");
+    let s = SUFFIX_PAREN.replace(&s, "");
+    let s = SUFFIX_CORRECTION.replace(&s, "");
+    s.trim().trim_end_matches('.').trim().to_string()
+}
+
 /// Normalize a title for comparison: lowercase alphanumeric only.
 ///
 /// This is a simplified inline version to avoid depending on hallucinator-core.
@@ -84,19 +121,30 @@ pub fn get_query_words(title: &str) -> Vec<String> {
         Lazy::new(|| Regex::new(r"[a-zA-Z0-9]+(?:['\u{2019}\u{2018}\-][a-zA-Z0-9]+)*").unwrap());
     static STOP_WORDS: Lazy<std::collections::HashSet<&'static str>> = Lazy::new(|| {
         [
+            // 4+ char stop words (historical length-filter covered short ones).
             "the", "and", "for", "with", "from", "that", "this", "have", "are", "was", "were",
             "been", "being", "has", "had", "does", "did", "will", "would", "could", "should",
             "may", "might", "must", "shall", "can", "not", "but", "its", "our", "their", "your",
             "into", "over", "under", "about", "between", "through", "during", "before", "after",
             "above", "below", "each", "every", "both", "few", "more", "most", "other", "some",
             "such", "only", "than", "too", "very",
+            // Short (2-3 char) prepositions / articles / copulas. Needed now
+            // that short non-acronym tokens can pass the filter as a fallback
+            // when the strong-token set is sparse.
+            "is", "as", "of", "to", "in", "on", "at", "it", "or", "an", "be", "we", "by",
+            "if", "so", "up", "do", "no",
         ]
         .into_iter()
         .collect()
     });
 
-    // Collect (original_case, lowercased) pairs with position
-    let words_with_info: Vec<(String, String, usize)> = WORD_RE
+    // Collect all candidate tokens first, annotated with whether they're
+    // "strong" (length >= 4) or "weak" (short all-caps/letter-digit acronyms
+    // like DAG, LTE, L2, 3D, or residual non-stopword short tokens like the
+    // lowercase "dag" in a cited title). We always keep strong tokens; weak
+    // tokens are added only when the strong set is sparse, so common titles
+    // stay specific without losing distinctive short keywords.
+    let all_tokens: Vec<(String, String, usize, bool)> = WORD_RE
         .find_iter(&title)
         .flat_map(|m| {
             // Split hyphenated words into parts since FTS5's unicode61 tokenizer
@@ -107,9 +155,38 @@ pub fn get_query_words(title: &str) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .enumerate()
-        .map(|(i, (orig, lower))| (orig, lower, i))
-        .filter(|(_, lower, _)| lower.len() >= 4 && !STOP_WORDS.contains(lower.as_str()))
+        .filter_map(|(i, (orig, lower))| {
+            if STOP_WORDS.contains(lower.as_str()) {
+                return None;
+            }
+            let is_strong = lower.len() >= 4;
+            let is_acronym = orig.len() >= 2
+                && orig.chars().any(|c| c.is_ascii_alphabetic())
+                && orig
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+            let is_short_distinctive = lower.len() >= 2 && lower.len() < 4;
+            if is_strong || is_acronym || is_short_distinctive {
+                Some((orig, lower, i, is_strong || is_acronym))
+            } else {
+                None
+            }
+        })
         .collect();
+
+    // Prefer strong tokens. If we have < 3 strong tokens, include weak ones
+    // to give FTS5 enough signal — this catches cases like "All you need is
+    // dag" where a short, lowercase last word ("dag") carries most of the
+    // distinctiveness but the length filter would have dropped it.
+    let strong_count = all_tokens.iter().filter(|(_, _, _, s)| *s).count();
+    let words_with_info: Vec<(String, String, usize)> = if strong_count >= 3 {
+        all_tokens
+            .into_iter()
+            .filter_map(|(o, l, p, s)| if s { Some((o, l, p)) } else { None })
+            .collect()
+    } else {
+        all_tokens.into_iter().map(|(o, l, p, _)| (o, l, p)).collect()
+    };
 
     if words_with_info.len() <= 6 {
         return words_with_info
@@ -149,15 +226,26 @@ pub fn get_query_words(title: &str) -> Vec<String> {
 }
 
 /// Run an FTS5 query and return the best fuzzy match above the threshold.
+///
+/// `norm_query_stripped` is the decoration-stripped normalized form of the
+/// query title — passing it in (rather than recomputing) allows the caller
+/// to avoid re-stripping inside every row of the match loop.
 fn fts_match(
     conn: &Connection,
     fts_query: &str,
     norm_query: &str,
+    norm_query_stripped: &str,
     threshold: f64,
 ) -> Result<Option<DblpQueryResult>, DblpError> {
+    // ORDER BY rank (FTS5 BM25) surfaces the most relevant titles within the
+    // LIMIT window. Without it, common-word queries (e.g. "need" for titles
+    // like "All You Need is DAG") can drown the target in 7k+ insertion-order
+    // candidates and miss it entirely.
     let mut stmt = conn.prepare_cached(
         "SELECT p.id, p.key, p.title FROM publications p \
-         WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?1) \
+         JOIN publications_fts f ON p.id = f.rowid \
+         WHERE f.title MATCH ?1 \
+         ORDER BY f.rank \
          LIMIT 50",
     )?;
 
@@ -184,7 +272,30 @@ fn fts_match(
             continue;
         }
 
-        let score = rapidfuzz::fuzz::ratio(norm_query.chars(), norm_candidate.chars());
+        // Pairwise: raw/stripped on both sides. Stripping DBLP decoration
+        // prefixes/suffixes ("Extended Abstract:", "[Invited Paper]",
+        // ", correction.") recovers near-matches that citations omit.
+        let raw_score = rapidfuzz::fuzz::ratio(norm_query.chars(), norm_candidate.chars());
+        let score = if raw_score >= threshold {
+            raw_score
+        } else {
+            let stripped_candidate = strip_title_decorations(candidate_title);
+            let norm_stripped = normalize_title(&stripped_candidate);
+            if norm_stripped.is_empty() || norm_stripped == norm_candidate {
+                raw_score.max(rapidfuzz::fuzz::ratio(
+                    norm_query_stripped.chars(),
+                    norm_candidate.chars(),
+                ))
+            } else {
+                let a =
+                    rapidfuzz::fuzz::ratio(norm_query.chars(), norm_stripped.chars());
+                let b = rapidfuzz::fuzz::ratio(
+                    norm_query_stripped.chars(),
+                    norm_stripped.chars(),
+                );
+                raw_score.max(a).max(b)
+            }
+        };
 
         if score >= threshold
             && best_match
@@ -228,9 +339,19 @@ pub fn query_fts(
         return Ok(None);
     }
 
+    // Pre-compute the decoration-stripped normalized form once so the
+    // per-candidate loop in fts_match can compare both variants cheaply.
+    let norm_query_stripped = normalize_title(&strip_title_decorations(title));
+
     // Primary query: all words joined with AND
     let fts_query = words.join(" ");
-    let result = fts_match(conn, &fts_query, &norm_query, threshold)?;
+    let result = fts_match(
+        conn,
+        &fts_query,
+        &norm_query,
+        &norm_query_stripped,
+        threshold,
+    )?;
     if result.is_some() {
         return Ok(result);
     }
@@ -238,7 +359,13 @@ pub fn query_fts(
     // Fallback: retry with top 3 words when primary query returned nothing
     if words.len() > 3 {
         let fallback_query = words[..3].join(" ");
-        return fts_match(conn, &fallback_query, &norm_query, threshold);
+        return fts_match(
+            conn,
+            &fallback_query,
+            &norm_query,
+            &norm_query_stripped,
+            threshold,
+        );
     }
 
     Ok(None)
@@ -314,9 +441,68 @@ mod tests {
     #[test]
     fn test_get_query_words_digits() {
         let words = get_query_words("L2 Regularization for 3D Point Cloud Models");
-        // "l2" and "3d" are too short, but "point", "cloud", "models" should be present
         assert!(words.contains(&"point".to_string()));
         assert!(words.contains(&"regularization".to_string()));
+        // Short all-caps / digit-letter combinations are kept as acronyms.
+        assert!(words.contains(&"l2".to_string()));
+        assert!(words.contains(&"3d".to_string()));
+    }
+
+    #[test]
+    fn test_get_query_words_short_acronyms() {
+        // All-caps 2-3 char acronyms are kept — they're high-signal keywords
+        // that the 4+ char length filter would otherwise drop, leaving
+        // generic titles with too few query terms.
+        let words = get_query_words("All You Need is DAG");
+        assert!(
+            words.contains(&"dag".to_string()),
+            "DAG acronym must be kept: {:?}",
+            words
+        );
+
+        let words = get_query_words("LTE-advanced: next-generation wireless broadband technology");
+        assert!(
+            words.contains(&"lte".to_string()),
+            "LTE acronym must be kept: {:?}",
+            words
+        );
+
+        let words = get_query_words("SoK: Automated TTP extraction from CTI reports");
+        // "TTP" and "CTI" are all-caps; kept. "SoK" is mixed-case; not kept.
+        assert!(words.contains(&"ttp".to_string()));
+        assert!(words.contains(&"cti".to_string()));
+        assert!(!words.contains(&"sok".to_string()));
+    }
+
+    #[test]
+    fn test_get_query_words_weak_fallback_for_sparse_titles() {
+        // "All you need is dag" (lowercase) — after stop-word filtering only
+        // "need" is strong (4 chars). With the weak-token fallback, "dag"
+        // (3 chars, lowercase) is also included so FTS has enough signal.
+        // "all"/"you"/"is" are stop words.
+        let words = get_query_words("All you need is dag");
+        assert!(words.contains(&"need".to_string()));
+        assert!(
+            words.contains(&"dag".to_string()),
+            "short lowercase 'dag' must fall back in when strong tokens are sparse: {:?}",
+            words
+        );
+    }
+
+    #[test]
+    fn test_get_query_words_rejects_short_lowercase() {
+        // With three strong tokens in the title, short lowercase words (and
+        // stop words) stay filtered out; the weak-token fallback only fires
+        // when the strong set is sparse.
+        let words = get_query_words("this is a very simple title");
+        for bad in ["is", "a", "the", "this"] {
+            assert!(
+                !words.contains(&bad.to_string()),
+                "word {:?} must not appear in {:?}",
+                bad,
+                words
+            );
+        }
     }
 
     #[test]
@@ -351,5 +537,178 @@ mod tests {
         let conn = setup_db_with_data();
         let result = query_fts(&conn, "", DEFAULT_THRESHOLD).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_strip_title_decorations() {
+        // Prefixes
+        assert_eq!(
+            strip_title_decorations("Extended Abstract: HotStuff-2: Optimal Two-Phase Responsive BFT."),
+            "HotStuff-2: Optimal Two-Phase Responsive BFT"
+        );
+        assert_eq!(
+            strip_title_decorations("Brief Announcement: Byzantine Agreement"),
+            "Byzantine Agreement"
+        );
+        assert_eq!(
+            strip_title_decorations("Invited Paper: Some Talk"),
+            "Some Talk"
+        );
+        // Bracket suffixes
+        assert_eq!(
+            strip_title_decorations("LTE-advanced: next-generation wireless broadband technology [Invited Paper]."),
+            "LTE-advanced: next-generation wireless broadband technology"
+        );
+        // Paren suffix
+        assert_eq!(
+            strip_title_decorations("A Note on Efficient Zero-Knowledge Proofs and Arguments (Extended Abstract)"),
+            "A Note on Efficient Zero-Knowledge Proofs and Arguments"
+        );
+        // ", correction." suffix
+        assert_eq!(
+            strip_title_decorations("The square lattice shuffle, correction."),
+            "The square lattice shuffle"
+        );
+        // No-op on plain titles
+        assert_eq!(
+            strip_title_decorations("Attention is All You Need"),
+            "Attention is All You Need"
+        );
+        // Case-insensitive prefix match
+        assert_eq!(
+            strip_title_decorations("EXTENDED ABSTRACT: X"),
+            "X"
+        );
+    }
+
+    /// Populate a DB with a target paper plus enough noise to push it out of the
+    /// first-50 insertion-order window. Verifies that the BM25-ranked FTS query
+    /// (`ORDER BY f.rank`) still surfaces the target when a common query word
+    /// ("need") would otherwise drown it.
+    fn setup_db_with_rank_noise() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_database(&conn).unwrap();
+
+        let keidar = insert_or_get_author(&conn, "Idit Keidar").unwrap();
+        // Insert noise BEFORE the target so insertion-order LIMIT 50 would miss it.
+        for i in 0..80 {
+            insert_or_get_publication(
+                &conn,
+                &format!("noise/n{}", i),
+                &format!("We Need Something Different Number {}", i),
+            )
+            .unwrap();
+        }
+        let target = insert_or_get_publication(
+            &conn,
+            "conf/podc/KeidarKNS21",
+            "All You Need is DAG.",
+        )
+        .unwrap();
+
+        let mut batch = InsertBatch::new();
+        batch.publication_authors.push((target, keidar));
+        insert_batch(&conn, &batch).unwrap();
+        rebuild_fts_index(&conn).unwrap();
+
+        conn
+    }
+
+    #[test]
+    fn test_query_fts_rank_orders_by_bm25() {
+        // Regression test for BUG #1: without ORDER BY rank, a common query
+        // word like "need" (which now pairs with the DAG acronym thanks to
+        // BUG #2 fix) would still miss the target if insertion-order LIMIT 50
+        // preceded the rank change. With both fixes, the target must be found.
+        let conn = setup_db_with_rank_noise();
+        let result = query_fts(&conn, "All You Need is DAG", DEFAULT_THRESHOLD).unwrap();
+        assert!(result.is_some(), "BM25 ranking should surface target");
+        let result = result.unwrap();
+        assert_eq!(result.record.title, "All You Need is DAG.");
+    }
+
+    #[test]
+    fn test_query_fts_matches_despite_extended_abstract_prefix() {
+        // Regression test for BUG #4: a citation omitting "Extended Abstract:"
+        // should still match a DBLP record that carries the decoration.
+        let conn = Connection::open_in_memory().unwrap();
+        init_database(&conn).unwrap();
+        let malkhi = insert_or_get_author(&conn, "Dahlia Malkhi").unwrap();
+        let target = insert_or_get_publication(
+            &conn,
+            "journals/iacr/MalkhiN23",
+            "Extended Abstract: HotStuff-2: Optimal Two-Phase Responsive BFT.",
+        )
+        .unwrap();
+        let mut batch = InsertBatch::new();
+        batch.publication_authors.push((target, malkhi));
+        insert_batch(&conn, &batch).unwrap();
+        rebuild_fts_index(&conn).unwrap();
+
+        let result = query_fts(
+            &conn,
+            "Hotstuff-2: Optimal two-phase responsive bft",
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(
+            result.is_some(),
+            "citation without Extended Abstract prefix must still match"
+        );
+    }
+
+    #[test]
+    fn test_query_fts_returns_match_with_empty_authors() {
+        // Regression test for BUG #3: DBLP legitimately stores authorless
+        // records for handbook chapters, anonymised entries, etc. The query
+        // layer must surface them; the orchestrator's skip_author_check
+        // handles the downstream title-only verification.
+        let conn = Connection::open_in_memory().unwrap();
+        init_database(&conn).unwrap();
+        insert_or_get_publication(
+            &conn,
+            "books/sp/voecking2011/Blomer11",
+            "How to Share a Secret.",
+        )
+        .unwrap();
+        rebuild_fts_index(&conn).unwrap();
+
+        let result = query_fts(&conn, "How to share a secret", DEFAULT_THRESHOLD).unwrap();
+        assert!(
+            result.is_some(),
+            "authorless DBLP records must still be returned"
+        );
+        let qr = result.unwrap();
+        assert!(qr.record.authors.is_empty());
+        assert!(qr.score >= DEFAULT_THRESHOLD);
+    }
+
+    #[test]
+    fn test_query_fts_matches_despite_invited_paper_suffix() {
+        // Regression test for BUG #4: " [Invited Paper]" trailer.
+        let conn = Connection::open_in_memory().unwrap();
+        init_database(&conn).unwrap();
+        let ghosh = insert_or_get_author(&conn, "Amitava Ghosh").unwrap();
+        let target = insert_or_get_publication(
+            &conn,
+            "journals/wc/GhoshRMMT10",
+            "LTE-advanced: next-generation wireless broadband technology [Invited Paper].",
+        )
+        .unwrap();
+        let mut batch = InsertBatch::new();
+        batch.publication_authors.push((target, ghosh));
+        insert_batch(&conn, &batch).unwrap();
+        rebuild_fts_index(&conn).unwrap();
+
+        let result = query_fts(
+            &conn,
+            "Lte-advanced: next-generation wireless broadband technology",
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(
+            result.is_some(),
+            "citation without [Invited Paper] suffix must still match"
+        );
     }
 }

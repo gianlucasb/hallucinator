@@ -400,8 +400,14 @@ fn process_query_result(
             let paper_url = qr.paper_url.clone();
             let retraction = qr.retraction.clone();
 
-            // Web Search (SearxNG) cannot provide author data, so skip author validation for it
-            let skip_author_check = name == "Web Search" && found_authors.is_empty();
+            // Some databases legitimately return a title match with no authors:
+            //   - Web Search (SearxNG) never provides author data.
+            //   - DBLP sometimes stores authorless records for handbook chapters
+            //     and anonymised/organisational entries (e.g. `journals/ccr/X12`).
+            // In both cases we accept the title-only verification rather than
+            // forcing an AuthorMismatch that would mask a real match.
+            let skip_author_check =
+                (name == "Web Search" || name == "DBLP") && found_authors.is_empty();
             if ref_authors.is_empty()
                 || skip_author_check
                 || validate_authors(ref_authors, &found_authors)
@@ -839,6 +845,49 @@ mod tests {
         let result = query_single_mock_db(mock, &["Smith".into()]).await;
         assert_eq!(result.status, Status::Verified);
         assert_eq!(result.source.as_deref(), Some("TestDB"));
+    }
+
+    #[tokio::test]
+    async fn dblp_empty_authors_is_title_only_match() {
+        // Regression test for BUG #3: DBLP returns authorless records for
+        // some handbook chapters and anonymised entries. The orchestrator
+        // should treat those as title-only verifications rather than
+        // AuthorMismatch, which previously turned real matches into
+        // potential hallucinations.
+        let mock: Arc<dyn DatabaseBackend> = Arc::new(MockDb::new(
+            "DBLP",
+            MockResponse::Found {
+                title: "How to Share a Secret".into(),
+                authors: vec![],
+                url: Some("https://dblp.org/rec/books/sp/voecking2011/Blomer11".into()),
+            },
+        ));
+        let result =
+            query_single_mock_db(mock, &["Adi Shamir".into()]).await;
+        assert_eq!(result.status, Status::Verified);
+        assert_eq!(result.source.as_deref(), Some("DBLP"));
+        assert!(result.found_authors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_dblp_empty_authors_still_mismatches() {
+        // Counterpart: empty-authors from a non-DBLP DB other than Web Search
+        // must NOT get the free pass — that would be a false positive. The
+        // existing filter in the individual DB backends ensures they never
+        // send empty-author payloads, but this test guards the orchestrator's
+        // skip_author_check condition against accidental over-broadening.
+        let mock: Arc<dyn DatabaseBackend> = Arc::new(MockDb::new(
+            "CrossRef",
+            MockResponse::Found {
+                title: "Test Paper Title".into(),
+                authors: vec![],
+                url: None,
+            },
+        ));
+        // When found_authors is empty and ref_authors is non-empty,
+        // validate_authors returns false → AuthorMismatch path.
+        let result = query_single_mock_db(mock, &["Some Author".into()]).await;
+        assert_ne!(result.status, Status::Verified);
     }
 
     #[tokio::test]
