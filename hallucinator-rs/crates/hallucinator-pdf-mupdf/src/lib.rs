@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use mupdf::{Document, TextPageFlags};
+use mupdf::{Document, TextPage, TextPageFlags};
 
 use hallucinator_core::{BackendError, PdfBackend};
 
@@ -33,13 +33,46 @@ impl PdfBackend for MupdfBackend {
 
             // Use to_text() for proper text extraction that handles column layouts
             // This uses mupdf's internal text extraction which properly handles
-            // two-column PDFs without truncating characters at column boundaries
-            let page_text = text_page
-                .to_text()
-                .map_err(|e| BackendError::ExtractionError(e.to_string()))?;
+            // two-column PDFs without truncating characters at column boundaries.
+            //
+            // mupdf's to_text() internally calls `read_to_string` on the raw
+            // output buffer, which enforces UTF-8. Some PDFs (including two in
+            // the NDSS 2026 corpus: 2026-f29, 2026-f808) contain bytes that
+            // aren't valid UTF-8, causing the whole extraction to abort with
+            // "stream did not contain valid UTF-8". When that happens, fall
+            // back to iterating the TextPage block/line/char structure
+            // directly — invalid codepoints become `None` via
+            // `char::from_u32` and we simply skip them. This yields
+            // best-effort text for an otherwise-unusable paper.
+            let page_text = match text_page.to_text() {
+                Ok(t) => t,
+                Err(_) => extract_text_lossy(&text_page),
+            };
             pages_text.push(page_text);
         }
 
         Ok(pages_text.join("\n"))
     }
+}
+
+/// Fallback: walk the TextPage block/line/char structure and build a string
+/// while skipping bytes that don't map to a valid Unicode scalar.
+///
+/// Block and line boundaries are emitted as newlines (matching mupdf's
+/// default `to_text()` layout) so that downstream reference-section
+/// detection still sees reasonable line breaks.
+fn extract_text_lossy(text_page: &TextPage) -> String {
+    let mut out = String::new();
+    for block in text_page.blocks() {
+        for line in block.lines() {
+            for ch in line.chars() {
+                if let Some(c) = ch.char() {
+                    out.push(c);
+                }
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
 }

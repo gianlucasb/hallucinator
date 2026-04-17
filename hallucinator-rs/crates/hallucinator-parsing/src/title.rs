@@ -246,6 +246,17 @@ pub(crate) fn clean_title_with_config(
         title = title[..=qmark_pos].to_string();
     }
 
+    // BUG #5 variant: `Title?: in VENUE …` or `Title!: VENUE …`. Same
+    // venue-bleed artefact as the `.:` form handled in the cutoff table,
+    // but we want to preserve the `?` / `!`. Match `?:` or `!:` followed by
+    // an optional "in" and a capitalised venue word.
+    static QMARK_COLON_VENUE_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[?!]:\s+(?:[Ii]n\s+)?[A-Z]").unwrap());
+    if let Some(m) = QMARK_COLON_VENUE_RE.find(&title) {
+        let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
+        title = title[..=punct_pos].to_string();
+    }
+
     // Handle "? JournalName, vol(issue)" — journal name bleeding after question mark
     static QMARK_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]+,\s*(?:vol\.?\s*)?\d+")
@@ -2435,8 +2446,19 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i)\.\s*Data\s+in\s+brief.*$").unwrap(),
         Regex::new(r"(?i)\.\s*Biochemia\s+medica.*$").unwrap(),
         Regex::new(r"(?i)\.\s*KI-K\u{00FC}nstliche.*$").unwrap(),
-        // Handle ": in Venue" pattern (e.g., ".: in USENIX Security Symposium")
-        Regex::new(r"[.:]\s*:\s*[Ii]n\s+(?:USENIX|IEEE|ACM|[A-Z][a-z]+).*$").unwrap(),
+        // Handle BUG #5: IEEE-style `"Title," in VENUE, …` references that
+        // get mis-segmented as `Title.: in VENUE, …` or `Title.: VENUE, …`.
+        // The `.:` sequence before a capital letter is essentially never a
+        // legitimate title punctuation (a real title never ends one clause
+        // with `.:` and starts the next with a capitalised word). Stripping
+        // `.:` plus everything that follows recovers titles like:
+        //   "Opaque control-flow integrity.: in NDSS, vol. 26, 2015"
+        //   "Snow white: Provably secure proofs of stake.: IACR Cryptol. …"
+        //   "Sanc-tuary: Arming trustzone ….: in NDSS"
+        //
+        // The `?:` / `!:` variants are handled in `clean_title_with_config`
+        // directly (ahead of this table) so the `?` / `!` can be preserved.
+        Regex::new(r"\.:\s+(?:[Ii]n\s+)?[A-Z].*$").unwrap(),
         Regex::new(r"\s+arXiv\s+preprint.*$").unwrap(),
         Regex::new(r"\s+arXiv:\d+.*$").unwrap(),
         Regex::new(r"\s+CoRR\s+abs/.*$").unwrap(),
@@ -2490,6 +2512,43 @@ mod tests {
         let title = "My Great Paper. In Proceedings of USENIX Security";
         let cleaned = clean_title(title, false);
         assert_eq!(cleaned, "My Great Paper");
+    }
+
+    #[test]
+    fn test_clean_title_colon_in_acronym_venue() {
+        // Regression test for BUG #5: "Title.: in NDSS, vol. 5" — the ".: in"
+        // artefact is produced when IEEE-style `"Title," in NDSS` references
+        // are mis-segmented. The cleanup must work for:
+        //   - all-caps venue acronyms (NDSS, PODC, STOC, FOCS)
+        //   - without an "in" word (".: IACR Cryptol. ePrint Arch., vol. …")
+        //   - with trailing pages / year markers.
+        let cases = [
+            (
+                "Opaque control-flow integrity.: in NDSS, vol. 26, 2015",
+                "Opaque control-flow integrity",
+            ),
+            (
+                "Sanc-tuary: Arming trustzone with user-space enclaves.: in NDSS",
+                "Sanc-tuary: Arming trustzone with user-space enclaves",
+            ),
+            (
+                "Snow white: Provably secure proofs of stake.: IACR Cryptol. ePrint Arch., vol. 2017, p. 919, 2017",
+                "Snow white: Provably secure proofs of stake",
+            ),
+            (
+                "Another advantage of free choice: Completely asynchronous agreement protocols.: in PODC, pages 27–30, 1983",
+                "Another advantage of free choice: Completely asynchronous agreement protocols",
+            ),
+            // `?:` variant — preserve the question mark.
+            (
+                "Private set intersection: Are garbled circuits better than custom protocols?: in NDSS. The Internet Society",
+                "Private set intersection: Are garbled circuits better than custom protocols?",
+            ),
+        ];
+        for (input, expected) in cases {
+            let cleaned = clean_title(input, true);
+            assert_eq!(cleaned, expected, "failed on {:?}", input);
+        }
     }
 
     #[test]
