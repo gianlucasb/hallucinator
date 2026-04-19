@@ -148,6 +148,17 @@ impl DblpDatabase {
         query::query_fts(&self.conn, title, DEFAULT_THRESHOLD)
     }
 
+    /// Query for a title, using the citation's authors to break ties among
+    /// candidates with comparable title similarity. See
+    /// [`query::query_fts_with_authors`] for the scoring details.
+    pub fn query_with_authors(
+        &self,
+        title: &str,
+        ref_authors: &[String],
+    ) -> Result<Option<DblpQueryResult>, DblpError> {
+        query::query_fts_with_authors(&self.conn, title, ref_authors, DEFAULT_THRESHOLD)
+    }
+
     /// Query with a custom similarity threshold.
     pub fn query_with_threshold(
         &self,

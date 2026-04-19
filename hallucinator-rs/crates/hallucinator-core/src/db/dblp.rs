@@ -43,15 +43,28 @@ impl DatabaseBackend for DblpOffline {
     fn query<'a>(
         &'a self,
         title: &'a str,
+        client: &'a reqwest::Client,
+        timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, DbQueryError>> + Send + 'a>> {
+        // Title-only path: delegate to query_with_authors with an empty
+        // author slice so both paths share the same result-shaping code.
+        self.query_with_authors(title, &[], client, timeout)
+    }
+
+    fn query_with_authors<'a>(
+        &'a self,
+        title: &'a str,
+        ref_authors: &'a [String],
         _client: &'a reqwest::Client,
         _timeout: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, DbQueryError>> + Send + 'a>> {
         let db = Arc::clone(&self.db);
         let title = title.to_string();
+        let ref_authors = ref_authors.to_vec();
         Box::pin(async move {
             let result = tokio::task::spawn_blocking(move || {
                 let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
-                db.query(&title)
+                db.query_with_authors(&title, &ref_authors)
                     .map_err(|e| DbQueryError::Other(e.to_string()))
             })
             .await

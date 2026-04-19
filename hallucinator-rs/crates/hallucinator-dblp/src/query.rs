@@ -225,17 +225,82 @@ pub fn get_query_words(title: &str) -> Vec<String> {
     scored.into_iter().map(|(_, _, lower)| lower).collect()
 }
 
+/// Extract a lowercased surname from an author name string.
+///
+/// Minimal inline implementation — avoids a cyclic dependency on
+/// hallucinator-core. Handles two common forms:
+///   - `"Family, Given"` (AAAI style): take everything before the first comma.
+///   - `"Given Family"` (everything else): take the last whitespace-separated
+///     token.
+///
+/// Skips trailing 4-digit DBLP disambiguation suffixes (`Oded Goldreich 0001`
+/// → `goldreich`) — without this, the per-author overlap in `fts_match`
+/// reads `0001` as the surname and scores zero overlap against the
+/// citation's real names. See <https://dblp.org/faq/1474704.html>.
+///
+/// This is only used for tie-breaking between near-identical DBLP title
+/// candidates; slight imperfections in surname detection don't hurt recall
+/// because the result still needs to clear the title threshold first.
+pub(crate) fn extract_surname(name: &str) -> String {
+    let name = name.trim().trim_end_matches(',').trim();
+    if name.is_empty() {
+        return String::new();
+    }
+    if let Some((surname, _rest)) = name.split_once(',') {
+        return surname.trim().to_lowercase();
+    }
+    let tokens: Vec<&str> = name.split_whitespace().collect();
+    // Skip a trailing 4-digit DBLP suffix like " 0001".
+    let effective = if tokens.len() >= 2 {
+        let last = tokens.last().unwrap();
+        if last.len() == 4 && last.bytes().all(|b| b.is_ascii_digit()) {
+            &tokens[..tokens.len() - 1]
+        } else {
+            tokens.as_slice()
+        }
+    } else {
+        tokens.as_slice()
+    };
+    effective.last().copied().unwrap_or("").to_lowercase()
+}
+
+/// Count how many surnames appear in both author lists.
+pub(crate) fn surname_overlap(ref_authors: &[String], dblp_authors: &[String]) -> usize {
+    use std::collections::HashSet;
+    let ref_surnames: HashSet<String> = ref_authors
+        .iter()
+        .map(|n| extract_surname(n))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if ref_surnames.is_empty() {
+        return 0;
+    }
+    let dblp_surnames: HashSet<String> = dblp_authors
+        .iter()
+        .map(|n| extract_surname(n))
+        .filter(|s| !s.is_empty())
+        .collect();
+    ref_surnames.intersection(&dblp_surnames).count()
+}
+
 /// Run an FTS5 query and return the best fuzzy match above the threshold.
 ///
 /// `norm_query_stripped` is the decoration-stripped normalized form of the
 /// query title — passing it in (rather than recomputing) allows the caller
 /// to avoid re-stripping inside every row of the match loop.
+///
+/// When `ref_authors` is non-empty, candidates with comparable title scores
+/// (within 0.05 of the best) are tie-broken by surname overlap with the
+/// citation's authors. This targets common-title collisions in DBLP where
+/// many distinct papers share a name (e.g. "Making Smart Contracts Smarter"
+/// has five+ entries; "Private Information Retrieval" has several).
 fn fts_match(
     conn: &Connection,
     fts_query: &str,
     norm_query: &str,
     norm_query_stripped: &str,
     threshold: f64,
+    ref_authors: &[String],
 ) -> Result<Option<DblpQueryResult>, DblpError> {
     // ORDER BY rank (FTS5 BM25) surfaces the most relevant titles within the
     // LIMIT window. Without it, common-word queries (e.g. "need" for titles
@@ -264,7 +329,10 @@ fn fts_match(
         return Ok(None);
     }
 
-    let mut best_match: Option<(f64, i64, String, String)> = None;
+    // Collect every candidate whose title similarity clears the threshold.
+    // We can no longer early-return on first match (the old behaviour) because
+    // author-aware tie-breaking needs the full set to compare.
+    let mut passing: Vec<(f64, i64, String, String)> = Vec::new();
 
     for (id, key, candidate_title) in &candidates {
         let norm_candidate = normalize_title(candidate_title);
@@ -297,36 +365,105 @@ fn fts_match(
             }
         };
 
-        if score >= threshold
-            && best_match
-                .as_ref()
-                .is_none_or(|(best, _, _, _)| score > *best)
-        {
-            best_match = Some((score, *id, key.clone(), candidate_title.clone()));
+        if score >= threshold {
+            passing.push((score, *id, key.clone(), candidate_title.clone()));
         }
     }
 
-    match best_match {
-        Some((score, id, key, matched_title)) => {
-            let authors = db::get_authors_for_publication(conn, id)?;
-            let url = format!("https://dblp.org/rec/{}", key);
-            Ok(Some(DblpQueryResult {
-                record: DblpRecord {
-                    title: matched_title,
-                    authors,
-                    url: Some(url),
-                },
-                score,
-            }))
-        }
-        None => Ok(None),
+    if passing.is_empty() {
+        return Ok(None);
     }
+
+    // Title-only path: the caller didn't supply authors, so pick the
+    // highest-scoring candidate as before (preserves existing behaviour when
+    // no author tie-breaking context is available).
+    if ref_authors.is_empty() {
+        let best = passing
+            .into_iter()
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .expect("passing non-empty");
+        let (score, id, key, matched_title) = best;
+        let authors = db::get_authors_for_publication(conn, id)?;
+        let url = format!("https://dblp.org/rec/{}", key);
+        return Ok(Some(DblpQueryResult {
+            record: DblpRecord {
+                title: matched_title,
+                authors,
+                url: Some(url),
+            },
+            score,
+        }));
+    }
+
+    // Author-aware tie-breaking: many DBLP records share the same title
+    // ("Making Smart Contracts Smarter" has five entries, "Private
+    // Information Retrieval" has several). Among candidates whose title
+    // similarity is within TOP_TIER_WINDOW of the best, pick the one whose
+    // author surnames overlap most with the citation's authors. Ties inside
+    // the top tier fall back to the higher title similarity.
+    const TOP_TIER_WINDOW: f64 = 0.05;
+    let max_score = passing
+        .iter()
+        .map(|(s, _, _, _)| *s)
+        .fold(0.0_f64, f64::max);
+    let cutoff = max_score - TOP_TIER_WINDOW;
+
+    // For each top-tier candidate, fetch its DBLP authors and count overlap.
+    // 50 is the FTS5 LIMIT so this is bounded; in practice only a handful
+    // of candidates land in the top tier.
+    let mut scored: Vec<(f64, usize, i64, String, String, Vec<String>)> = Vec::new();
+    for (score, id, key, title) in passing {
+        if score < cutoff {
+            continue;
+        }
+        let authors = db::get_authors_for_publication(conn, id)?;
+        let overlap = surname_overlap(ref_authors, &authors);
+        scored.push((score, overlap, id, key, title, authors));
+    }
+
+    // Primary key: surname overlap (desc). Secondary: title score (desc).
+    // This biases toward the DBLP record whose authors the citation lists,
+    // while still requiring the title to be within TOP_TIER_WINDOW of the
+    // best — so an author-matched but title-dissimilar paper never beats a
+    // much better title match.
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.partial_cmp(&a.0).unwrap()));
+
+    let (score, _overlap, _id, key, matched_title, authors) = scored.into_iter().next().unwrap();
+    let url = format!("https://dblp.org/rec/{}", key);
+    Ok(Some(DblpQueryResult {
+        record: DblpRecord {
+            title: matched_title,
+            authors,
+            url: Some(url),
+        },
+        score,
+    }))
 }
 
 /// Query the FTS5 index for a title, returning the best match above the threshold.
+///
+/// Pure title-based lookup. When several DBLP records share a title, the
+/// highest-scoring one wins — this is deterministic but can pick the wrong
+/// paper for common titles. Callers that have the citation's authors should
+/// prefer [`query_fts_with_authors`].
 pub fn query_fts(
     conn: &Connection,
     title: &str,
+    threshold: f64,
+) -> Result<Option<DblpQueryResult>, DblpError> {
+    query_fts_with_authors(conn, title, &[], threshold)
+}
+
+/// Author-aware variant of [`query_fts`].
+///
+/// When `ref_authors` is non-empty, candidates within `TOP_TIER_WINDOW` of
+/// the best title score are re-ranked by surname overlap with the citation's
+/// authors. This targets common-title collisions where many distinct DBLP
+/// entries carry the same name (e.g. "Making Smart Contracts Smarter").
+pub fn query_fts_with_authors(
+    conn: &Connection,
+    title: &str,
+    ref_authors: &[String],
     threshold: f64,
 ) -> Result<Option<DblpQueryResult>, DblpError> {
     let words = get_query_words(title);
@@ -351,6 +488,7 @@ pub fn query_fts(
         &norm_query,
         &norm_query_stripped,
         threshold,
+        ref_authors,
     )?;
     if result.is_some() {
         return Ok(result);
@@ -365,6 +503,7 @@ pub fn query_fts(
             &norm_query,
             &norm_query_stripped,
             threshold,
+            ref_authors,
         );
     }
 
@@ -709,6 +848,218 @@ mod tests {
         assert!(
             result.is_some(),
             "citation without [Invited Paper] suffix must still match"
+        );
+    }
+
+    #[test]
+    fn test_extract_surname() {
+        assert_eq!(extract_surname("David Mazières"), "mazières");
+        assert_eq!(extract_surname("Idit Keidar"), "keidar");
+        // "Family, Given" form
+        assert_eq!(extract_surname("Goldreich, Oded"), "goldreich");
+        // Trailing comma (citation list artefact)
+        assert_eq!(extract_surname("Shamir,"), "shamir");
+        // Empty and whitespace
+        assert_eq!(extract_surname(""), "");
+        assert_eq!(extract_surname("   "), "");
+        // Single-token (surname-only) names
+        assert_eq!(extract_surname("Madonna"), "madonna");
+        // DBLP 4-digit disambiguation suffix is skipped — otherwise the
+        // overlap loop would see "0001" as the surname and drop to zero
+        // overlap against the citation.
+        assert_eq!(extract_surname("Oded Goldreich 0001"), "goldreich");
+        assert_eq!(extract_surname("Wei Wang 0042"), "wang");
+        // 3- or 5-digit trailers are NOT DBLP suffixes — leave alone.
+        assert_eq!(extract_surname("Paper 123"), "123");
+        assert_eq!(extract_surname("Paper 12345"), "12345");
+        // Single-token (just a suffix) — keep as-is.
+        assert_eq!(extract_surname("0001"), "0001");
+    }
+
+    #[test]
+    fn test_surname_overlap() {
+        let ref_a = vec!["Loi Luu".into(), "Duc-Hiep Chu".into(), "Aquinas Hobor".into()];
+        let correct = vec!["Loi Luu".into(), "Duc-Hiep Chu".into(), "Aquinas Hobor".into()];
+        let wrong = vec!["Ram Dantu".into(), "Mark Thompson".into()];
+        assert_eq!(surname_overlap(&ref_a, &correct), 3);
+        assert_eq!(surname_overlap(&ref_a, &wrong), 0);
+        // Empty inputs
+        assert_eq!(surname_overlap(&[], &correct), 0);
+        assert_eq!(surname_overlap(&ref_a, &[]), 0);
+    }
+
+    /// Build a DB where one title is shared by two distinct DBLP records
+    /// (the common-title-collision pattern on USENIX 2025: "Making Smart
+    /// Contracts Smarter" has five+ DBLP entries). Verify that supplying
+    /// the citation's authors picks the correct entry.
+    fn setup_db_with_shared_title() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_database(&conn).unwrap();
+
+        // Paper A: the cited one (Luu/Chu/Olickel/Saxena/Hobor, CCS 2016)
+        let a_id = insert_or_get_publication(
+            &conn,
+            "conf/ccs/LuuCOSH16",
+            "Making Smart Contracts Smarter.",
+        )
+        .unwrap();
+        let luu = insert_or_get_author(&conn, "Loi Luu").unwrap();
+        let chu = insert_or_get_author(&conn, "Duc-Hiep Chu").unwrap();
+        let olickel = insert_or_get_author(&conn, "Hrishi Olickel").unwrap();
+        let saxena = insert_or_get_author(&conn, "Prateek Saxena").unwrap();
+        let hobor = insert_or_get_author(&conn, "Aquinas Hobor").unwrap();
+
+        // Paper B: a different paper with the exact same title (conf/icbc2
+        // 2021 — Badruddoja et al.). Inserted FIRST to ensure insertion-order
+        // wouldn't naturally favour paper A.
+        let b_id = insert_or_get_publication(
+            &conn,
+            "conf/icbc2/BadruddojaDHUT21",
+            "Making Smart Contracts Smarter.",
+        )
+        .unwrap();
+        let badruddoja = insert_or_get_author(&conn, "Syed Badruddoja").unwrap();
+        let dantu = insert_or_get_author(&conn, "Ram Dantu").unwrap();
+        let he = insert_or_get_author(&conn, "Yanyan He").unwrap();
+
+        let mut batch = InsertBatch::new();
+        for aid in [luu, chu, olickel, saxena, hobor] {
+            batch.publication_authors.push((a_id, aid));
+        }
+        for aid in [badruddoja, dantu, he] {
+            batch.publication_authors.push((b_id, aid));
+        }
+        insert_batch(&conn, &batch).unwrap();
+        rebuild_fts_index(&conn).unwrap();
+
+        conn
+    }
+
+    #[test]
+    fn test_common_title_without_authors_is_deterministic() {
+        // Without authors we can only tie-break on title score; both
+        // records share an identical title, so whichever wins must be
+        // stable across invocations.
+        let conn = setup_db_with_shared_title();
+        let result =
+            query_fts(&conn, "Making smart contracts smarter", DEFAULT_THRESHOLD)
+                .unwrap()
+                .expect("title match exists");
+        // Two entries share the exact same title — the returned URL must
+        // be one of them, and the call must not panic or return None.
+        let url = result.record.url.unwrap();
+        assert!(
+            url.contains("/LuuCOSH16") || url.contains("/BadruddojaDHUT21"),
+            "unexpected match: {}",
+            url
+        );
+    }
+
+    #[test]
+    fn test_common_title_with_authors_picks_correct_paper() {
+        // Regression test for the USENIX 2025 pattern: when multiple DBLP
+        // records share a title, the citation's authors break the tie.
+        let conn = setup_db_with_shared_title();
+        let ref_authors = vec![
+            "Loi Luu".to_string(),
+            "Duc-Hiep Chu".to_string(),
+            "Hrishi Olickel".to_string(),
+            "Prateek Saxena".to_string(),
+            "Aquinas Hobor".to_string(),
+        ];
+        let result = query_fts_with_authors(
+            &conn,
+            "Making smart contracts smarter",
+            &ref_authors,
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap()
+        .expect("title match exists");
+        assert!(
+            result.record.url.as_deref().unwrap().contains("/LuuCOSH16"),
+            "expected Luu/CCS'16 entry, got {:?}",
+            result.record.url
+        );
+        // Author list should be the correct one
+        assert!(result.record.authors.iter().any(|a| a.contains("Luu")));
+    }
+
+    #[test]
+    fn test_common_title_picks_other_paper_when_authors_match_it() {
+        // Dual of the previous test: with the OTHER paper's authors we
+        // should pick the OTHER DBLP entry. This guards against a
+        // hard-coded preference for one record.
+        let conn = setup_db_with_shared_title();
+        let ref_authors = vec![
+            "Syed Badruddoja".to_string(),
+            "Ram Dantu".to_string(),
+            "Yanyan He".to_string(),
+        ];
+        let result = query_fts_with_authors(
+            &conn,
+            "Making smart contracts smarter",
+            &ref_authors,
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap()
+        .expect("title match exists");
+        assert!(
+            result.record.url.as_deref().unwrap().contains("/BadruddojaDHUT21"),
+            "expected Badruddoja entry, got {:?}",
+            result.record.url
+        );
+    }
+
+    #[test]
+    fn test_author_tiebreak_respects_title_window() {
+        // If a candidate has zero author overlap but a MUCH higher title
+        // score, it should still win over a candidate with matching authors
+        // but much lower title similarity. This guards against over-biasing
+        // toward author match at the cost of picking the wrong paper.
+        let conn = Connection::open_in_memory().unwrap();
+        init_database(&conn).unwrap();
+
+        // Target: perfect title match, no author overlap with citation.
+        let target = insert_or_get_publication(
+            &conn,
+            "conf/correct/X99",
+            "The Exact Target Title",
+        )
+        .unwrap();
+        let stranger = insert_or_get_author(&conn, "Stranger Author").unwrap();
+
+        // Decoy: partial title match with the citation's author.
+        let decoy = insert_or_get_publication(
+            &conn,
+            "conf/decoy/Y99",
+            "The Target Title Mostly But Not Really",
+        )
+        .unwrap();
+        let friend = insert_or_get_author(&conn, "Jane Friend").unwrap();
+
+        let mut batch = InsertBatch::new();
+        batch.publication_authors.push((target, stranger));
+        batch.publication_authors.push((decoy, friend));
+        insert_batch(&conn, &batch).unwrap();
+        rebuild_fts_index(&conn).unwrap();
+
+        // Citation cites Jane Friend but has the exact target title.
+        // The decoy has Jane Friend (overlap=1) but a substantially
+        // different title; it should NOT be picked because its title
+        // score is outside the TOP_TIER_WINDOW (0.05) of the exact match.
+        let ref_authors = vec!["Jane Friend".to_string()];
+        let result = query_fts_with_authors(
+            &conn,
+            "The Exact Target Title",
+            &ref_authors,
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap()
+        .expect("expected a match");
+        assert!(
+            result.record.url.as_deref().unwrap().contains("/X99"),
+            "author-tie-break should not override a much higher title score, got {:?}",
+            result.record.url
         );
     }
 }
