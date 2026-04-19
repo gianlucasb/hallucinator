@@ -252,10 +252,15 @@ async fn drainer_loop(
                 authors: &collector.reference.authors,
             });
 
-        // Query (includes cache check + governor acquire + HTTP call)
+        // Query (includes cache check + governor acquire + HTTP call).
+        // `collector.reference.authors` is forwarded for the title-based
+        // fallback so DBLP (and other backends that override
+        // `query_with_authors`) can break ties among records that share
+        // a title.
         let rl_result = rate_limit::query_with_rate_limit(
             db.as_ref(),
             &collector.title,
+            &collector.reference.authors,
             &client,
             timeout,
             &rate_limiters,

@@ -105,9 +105,12 @@ pub async fn query_local_databases(
 
     for db in &local_dbs {
         let name = db.name().to_string();
-        let rl_result = rate_limit::query_with_retry(
+        // Forward ref_authors so DBLP's author-aware tie-breaking can pick
+        // the right record when several DBLP entries share a title.
+        let rl_result = rate_limit::query_with_retry_with_authors(
             db.as_ref(),
             title,
+            ref_authors,
             client,
             timeout,
             &rate_limiters,
@@ -284,9 +287,10 @@ pub async fn query_remote_databases(
 
         join_set.spawn(async move {
             let name = db.name().to_string();
-            let rl_result = rate_limit::query_with_retry(
+            let rl_result = rate_limit::query_with_retry_with_authors(
                 db.as_ref(),
                 &title,
+                &ref_authors,
                 &client,
                 timeout,
                 &rate_limiters,

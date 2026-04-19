@@ -274,9 +274,16 @@ pub struct ArxivIdContext<'a> {
 /// Execute the appropriate query for a backend, trying specialized lookups first.
 ///
 /// Priority: arXiv ID lookup → DOI lookup → title-based search
+///
+/// `ref_authors` is forwarded to `query_with_authors` on the title-based
+/// fallback so backends like DBLP can break ties between records that share
+/// a title (e.g. "Making Smart Contracts Smarter"). When the caller has no
+/// authors to offer, pass an empty slice — default trait impl falls back to
+/// the author-blind `query`.
 async fn execute_query(
     db: &dyn DatabaseBackend,
     title: &str,
+    ref_authors: &[String],
     client: &reqwest::Client,
     timeout: Duration,
     doi_context: Option<&DoiContext<'_>>,
@@ -301,13 +308,15 @@ async fn execute_query(
     }
 
     // Fall back to title-based search
-    db.query(title, client, timeout).await
+    db.query_with_authors(title, ref_authors, client, timeout)
+        .await
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn query_with_rate_limit(
     db: &dyn DatabaseBackend,
     title: &str,
+    ref_authors: &[String],
     client: &reqwest::Client,
     timeout: Duration,
     rate_limiters: &RateLimiters,
@@ -345,37 +354,55 @@ pub async fn query_with_rate_limit(
     tracing::debug!(db = db.name(), title, "query start");
     let start = Instant::now();
 
-    let result =
-        match execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await {
-            Ok(result) => Ok(result),
-            Err(DbQueryError::RateLimited { retry_after }) => {
-                // Adapt governor to slower rate so subsequent requests are throttled
-                if let Some(lim) = limiter {
-                    lim.on_rate_limited();
-                }
-
-                // Honor Retry-After: sleep then retry once instead of bailing.
-                // Cap at the DB timeout — sleeping longer than that makes no sense.
-                // The governor adaptation prevents cascading 429s for future requests.
-                let wait = retry_after.unwrap_or(Duration::from_secs(2));
-                let wait = wait.min(timeout);
-                tracing::info!(
-                    db = db.name(),
-                    wait_secs = wait.as_secs_f64(),
-                    "429 rate limited, retrying"
-                );
-                tokio::time::sleep(wait).await;
-
-                // Re-acquire governor token after sleeping
-                if let Some(lim) = limiter {
-                    lim.acquire().await;
-                }
-
-                // Single retry — if still 429, give up
-                execute_query(db, title, client, timeout, doi_context, arxiv_id_context).await
+    let result = match execute_query(
+        db,
+        title,
+        ref_authors,
+        client,
+        timeout,
+        doi_context,
+        arxiv_id_context,
+    )
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(DbQueryError::RateLimited { retry_after }) => {
+            // Adapt governor to slower rate so subsequent requests are throttled
+            if let Some(lim) = limiter {
+                lim.on_rate_limited();
             }
-            Err(other) => Err(other),
-        };
+
+            // Honor Retry-After: sleep then retry once instead of bailing.
+            // Cap at the DB timeout — sleeping longer than that makes no sense.
+            // The governor adaptation prevents cascading 429s for future requests.
+            let wait = retry_after.unwrap_or(Duration::from_secs(2));
+            let wait = wait.min(timeout);
+            tracing::info!(
+                db = db.name(),
+                wait_secs = wait.as_secs_f64(),
+                "429 rate limited, retrying"
+            );
+            tokio::time::sleep(wait).await;
+
+            // Re-acquire governor token after sleeping
+            if let Some(lim) = limiter {
+                lim.acquire().await;
+            }
+
+            // Single retry — if still 429, give up
+            execute_query(
+                db,
+                title,
+                ref_authors,
+                client,
+                timeout,
+                doi_context,
+                arxiv_id_context,
+            )
+            .await
+        }
+        Err(other) => Err(other),
+    };
 
     // Cache successful results (found or not-found); never cache errors.
     // Skip cache for local/offline backends.
@@ -401,7 +428,10 @@ pub async fn query_with_rate_limit(
 /// Legacy wrapper: calls [`query_with_rate_limit`] (ignores `max_retries`).
 ///
 /// Kept for API compatibility; inline retry has been replaced by
-/// the pool-level retry queue.
+/// the pool-level retry queue. Does not supply ref_authors — callers that
+/// want author-aware tie-breaking (notably DBLP candidate selection) should
+/// use [`query_with_retry_with_authors`] or [`query_with_rate_limit`]
+/// directly.
 pub async fn query_with_retry(
     db: &dyn DatabaseBackend,
     title: &str,
@@ -411,7 +441,45 @@ pub async fn query_with_retry(
     _max_retries: u32,
     cache: Option<&QueryCache>,
 ) -> RateLimitedResult {
-    query_with_rate_limit(db, title, client, timeout, rate_limiters, cache, None, None).await
+    query_with_retry_with_authors(
+        db,
+        title,
+        &[],
+        client,
+        timeout,
+        rate_limiters,
+        _max_retries,
+        cache,
+    )
+    .await
+}
+
+/// Variant of [`query_with_retry`] that forwards the citation's authors so
+/// that backends supporting author-aware tie-breaking (DBLP) can pick the
+/// right record when several share a title.
+#[allow(clippy::too_many_arguments)]
+pub async fn query_with_retry_with_authors(
+    db: &dyn DatabaseBackend,
+    title: &str,
+    ref_authors: &[String],
+    client: &reqwest::Client,
+    timeout: Duration,
+    rate_limiters: &RateLimiters,
+    _max_retries: u32,
+    cache: Option<&QueryCache>,
+) -> RateLimitedResult {
+    query_with_rate_limit(
+        db,
+        title,
+        ref_authors,
+        client,
+        timeout,
+        rate_limiters,
+        cache,
+        None,
+        None,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -596,6 +664,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -625,6 +694,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -648,6 +718,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -679,6 +750,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -696,6 +768,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -721,6 +794,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "Missing Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -738,6 +812,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "Missing Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -774,6 +849,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -790,6 +866,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -819,6 +896,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,
@@ -841,6 +919,7 @@ mod tests {
         let rl_result = query_with_rate_limit(
             &db,
             "A Paper",
+            &[],
             &client,
             Duration::from_secs(10),
             &limiters,

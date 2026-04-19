@@ -120,6 +120,23 @@ pub trait DatabaseBackend: Send + Sync {
         timeout: std::time::Duration,
     ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, DbQueryError>> + Send + 'a>>;
 
+    /// Query the database for a paper matching the given title, using the
+    /// citation's authors as a tie-break hint among equally-good title matches.
+    ///
+    /// Default implementation ignores `ref_authors` and delegates to `query`.
+    /// Backends where multiple DB entries can share a title (notably DBLP,
+    /// where "Making Smart Contracts Smarter" has five+ distinct records)
+    /// override this to break ties by surname overlap.
+    fn query_with_authors<'a>(
+        &'a self,
+        title: &'a str,
+        _ref_authors: &'a [String],
+        client: &'a reqwest::Client,
+        timeout: std::time::Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, DbQueryError>> + Send + 'a>> {
+        self.query(title, client, timeout)
+    }
+
     /// Query the database using a DOI.
     ///
     /// Returns `None` if this backend doesn't support DOI queries (default).

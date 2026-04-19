@@ -28,12 +28,23 @@ pub(crate) fn extract_authors_from_reference_with_config(
     ref_text: &str,
     config: &ParsingConfig,
 ) -> Vec<String> {
+    // Strip leading reference-number markers before any other processing.
+    // Without this, the digits inside `[57]` / `57.` trip the "skip parts
+    // containing digits" heuristic below, causing the first author to be
+    // dropped on IEEE-numbered references where the number prefix survived
+    // segmentation (e.g. `[57] Petar Maymounkov and David Mazieres. …`
+    // extracted only "David Mazieres"). The main pipeline also strips this
+    // prefix later for display, but that happens *after* author extraction.
+    static REF_NUM_PREFIX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\s*(?:\[\d+\]|\d{1,3}\.)\s*").unwrap());
+    let ref_text = REF_NUM_PREFIX.replace(ref_text, "");
+
     // Fix hyphenation from PDF line breaks in author names.
     // Only fix "word- word" patterns (with space after hyphen) — these are clearly
     // line break artifacts. We do NOT use the no-space heuristic here because it
     // can incorrectly break legitimate hyphenated names (e.g., "Agha-Janyan").
     static HYPHEN_BREAK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)-\s+(\w)").unwrap());
-    let ref_text = HYPHEN_BREAK_RE.replace_all(ref_text, "$1$2");
+    let ref_text = HYPHEN_BREAK_RE.replace_all(&ref_text, "$1$2");
 
     // Normalize whitespace
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
@@ -100,20 +111,48 @@ pub(crate) fn extract_authors_from_reference_with_config(
     // Must match pattern like "BACKES, M." (all-caps surname, comma, space, single uppercase initial, period)
     static ALL_CAPS_CHECK: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"^[A-Z]{2,},\s+[A-Z]\.,").unwrap());
-    if ALL_CAPS_CHECK.is_match(author_section) {
-        return parse_all_caps_authors_with_max(author_section, config.max_authors);
-    }
-
-    // Check for AAAI format (semicolon-separated): Surname, I.; Surname, I.
+    let authors = if ALL_CAPS_CHECK.is_match(author_section) {
+        parse_all_caps_authors_with_max(author_section, config.max_authors)
+    } else if author_section.contains("; ")
+        && Regex::new(r"[A-Z][A-Za-z]+,\s+[A-Z]\.").unwrap().is_match(author_section)
+    // AAAI format (semicolon-separated): Surname, I.; Surname, I.
     // Also handles ALL CAPS variant: SURNAME, I.; SURNAME, I.
-    static AAAI_CHECK: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[A-Z][A-Za-z]+,\s+[A-Z]\.").unwrap());
-    if author_section.contains("; ") && AAAI_CHECK.is_match(author_section) {
-        return parse_aaai_authors_with_max(author_section, config.max_authors);
-    }
+    {
+        parse_aaai_authors_with_max(author_section, config.max_authors)
+    } else {
+        parse_general_authors_with_max(author_section, config.max_authors)
+    };
 
-    // General parsing
-    parse_general_authors_with_max(author_section, config.max_authors)
+    // Post-process: normalise each author name.
+    authors
+        .into_iter()
+        .map(|a| repair_line_break_hyphen(&a))
+        .collect()
+}
+
+/// Repair PDF line-break hyphenation inside an individual author name.
+///
+/// A hyphen connecting a capitalised prefix to a lowercase suffix
+/// (`Hol-lick`, `Guil-laume`, `Man-galvedhe`) is almost always a line-break
+/// artefact: legitimate hyphenated surnames capitalise both parts
+/// (`Agha-Janyan`, `Jean-Pierre`, `Martin-Löf`), as do Arabic-article
+/// compounds (`Al-Fakhri`). We only merge when the continuation starts
+/// lowercase, so true hyphenated names are preserved.
+///
+/// Applied iteratively to catch cascaded breaks such as `Man-galve-dhe`.
+pub(crate) fn repair_line_break_hyphen(name: &str) -> String {
+    static BROKEN: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"([A-Za-z])-([a-z])").unwrap());
+
+    let mut out = name.to_string();
+    loop {
+        let next = BROKEN.replace_all(&out, "$1$2").to_string();
+        if next == out {
+            break;
+        }
+        out = next;
+    }
+    out
 }
 
 /// Find the first "real" period — one that's not after an author initial like "M." or "J."
@@ -493,5 +532,88 @@ mod tests {
             "Should extract Le Dantec as author: {:?}",
             authors,
         );
+    }
+
+    // ─── Fix C: IEEE [NN] prefix must not hide the first author ───
+
+    #[test]
+    fn test_ieee_num_prefix_preserves_first_author() {
+        // Regression test for the USENIX 2025 bug: when the reference text
+        // still carries its `[NN]` numeric marker, digits inside `[57]` tripped
+        // the "skip parts containing digits" heuristic and the first author
+        // silently vanished (e.g. "Petar Maymounkov" lost, leaving only
+        // "David Mazieres" for the Kademlia citation).
+        let ref_text = "[57] Petar Maymounkov and David Mazieres. Kademlia: A Peer-to-Peer Information System Based on the XOR Metric. In International Workshop on Peer-to-Peer Systems, 2002.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Maymounkov")),
+            "first author Petar Maymounkov must be preserved, got {:?}",
+            authors
+        );
+        assert!(authors.iter().any(|a| a.contains("Mazieres")));
+    }
+
+    #[test]
+    fn test_numeric_dot_prefix_preserves_first_author() {
+        // "23. Author A, Author B. Title." — numbered-list marker variant
+        let ref_text =
+            "23. Yuval Marcus, Ethan Heilman, and Sharon Goldberg. Low-Resource Eclipse Attacks.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Marcus")),
+            "first author Yuval Marcus must be preserved, got {:?}",
+            authors
+        );
+    }
+
+    // ─── Fix B: line-break hyphen in surnames ───
+
+    #[test]
+    fn test_hyphen_lowercase_surname_is_merged() {
+        // "Hol-lick" (PDF line-break inside a surname) must be rejoined.
+        let ref_text = "Alexander Heinrich, Leon Würsching, and Matthias Hol-lick. Please Unstalk Me. In PoPETS, 2024.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Hollick")),
+            "Hol-lick must be rejoined to Hollick, got {:?}",
+            authors
+        );
+        assert!(
+            !authors.iter().any(|a| a.contains("Hol-lick")),
+            "Hol-lick must not survive, got {:?}",
+            authors
+        );
+    }
+
+    #[test]
+    fn test_legitimate_hyphenated_surname_is_preserved() {
+        // Both sides capitalised → real hyphenated surname, do NOT merge.
+        let ref_text =
+            "Aboozar Agha-Janyan and Jean-Pierre Schmitz. A Study of Names. In Proc., 2021.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert!(
+            authors.iter().any(|a| a.contains("Agha-Janyan")),
+            "Agha-Janyan must be preserved, got {:?}",
+            authors
+        );
+        assert!(
+            authors.iter().any(|a| a.contains("Jean-Pierre")),
+            "Jean-Pierre must be preserved, got {:?}",
+            authors
+        );
+    }
+
+    #[test]
+    fn test_repair_line_break_hyphen_unit() {
+        assert_eq!(repair_line_break_hyphen("Hol-lick"), "Hollick");
+        assert_eq!(repair_line_break_hyphen("Man-galvedhe"), "Mangalvedhe");
+        // Cascaded: Man-galve-dhe → Mangalvedhe
+        assert_eq!(repair_line_break_hyphen("Man-galve-dhe"), "Mangalvedhe");
+        // Both capitalised → preserved
+        assert_eq!(repair_line_break_hyphen("Agha-Janyan"), "Agha-Janyan");
+        assert_eq!(repair_line_break_hyphen("Jean-Pierre"), "Jean-Pierre");
+        assert_eq!(repair_line_break_hyphen("Martin-Löf"), "Martin-Löf");
+        // No-op on names without hyphens
+        assert_eq!(repair_line_break_hyphen("Goldreich"), "Goldreich");
     }
 }
