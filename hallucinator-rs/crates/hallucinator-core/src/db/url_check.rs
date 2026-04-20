@@ -9,12 +9,40 @@
 
 use std::time::Duration;
 
+use reqwest::StatusCode;
+
+/// Does this HTTP status code count as "URL exists"?
+///
+/// We accept:
+///   - 2xx (success): canonical case.
+///   - 3xx (redirect): redirect target exists.
+///   - 401 Unauthorized / 403 Forbidden: the URL is present but the server
+///     declines to share it without authentication or because it suspects
+///     we're a bot. These are common on paywalled (nytimes.com), bot-walled
+///     (DataDome / Cloudflare Turnstile), and members-only sites, where a
+///     legitimate citation points to a real page that our HTTP client simply
+///     can't fetch.
+///
+/// We reject:
+///   - 404 Not Found / 410 Gone: the server definitively says the URL isn't
+///     there.
+///   - 5xx: transient server errors; we'd rather retry than accept.
+///   - Other 4xx codes (400, 405, 429, ...): ambiguous; leave as not-live.
+///     (405 is handled separately by the caller, which retries with GET.)
+pub(crate) fn status_counts_as_live(status: StatusCode) -> bool {
+    if status.is_success() || status.is_redirection() {
+        return true;
+    }
+    matches!(status.as_u16(), 401 | 403)
+}
+
 /// Result of checking a URL's liveness.
 #[derive(Debug, Clone)]
 pub struct UrlCheckResult {
     /// The original URL that was checked.
     pub url: String,
-    /// Whether the URL is live (returned 2xx or 3xx).
+    /// Whether the URL is live (see [`status_counts_as_live`] for the exact
+    /// rule — success, redirect, or auth/bot-wall denial).
     pub is_live: bool,
     /// HTTP status code if a response was received.
     pub status_code: Option<u16>,
@@ -48,7 +76,7 @@ impl UrlChecker {
                     None
                 };
 
-                if status.is_success() || status.is_redirection() {
+                if status_counts_as_live(status) {
                     return UrlCheckResult {
                         url: url.to_string(),
                         is_live: true,
@@ -62,7 +90,7 @@ impl UrlChecker {
                     return Self::check_url_get(url, client, timeout).await;
                 }
 
-                // Other non-success status
+                // Other non-success status (404, 410, 5xx, etc.)
                 UrlCheckResult {
                     url: url.to_string(),
                     is_live: false,
@@ -97,7 +125,7 @@ impl UrlChecker {
 
                 UrlCheckResult {
                     url: url.to_string(),
-                    is_live: status.is_success() || status.is_redirection(),
+                    is_live: status_counts_as_live(status),
                     status_code: Some(status.as_u16()),
                     final_url,
                 }
@@ -137,7 +165,61 @@ impl UrlChecker {
 mod tests {
     use super::*;
 
-    // Note: These are integration tests that require network access.
+    // ── hermetic classification tests (no network) ──────────────────────
+
+    #[test]
+    fn status_live_on_2xx() {
+        for code in [200u16, 201, 204, 206, 299] {
+            let s = StatusCode::from_u16(code).unwrap();
+            assert!(status_counts_as_live(s), "{} should be live", code);
+        }
+    }
+
+    #[test]
+    fn status_live_on_3xx() {
+        for code in [300u16, 301, 302, 303, 307, 308] {
+            let s = StatusCode::from_u16(code).unwrap();
+            assert!(status_counts_as_live(s), "{} should be live", code);
+        }
+    }
+
+    #[test]
+    fn status_live_on_auth_walls() {
+        // Regression test for the NDSS 2026 s923 ref 50 case: nytimes.com
+        // returns 403 via DataDome to our HTTP client. The URL is real; the
+        // server just declines to serve bots. Accept 401/403 as "exists".
+        assert!(status_counts_as_live(StatusCode::UNAUTHORIZED)); // 401
+        assert!(status_counts_as_live(StatusCode::FORBIDDEN));   // 403
+    }
+
+    #[test]
+    fn status_not_live_on_definitive_absence() {
+        // 404 / 410 definitively mean "not here" — do NOT treat as live.
+        assert!(!status_counts_as_live(StatusCode::NOT_FOUND));           // 404
+        assert!(!status_counts_as_live(StatusCode::GONE));                // 410
+    }
+
+    #[test]
+    fn status_not_live_on_other_4xx() {
+        // Ambiguous 4xx codes stay not-live — we don't want to claim
+        // verification on 400 Bad Request, 405 Method Not Allowed (handled
+        // separately by HEAD → GET retry), 429 Too Many Requests, etc.
+        for code in [400u16, 402, 404, 405, 406, 408, 410, 418, 429] {
+            let s = StatusCode::from_u16(code).unwrap();
+            assert!(!status_counts_as_live(s), "{} should NOT be live", code);
+        }
+    }
+
+    #[test]
+    fn status_not_live_on_5xx() {
+        // Server errors are transient; don't accept them as verification.
+        for code in [500u16, 502, 503, 504, 521] {
+            let s = StatusCode::from_u16(code).unwrap();
+            assert!(!status_counts_as_live(s), "{} should NOT be live", code);
+        }
+    }
+
+    // Note: The following are integration tests that require network access.
     // They're marked #[ignore] by default and can be run with:
     // cargo test --package hallucinator-core url_check -- --ignored
 
