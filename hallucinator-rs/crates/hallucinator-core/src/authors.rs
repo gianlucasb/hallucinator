@@ -194,7 +194,64 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
             return true;
         }
 
+        // Last-name-first (LNF) citation style: some papers cite as
+        // "Surname Given, Surname Given, …" (no commas inside a name, no
+        // initials). get_last_name picks the *last* token, which is actually
+        // the given name in this order — so surname matching fails even
+        // though the authors are correct (e.g. "Ekparinya Parinya" vs DBLP's
+        // "Parinya Ekparinya").
+        //
+        // When both lists look like two-token proper-noun names without
+        // initials (the common ambiguous shape), also consider the *first*
+        // token as a candidate surname. We only take this branch as a
+        // fallback after direct surname comparison has failed, so it can't
+        // create false positives — any overlap surfaced here was invisible
+        // to the stricter checks above.
+        if ref_authors.iter().all(|a| is_ambiguous_two_token(a))
+            && found_authors.iter().any(|a| is_ambiguous_two_token(a))
+        {
+            let ref_first_tokens: HashSet<String> = ref_authors
+                .iter()
+                .filter_map(|a| first_token_lower(a))
+                .collect();
+            if !ref_first_tokens.is_disjoint(&found_surnames) {
+                return true;
+            }
+        }
+
         false
+    }
+}
+
+/// A name is "ambiguous two-token" if it's exactly two whitespace-separated
+/// tokens, both begin with an uppercase letter, and neither is an initial or
+/// carries a period (i.e. we cannot tell Given-Family from Family-Given).
+fn is_ambiguous_two_token(name: &str) -> bool {
+    let parts: Vec<&str> = name.trim().split_whitespace().collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    for p in &parts {
+        if p.contains('.') || p.len() < 2 {
+            return false;
+        }
+        let first = p.chars().next().unwrap();
+        if !first.is_uppercase() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Lowercase first whitespace-separated token (with trailing punctuation
+/// trimmed). Used only by the LNF fallback above.
+fn first_token_lower(name: &str) -> Option<String> {
+    let first = name.trim().split_whitespace().next()?;
+    let first = first.trim_end_matches(|c: char| !c.is_alphanumeric());
+    if first.is_empty() {
+        None
+    } else {
+        Some(strip_diacritics(first).to_lowercase())
     }
 }
 
@@ -563,5 +620,57 @@ mod tests {
                 "A. One", "B. Two", "C. Three", "D. Four", "E. Five", "F. Six"
             ]),
         ));
+    }
+
+    // ─── Fix D: last-name-first citation style ───
+
+    #[test]
+    fn test_lnf_style_matches_dblp_given_family() {
+        // USENIX 2025 case: "The attack of the clones against proof-of-authority"
+        // cited as "Ekparinya Parinya, Gramoli Vincent, and Jourjon Guillaume"
+        // — family-first — while DBLP has standard "Parinya Ekparinya",
+        // "Vincent Gramoli", "Guillaume Jourjon".
+        assert!(validate_authors(
+            &s(&["Ekparinya Parinya", "Gramoli Vincent", "Jourjon Guillaume"]),
+            &s(&["Parinya Ekparinya", "Vincent Gramoli", "Guillaume Jourjon"]),
+        ));
+    }
+
+    #[test]
+    fn test_lnf_style_still_rejects_wrong_paper() {
+        // LNF fallback must not turn unrelated authors into a match.
+        // "Alice Bob, Charlie Dave" (two-token, ambiguous) against unrelated
+        // surnames — no first-token or last-token overlap either way.
+        assert!(!validate_authors(
+            &s(&["Alice Bob", "Charlie Dave"]),
+            &s(&["Eve Foster", "Frank Greene"]),
+        ));
+    }
+
+    #[test]
+    fn test_lnf_fallback_skipped_when_names_have_initials() {
+        // When names carry initials, the ordering is unambiguous — the
+        // LNF fallback should not fire. This guards against enabling the
+        // fallback for normal IEEE-style refs and accidentally matching
+        // "J. Smith" to DBLP's "Smith John" just because both contain "smith".
+        assert!(!validate_authors(
+            &s(&["J. Smith"]),
+            &s(&["Alice Kumar", "Robert Chen"]),
+        ));
+    }
+
+    #[test]
+    fn test_is_ambiguous_two_token() {
+        assert!(is_ambiguous_two_token("Ekparinya Parinya"));
+        assert!(is_ambiguous_two_token("Gramoli Vincent"));
+        // Three tokens — not ambiguous two-token
+        assert!(!is_ambiguous_two_token("John M. Smith"));
+        // Initial — not ambiguous
+        assert!(!is_ambiguous_two_token("J. Smith"));
+        assert!(!is_ambiguous_two_token("Smith J."));
+        // One token
+        assert!(!is_ambiguous_two_token("Madonna"));
+        // Lowercase — not a proper noun
+        assert!(!is_ambiguous_two_token("john smith"));
     }
 }

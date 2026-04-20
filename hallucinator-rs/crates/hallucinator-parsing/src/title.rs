@@ -2448,17 +2448,20 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i)\.\s*KI-K\u{00FC}nstliche.*$").unwrap(),
         // Handle BUG #5: IEEE-style `"Title," in VENUE, …` references that
         // get mis-segmented as `Title.: in VENUE, …` or `Title.: VENUE, …`.
-        // The `.:` sequence before a capital letter is essentially never a
-        // legitimate title punctuation (a real title never ends one clause
-        // with `.:` and starts the next with a capitalised word). Stripping
-        // `.:` plus everything that follows recovers titles like:
+        // The `.:` sequence before a capital letter — or before a bracketed
+        // annotation like `[Online]` / `[Available]` that web-citation PDFs
+        // emit — is essentially never legitimate title punctuation (a real
+        // title never ends one clause with `.:` and starts the next with a
+        // capitalised word or bracketed marker). Stripping `.:` plus
+        // everything that follows recovers titles like:
         //   "Opaque control-flow integrity.: in NDSS, vol. 26, 2015"
         //   "Snow white: Provably secure proofs of stake.: IACR Cryptol. …"
         //   "Sanc-tuary: Arming trustzone ….: in NDSS"
+        //   "cjson read fuzzer.c.: [Online]. Available: https://…"
         //
         // The `?:` / `!:` variants are handled in `clean_title_with_config`
         // directly (ahead of this table) so the `?` / `!` can be preserved.
-        Regex::new(r"\.:\s+(?:[Ii]n\s+)?[A-Z].*$").unwrap(),
+        Regex::new(r"\.:\s+(?:[Ii]n\s+)?(?:[A-Z]|\[).*$").unwrap(),
         Regex::new(r"\s+arXiv\s+preprint.*$").unwrap(),
         Regex::new(r"\s+arXiv:\d+.*$").unwrap(),
         Regex::new(r"\s+CoRR\s+abs/.*$").unwrap(),
@@ -2543,6 +2546,18 @@ mod tests {
             (
                 "Private set intersection: Are garbled circuits better than custom protocols?: in NDSS. The Internet Society",
                 "Private set intersection: Are garbled circuits better than custom protocols?",
+            ),
+            // `[Online]` / web-citation bracketed annotation (NDSS 2026
+            // s820 ref 21) — previously left trailing "cjson read
+            // fuzzer.c.: [Online]" because the cutoff regex required a
+            // capital letter immediately after `.:` and `[` was not one.
+            (
+                "cjson read fuzzer.c.: [Online]. Available: https://github.com/DaveGamble/cJSON",
+                "cjson read fuzzer.c",
+            ),
+            (
+                "Some page.: [Available]. see link",
+                "Some page",
             ),
         ];
         for (input, expected) in cases {

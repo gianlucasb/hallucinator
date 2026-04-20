@@ -70,7 +70,7 @@ impl DatabaseBackend for Arxiv {
     fn query_arxiv_id<'a>(
         &'a self,
         arxiv_id: &'a str,
-        _title: &'a str,
+        title: &'a str,
         _authors: &'a [String],
         client: &'a reqwest::Client,
         timeout: Duration,
@@ -96,14 +96,20 @@ impl DatabaseBackend for Arxiv {
                 Err(e) => return Some(Err(DbQueryError::Other(e.to_string()))),
             };
 
-            // For direct ID lookups, skip title validation - we trust the ID
-            Some(parse_arxiv_id_response(&body))
+            // Validate the title at the claimed ID actually matches the citation —
+            // fabricated IDs often resolve to unrelated real papers.
+            Some(parse_arxiv_id_response(&body, title))
         })
     }
 }
 
-/// Parse arXiv Atom XML response for direct ID lookup (no title validation).
-fn parse_arxiv_id_response(xml: &str) -> Result<DbQueryResult, DbQueryError> {
+/// Parse arXiv Atom XML response for direct ID lookup.
+///
+/// Returns not-found if the paper at the claimed ID has a title that doesn't
+/// match `expected_title`. An arXiv ID that someone fabricated will typically
+/// resolve to *some* real paper, so without this check an unrelated paper gets
+/// reported as merely an author mismatch rather than a hallucination.
+fn parse_arxiv_id_response(xml: &str, expected_title: &str) -> Result<DbQueryResult, DbQueryError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -179,7 +185,10 @@ fn parse_arxiv_id_response(xml: &str) -> Result<DbQueryResult, DbQueryError> {
                     b"entry" => {
                         // Return the first entry (direct ID lookup returns exactly one)
                         let entry_title = current_title.trim().to_string();
-                        if !entry_title.is_empty() && !current_authors.is_empty() {
+                        if !entry_title.is_empty()
+                            && !current_authors.is_empty()
+                            && titles_match(expected_title, &entry_title)
+                        {
                             let link = if current_link.is_empty() {
                                 None
                             } else {
