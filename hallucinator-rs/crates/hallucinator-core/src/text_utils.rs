@@ -45,8 +45,14 @@ pub fn extract_urls(text: &str) -> Vec<String> {
         Lazy::new(|| Regex::new(r"(https?://[^\s\]>]+)\s*\n\s*(/[^\s\]>]*)").unwrap());
     let text_fixed = PATH_SPLIT.replace_all(&text_fixed, "$1$2");
 
-    // URL regex that captures common URL patterns
-    static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s\]>\)\},]+").unwrap());
+    // URL regex that captures common URL patterns.
+    //
+    // Excludes `[` as well as `]`: when a PDF collapses whitespace between
+    // consecutive bibliography entries, the next entry's `[N]` marker glues
+    // onto the tail of the current URL ("url/page[42"). `]` was already
+    // excluded; `[` needs to be too. Real URLs practically never contain a
+    // literal `[` outside percent-encoding, so this is safe.
+    static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s\[\]>\)\},]+").unwrap());
 
     // Academic domains to exclude (these are handled by dedicated backends)
     static ACADEMIC_DOMAINS: Lazy<Regex> = Lazy::new(|| {
@@ -58,6 +64,14 @@ pub fn extract_urls(text: &str) -> Vec<String> {
 
     for m in URL_RE.find_iter(&text_fixed) {
         let mut url = m.as_str().to_string();
+
+        // Strip backslash artifacts: LaTeX `\-` soft-hyphen escapes sometimes
+        // leak into the PDF text layer as literal backslashes (seen on NDSS
+        // 2026 f700 ref 1: "VM\-Escapes.pdf"). Backslash is never valid inside
+        // a URL, so dropping it restores the original path.
+        if url.contains('\\') {
+            url = url.replace('\\', "");
+        }
 
         // Clean trailing punctuation (common in citations)
         url = url
@@ -94,8 +108,12 @@ fn fix_spaced_url_punctuation(text: &str) -> String {
     // Find URL-like regions and fix spacing within them
     static URL_REGION: Lazy<Regex> = Lazy::new(|| {
         // Match https:// followed by characters that could be URL parts (including spaces around punctuation)
-        // Exclude () to avoid capturing "(visited on...)" annotations
-        Regex::new(r"https?://[\w\s.\-/~:@!$&'+,;=%?#\[\]]+").unwrap()
+        // Exclude () to avoid capturing "(visited on...)" annotations.
+        // Include U+223C (TILDE OPERATOR, ∼) because some PDF fonts render
+        // the URL tilde `~` as ∼, so `~user/path` ends up as `∼user/path`.
+        // Without this, URL_REGION breaks at ∼ and the filename-underscore
+        // recovery below never runs on academic URLs like www.*.edu/∼user/.
+        Regex::new(r"https?://[\w\s.\-/~∼:@!$&'+,;=%?#\[\]]+").unwrap()
     });
 
     let mut result = text.to_string();
@@ -147,22 +165,31 @@ fn fix_url_spacing(url_region: &str) -> String {
     //   * the match starting at a `/` (inside a path segment),
     //   * the token sequence ending in a short file extension
     //     (`.[A-Za-z]{1,6}`), and
-    //   * the match anchoring to end-of-region (`\s*$`).
+    //   * the trailer being end-of-region OR a typical citation delimiter
+    //     (`,`, `;`, `)`) — i.e. what sits immediately after a URL in a
+    //     bibliography entry. This is the main safety: the pattern only
+    //     rewrites a filename-like suffix at the tail of the URL, not in
+    //     the middle of narrative.
     //
-    // That last anchor is the main safety: the pattern only rewrites a
-    // filename-like suffix at the very end of the URL region. It does not
-    // fire on `https://example.com/page Section 3 has ref.txt` (trailing
-    // narrative) because there the extension-bearing token is not the
-    // end-of-region — the file-extension check plus anchor together keep
-    // the rewrite confined to legitimate filename suffixes.
+    // The anchor used to be `\s*$` (strict end-of-region), but URL_REGION's
+    // character class includes `,` and `\s`, so it happily extends into
+    // `, 2010` tails on real citations like
+    // `https://www.dgp.toronto.edu/∼ravin/papers/chi2010 tabbedbrowsing.pdf, 2010`
+    // (NDSS 2026 f328 ref [73]). A lookahead that accepts the citation
+    // delimiters preserves the safety guarantee (narrative like
+    // `... ref.txt Section 3 has` still does not match) while letting the
+    // rule fire on real references.
+    // The Rust regex crate does not support lookaround, so the trailer is
+    // captured in group 2 and restored verbatim in the replacement closure.
     static FILENAME_LOST_UNDERSCORES: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"/([A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)+\.[A-Za-z0-9]{1,6})\s*$").unwrap()
+        Regex::new(r"/([A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[,;)]))")
+            .unwrap()
     });
     static INTERNAL_WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
     result = FILENAME_LOST_UNDERSCORES
         .replace(&result, |caps: &regex::Captures| {
             let rebuilt = INTERNAL_WS.replace_all(&caps[1], "_");
-            format!("/{}", rebuilt)
+            format!("/{}{}", rebuilt, &caps[2])
         })
         .to_string();
 
@@ -895,6 +922,106 @@ mod tests {
         // Leading "some dir"/"other dir" have no file extension so are not
         // rewritten. The URL extractor correctly stops at the first space
         // that wasn't restored.
+        assert_eq!(urls, vec!["https://example.com/some"]);
+    }
+
+    // ── Next-reference-marker `[N` glue (NDSS 2026 f2926/f700/f94/f106) ──
+
+    #[test]
+    fn test_extract_urls_strips_next_ref_bracket_marker() {
+        // When a PDF collapses whitespace between consecutive bibliography
+        // entries, the next entry's "[N]" numeric marker fuses onto the tail
+        // of the current URL. URL_RE previously excluded only `]`, so it
+        // kept eating through `[N`, producing URLs like "url/page[42".
+        // Excluding `[` as well stops at the right place.
+        let text =
+            "See https://www.cve.org/about/Metrics[2] (2025) MITRE ATT&CK Framework";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://www.cve.org/about/Metrics"]);
+    }
+
+    #[test]
+    fn test_extract_urls_strips_next_ref_bracket_after_period() {
+        // Trailing "." before "[N" (very common shape in the NDSS 2026
+        // corpus, e.g. f700 ref [6]: "Yore-Wednesday.pdf.[6"). After `[`
+        // is excluded, URL_RE stops at `[` and the existing trailing-punct
+        // trim strips the `.`.
+        let text =
+            "Blah. https://i.blackhat.com/BH-US-24/Presentations/US24-Sialveras-Bugs-Of-Yore-Wednesday.pdf.[6] next ref";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec![
+                "https://i.blackhat.com/BH-US-24/Presentations/US24-Sialveras-Bugs-Of-Yore-Wednesday.pdf"
+            ]
+        );
+    }
+
+    // ── Backslash escape artifacts (NDSS 2026 f700) ─────────────────────
+
+    #[test]
+    fn test_extract_urls_strips_backslash_hyphen() {
+        // Some PDFs leak LaTeX `\-` soft-hyphen escapes into the text layer,
+        // producing URLs with a literal backslash before a hyphen. Backslash
+        // is never valid inside a URL, so dropping it restores the intended
+        // path. Real case from NDSS 2026 f700 ref [7].
+        let text = r"Available: https://i.blackhat.com/Asia-24/Presentations/Asia-24-Jiang-URB-Excalibur-The-New-VMware-All-Platform-VM\-Escapes.pdf";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec![
+                "https://i.blackhat.com/Asia-24/Presentations/Asia-24-Jiang-URB-Excalibur-The-New-VMware-All-Platform-VM-Escapes.pdf"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_strips_backslash_before_word() {
+        // Variant where the backslash sits directly in front of a word
+        // rather than a hyphen (f700 ref [41] DEFCON32 URL).
+        let text = r"https://media.defcon.org/DEFCON32/DEFCON32-\JiaQingHuang-Bug.pdf";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://media.defcon.org/DEFCON32/DEFCON32-JiaQingHuang-Bug.pdf"]
+        );
+    }
+
+    // ── Tilde operator (U+223C) in URL regions (NDSS 2026 f328/f1725) ────
+
+    #[test]
+    fn test_extract_urls_tilde_operator_enables_filename_recovery() {
+        // Some PDF fonts render the URL tilde `~` as U+223C ∼ (TILDE
+        // OPERATOR). URL_REGION's char class previously didn't include ∼,
+        // so `fix_url_spacing` — and therefore the filename-lost-underscores
+        // recovery — skipped any URL containing `∼user/`. Real case from
+        // NDSS 2026 f328 ref [73]: the source URL ends
+        // `chi2010_tabbedbrowsing.pdf`, rendered in the PDF as
+        // `chi2010 tabbedbrowsing.pdf` with a trailing `, 2010` citation
+        // year (which is what forced the companion change to
+        // FILENAME_LOST_UNDERSCORES' anchor).
+        let text = "P. Dubroy, https://www.dgp.toronto.edu/∼ravin/papers/chi2010 tabbedbrowsing.pdf, 2010";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://www.dgp.toronto.edu/∼ravin/papers/chi2010_tabbedbrowsing.pdf"]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_filename_recovery_survives_narrative_guard() {
+        // Guard: the broadened FILENAME_LOST_UNDERSCORES anchor still
+        // refuses to fire when narrative text (starting with a letter, not
+        // a citation delimiter) follows the candidate filename. This is
+        // the companion test to
+        // test_extract_urls_narrative_after_short_url_untouched — that one
+        // covered the no-extension case; this one covers the extension
+        // case, which is where the lookahead matters.
+        let text = "See https://example.com/some dir/real file.pdf right there for the explanation";
+        let urls = extract_urls(text);
+        // `real file.pdf` is followed by ` right there` (narrative), so the
+        // lookahead `(?=\s*(?:$|[,;)]))` fails and the filename is not
+        // rewritten. URL_RE then truncates at the first whitespace.
         assert_eq!(urls, vec!["https://example.com/some"]);
     }
 }
