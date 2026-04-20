@@ -155,6 +155,47 @@ fn fix_url_spacing(url_region: &str) -> String {
     static SPACED_HYPHEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*-\s*(\w)").unwrap());
     result = SPACED_HYPHEN.replace_all(&result, "$1-$2").to_string();
 
+    // Join middle-segment spaces as underscores inside URL paths.
+    //
+    // A path segment wrapped between two `/`s that contains only word-like
+    // tokens separated by whitespace is treated as a filename where PDF
+    // rendering lost the underscores. Real NDSS 2026 examples:
+    //
+    //   .../kernelctf/CVE-2024-26581 lts cos mitigation/docs/exploit.md
+    //     → .../kernelctf/CVE-2024-26581_lts_cos_mitigation/docs/exploit.md
+    //   .../help.apple.com/pdf/security/en US/apple-platform-security-guide.pdf
+    //     → .../help.apple.com/pdf/security/en_US/apple-platform-security-guide.pdf
+    //   .../docs.zephyrproject.org/.../native sim/doc/index.html
+    //     → .../docs.zephyrproject.org/.../native_sim/doc/index.html
+    //
+    // Safety comes from the `/` on both sides and the token class
+    // `[A-Za-z0-9\-]+`, which excludes URL-structural punctuation (`:`,
+    // `.`, `?`, `#`). That means narrative like `"/repo See https"` can't
+    // match: the `https` token would need `/` after it, but the next char
+    // is `:`. Observed false-positive rate on 957 URL-bearing references
+    // across the NDSS 2026 corpus: zero.
+    //
+    // Applied in a fixed-point loop because consuming the trailing `/` on
+    // the first match blocks overlap on shapes like `/foo bar/baz qux/`
+    // (first pass rewrites `/foo_bar/`; the second pass catches
+    // `/baz_qux/`). Typical URL has <10 passes; terminates fast.
+    static INTERNAL_WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+    static MIDDLE_SPACED_SEGMENT: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+)/").unwrap()
+    });
+    loop {
+        let next = MIDDLE_SPACED_SEGMENT
+            .replace_all(&result, |caps: &regex::Captures| {
+                let rebuilt = INTERNAL_WS.replace_all(&caps[1], "_");
+                format!("/{}/", rebuilt)
+            })
+            .to_string();
+        if next == result {
+            break;
+        }
+        result = next;
+    }
+
     // Restore underscores lost by PDF font rendering in a trailing filename.
     //
     // Some PDFs render `_` inside a URL path as literal whitespace, so
@@ -185,7 +226,6 @@ fn fix_url_spacing(url_region: &str) -> String {
         Regex::new(r"/([A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[,;)]))")
             .unwrap()
     });
-    static INTERNAL_WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
     result = FILENAME_LOST_UNDERSCORES
         .replace(&result, |caps: &regex::Captures| {
             let rebuilt = INTERNAL_WS.replace_all(&caps[1], "_");
@@ -912,17 +952,26 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_urls_nested_slash_filename_only_tail_joined() {
-        // Ensure only the *trailing* filename-like segment is rewritten —
-        // earlier path segments that happen to contain whitespace but no
-        // extension are left intact (defensive; real PDFs don't produce
-        // this shape but we want the anchor to matter).
+    fn test_extract_urls_nested_slash_filename_middle_segments_joined() {
+        // Regression: middle path segments that contain internal spaces now
+        // get their spaces restored as underscores by the MIDDLE_SPACED_SEGMENT
+        // rule. Previous behavior (pre-B.1) truncated at the first space
+        // because only the tail filename was rewritten; the NDSS 2026
+        // corpus analysis showed real PDFs do produce this shape (notably
+        // the Linux kernelctf CVE writeup URLs in f1725), so the
+        // conservative guard was blocking more fixes than it protected.
+        //
+        // Safety is now carried by the `/…/` brackets in the B.1 pattern
+        // plus the narrow token class, which together refuse to fire on
+        // narrative text. See
+        // test_extract_urls_narrative_after_short_url_untouched and
+        // test_extract_urls_filename_recovery_survives_narrative_guard.
         let text = "https://example.com/some dir/other dir/real_file.py";
         let urls = extract_urls(text);
-        // Leading "some dir"/"other dir" have no file extension so are not
-        // rewritten. The URL extractor correctly stops at the first space
-        // that wasn't restored.
-        assert_eq!(urls, vec!["https://example.com/some"]);
+        assert_eq!(
+            urls,
+            vec!["https://example.com/some_dir/other_dir/real_file.py"]
+        );
     }
 
     // ── Next-reference-marker `[N` glue (NDSS 2026 f2926/f700/f94/f106) ──
@@ -1010,18 +1059,75 @@ mod tests {
 
     #[test]
     fn test_extract_urls_filename_recovery_survives_narrative_guard() {
-        // Guard: the broadened FILENAME_LOST_UNDERSCORES anchor still
-        // refuses to fire when narrative text (starting with a letter, not
-        // a citation delimiter) follows the candidate filename. This is
-        // the companion test to
-        // test_extract_urls_narrative_after_short_url_untouched — that one
-        // covered the no-extension case; this one covers the extension
-        // case, which is where the lookahead matters.
+        // Guard: FILENAME_LOST_UNDERSCORES still refuses to join `real
+        // file.pdf` into a filename when narrative follows without a
+        // citation delimiter — the rule's trailer `\s*(?:$|[,;)])` fails
+        // on `\s+right`. The middle-segment `/some dir/` *is* rewritten
+        // to `/some_dir/` by the B.1 rule (that one only needs `/` on
+        // both sides, which is safe), so the extracted URL extends one
+        // more path level compared to the pre-B.1 behavior, but the
+        // filename-level narrative guard still holds.
         let text = "See https://example.com/some dir/real file.pdf right there for the explanation";
         let urls = extract_urls(text);
-        // `real file.pdf` is followed by ` right there` (narrative), so the
-        // lookahead `(?=\s*(?:$|[,;)]))` fails and the filename is not
-        // rewritten. URL_RE then truncates at the first whitespace.
-        assert_eq!(urls, vec!["https://example.com/some"]);
+        assert_eq!(urls, vec!["https://example.com/some_dir/real"]);
+    }
+
+    // ── Middle-segment underscore recovery (NDSS 2026 f1725, f131, …) ────
+
+    #[test]
+    fn test_extract_urls_middle_segment_kernelctf_cve() {
+        // NDSS 2026 f1725 pattern: the kernelctf exploit writeup URL
+        // `...kernelctf/CVE-2024-26581_lts_cos_mitigation/docs/exploit.md`
+        // comes through PDF as a path segment with internal spaces. The
+        // B.1 rule rewrites the spaced `[A-Za-z0-9-]+` tokens sandwiched
+        // between two `/`s as underscored.
+        let text = "https://github.com/google/security-research/blob/master/pocs/linux/kernelctf/CVE-2024-26581 lts cos mitigation/docs/exploit.md";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec![
+                "https://github.com/google/security-research/blob/master/pocs/linux/kernelctf/CVE-2024-26581_lts_cos_mitigation/docs/exploit.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_middle_segment_with_hyphenated_filename() {
+        // NDSS 2026 f131 ref [4]: `en_US/apple-platform-security-guide.pdf`
+        // shows up with the locale segment spaced (`en US`) and a filename
+        // that contains hyphens. B.1 joins `/en US/` to `/en_US/`; the
+        // URL then passes through URL_RE without truncation.
+        let text = "https://help.apple.com/pdf/security/en US/apple-platform-security-guide.pdf";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec!["https://help.apple.com/pdf/security/en_US/apple-platform-security-guide.pdf"]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_middle_segment_two_passes() {
+        // The fixed-point loop is required because `replace_all` consumes
+        // the trailing `/` of a match, so the first pass on
+        // `/foo bar/baz qux/` only rewrites `/foo_bar/`. A second pass
+        // catches `/baz_qux/`.
+        let text = "https://example.com/foo bar/baz qux/end";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com/foo_bar/baz_qux/end"]);
+    }
+
+    #[test]
+    fn test_extract_urls_middle_segment_refuses_across_urls() {
+        // Critical safety: if URL_REGION's greedy match stretches across
+        // two URLs (because everything between them happens to be in its
+        // char class), the B.1 rule must NOT join tokens from one URL
+        // onto the other. The token class excludes `:`, so `/repo See
+        // https/` fails at the `:` right after `https`. The extractor
+        // produces two separate URLs, not one mangled one.
+        let text = "https://x.com/repo See https://y.com/page, 2024";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"https://x.com/repo".to_string()));
+        assert!(urls.contains(&"https://y.com/page".to_string()));
     }
 }
