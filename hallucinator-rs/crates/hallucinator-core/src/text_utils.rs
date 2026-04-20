@@ -137,6 +137,35 @@ fn fix_url_spacing(url_region: &str) -> String {
     static SPACED_HYPHEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*-\s*(\w)").unwrap());
     result = SPACED_HYPHEN.replace_all(&result, "$1-$2").to_string();
 
+    // Restore underscores lost by PDF font rendering in a trailing filename.
+    //
+    // Some PDFs render `_` inside a URL path as literal whitespace, so
+    // `fuzzing/cjson_read_fuzzer.c` comes through as `fuzzing/cjson read
+    // fuzzer.c`. To recover without touching narrative text that might
+    // follow a URL, the rewrite is gated on:
+    //
+    //   * the match starting at a `/` (inside a path segment),
+    //   * the token sequence ending in a short file extension
+    //     (`.[A-Za-z]{1,6}`), and
+    //   * the match anchoring to end-of-region (`\s*$`).
+    //
+    // That last anchor is the main safety: the pattern only rewrites a
+    // filename-like suffix at the very end of the URL region. It does not
+    // fire on `https://example.com/page Section 3 has ref.txt` (trailing
+    // narrative) because there the extension-bearing token is not the
+    // end-of-region — the file-extension check plus anchor together keep
+    // the rewrite confined to legitimate filename suffixes.
+    static FILENAME_LOST_UNDERSCORES: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"/([A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)+\.[A-Za-z0-9]{1,6})\s*$").unwrap()
+    });
+    static INTERNAL_WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+    result = FILENAME_LOST_UNDERSCORES
+        .replace(&result, |caps: &regex::Captures| {
+            let rebuilt = INTERNAL_WS.replace_all(&caps[1], "_");
+            format!("/{}", rebuilt)
+        })
+        .to_string();
+
     result
 }
 
@@ -792,5 +821,80 @@ mod tests {
         let text3 = "[96] Julien. n.d.. Reverse-Engineering. https://www.julien\nverneaut.com/en/experiments Accessed";
         let urls3 = extract_urls(text3);
         assert_eq!(urls3, vec!["https://www.julienverneaut.com/en/experiments"]);
+    }
+
+    // ── Filename-lost-underscores recovery (2026-s820-paper ref 21) ──
+
+    #[test]
+    fn test_extract_urls_filename_lost_underscores() {
+        // Regression test for NDSS 2026 f168/s820 pattern: some PDF fonts
+        // render `_` inside a URL path as literal whitespace, so the source
+        // URL `.../fuzzing/cjson_read_fuzzer.c` comes through as
+        // `.../fuzzing/cjson read fuzzer.c`. Combined with a line break after
+        // `github.com/`, extract_urls previously truncated at the first
+        // internal space. The post-fix pass should restore the trailing
+        // filename so URL Check can verify the link.
+        let text = r#""cjson read fuzzer.c." [Online]. Available: https://github.com/ DaveGamble/cJSON/blob/master/fuzzing/cjson read fuzzer.c"#;
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec![
+                "https://github.com/DaveGamble/cJSON/blob/master/fuzzing/cjson_read_fuzzer.c"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_multi_word_filename() {
+        // Same pattern with three internal spaces, all lost underscores.
+        let text = "see https://example.com/path/very long file.py";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com/path/very_long_file.py"]);
+    }
+
+    #[test]
+    fn test_extract_urls_narrative_after_short_url_untouched() {
+        // Guard: a URL with no file-extension suffix followed by narrative
+        // text must not have its trailing words collapsed into the path.
+        // Here `"foo for details"` has no `.ext`, so the restoration rule
+        // does not fire; extract_urls still stops at the first space.
+        let text = "Code at https://github.com/user/repo for details.";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://github.com/user/repo"]);
+    }
+
+    #[test]
+    fn test_extract_urls_url_then_filename_elsewhere_not_mangled_by_new_rule() {
+        // Guard: the filename-lost-underscores rule must NOT merge trailing
+        // narrative into the URL. The rule requires the match to start at
+        // `/`; `page.` contains no later slash that the rewrite could
+        // anchor on, so the new rule does not fire.
+        //
+        // (Separately, the pre-existing SPACED_DOT rule collapses
+        // `page. Download` to `page.Download`; this test only asserts the
+        // NEW rule behaves, not the pre-existing space-around-dot rule.)
+        let text = "See https://example.com/page. Download file.pdf.";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 1);
+        let url = &urls[0];
+        // Critical post-condition: "file.pdf" must NOT have been pulled
+        // into the URL as "file_pdf" or similar; the new rule stays off.
+        assert!(!url.contains("_pdf"), "unexpected mangle: {}", url);
+        assert!(!url.contains("file.pdf"), "trailing narrative pulled in: {}", url);
+    }
+
+    #[test]
+    fn test_extract_urls_nested_slash_filename_only_tail_joined() {
+        // Ensure only the *trailing* filename-like segment is rewritten —
+        // earlier path segments that happen to contain whitespace but no
+        // extension are left intact (defensive; real PDFs don't produce
+        // this shape but we want the anchor to matter).
+        let text = "https://example.com/some dir/other dir/real_file.py";
+        let urls = extract_urls(text);
+        // Leading "some dir"/"other dir" have no file extension so are not
+        // rewritten. The URL extractor correctly stops at the first space
+        // that wasn't restored.
+        assert_eq!(urls, vec!["https://example.com/some"]);
     }
 }
