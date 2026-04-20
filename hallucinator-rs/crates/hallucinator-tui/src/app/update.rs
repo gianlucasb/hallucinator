@@ -179,12 +179,17 @@ impl App {
                                     .unwrap_or_else(|| (0..self.papers.len()).collect())
                             }
                             crate::view::export::ExportScope::ProblematicPapers => {
+                                // Exclude papers where every problematic ref
+                                // has been marked safe (fp_reason set). The
+                                // raw `p.stats.*` counters don't decrement
+                                // on fp_reason, so consult the actual ref
+                                // states instead — `has_unresolved_problems`
+                                // returns true only when at least one ref is
+                                // still an unresolved problem.
                                 (0..self.papers.len())
                                     .filter(|&i| {
-                                        self.papers.get(i).is_some_and(|p| {
-                                            p.stats.not_found > 0
-                                                || p.stats.author_mismatch > 0
-                                                || p.stats.retracted > 0
+                                        self.ref_states.get(i).is_some_and(|refs| {
+                                            crate::model::paper::has_unresolved_problems(refs)
                                         })
                                     })
                                     .collect::<Vec<_>>()
