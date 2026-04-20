@@ -134,10 +134,26 @@ fn fix_spaced_url_punctuation(text: &str) -> String {
 fn fix_url_spacing(url_region: &str) -> String {
     let mut result = url_region.to_string();
 
-    // Remove spaces around dots: " . " or " ." or ". " → "."
-    // But be careful: we don't want to join unrelated words
-    // Only fix when surrounded by alphanumeric/URL-like chars
-    static SPACED_DOT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*\.\s*(\w)").unwrap());
+    // Remove spaces around dots inside a URL region: " . " → "."
+    //
+    // Only fires when the character after the dot is lowercase (or a
+    // digit). URL-internal dots — domain labels (`.com`, `.cmu`,
+    // `.edu/path`), filename extensions (`.pdf`), versioned paths
+    // (`v1.2.3`) — are overwhelmingly followed by lowercase or digits in
+    // real PDFs. A dot followed by an uppercase letter almost always
+    // signals a sentence boundary where URL_REGION's greedy match has
+    // extended past the URL's true end and into narrative text. Real case:
+    //
+    //   "...bluesky_downloader. GitHub repository" (bluesky-blocks-paper ref 3)
+    //
+    // Previously SPACED_DOT collapsed `r. G` → `r.G`, so URL_RE picked up
+    // `https://github.com/mrd0ll4r/bluesky_downloader.GitHub` and URL Check
+    // got a 404 on what is otherwise a perfectly valid repo URL. Requiring
+    // lowercase-or-digit after the dot lets `cs. cmu.edu` (lowercase `c`)
+    // still collapse while leaving sentence-ending `downloader. GitHub`
+    // (uppercase `G`) alone.
+    static SPACED_DOT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(\w)\s*\.\s*([a-z0-9])").unwrap());
     result = SPACED_DOT.replace_all(&result, "$1.$2").to_string();
 
     // Remove spaces around slashes when between URL parts: " / " or "/ " → "/"
@@ -1114,6 +1130,35 @@ mod tests {
         let text = "https://example.com/foo bar/baz qux/end";
         let urls = extract_urls(text);
         assert_eq!(urls, vec!["https://example.com/foo_bar/baz_qux/end"]);
+    }
+
+    // ── Sentence boundary not confused with URL-internal dot (bluesky ref 3) ──
+
+    #[test]
+    fn test_extract_urls_sentence_period_not_joined_into_url() {
+        // Real case from bluesky-blocks-paper ref 3: the ref text is
+        // `... /mrd0ll4r/bluesky_downloader. GitHub repository`. The
+        // period-space ends the URL's sentence; `GitHub` starts the
+        // note field. The SPACED_DOT rule used to see `r. G` as a URL-
+        // internal spaced dot and collapse it, producing the bogus
+        // URL `.../bluesky_downloader.GitHub` which 404s on GitHub and
+        // made URL Check report "not found". Requiring lowercase-or-
+        // digit after the dot leaves sentence breaks alone.
+        let text = "Leonhard Balduf. 2024. bluesky_downloader. https://github.com/mrd0ll4r/bluesky_downloader. GitHub repository";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://github.com/mrd0ll4r/bluesky_downloader"]);
+    }
+
+    #[test]
+    fn test_extract_urls_lowercase_after_dot_still_collapses() {
+        // Regression: the SPACED_DOT tightening must not break the
+        // legitimate case of spaced dots inside a URL where the next
+        // token is lowercase (domain labels, filename extensions, path
+        // segments). This is the existing test_extract_urls_space_in_domain
+        // behavior pinned down as a guard for future edits to SPACED_DOT.
+        let text = "https://www.cs. cmu.edu/paper.pdf";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://www.cs.cmu.edu/paper.pdf"]);
     }
 
     #[test]
