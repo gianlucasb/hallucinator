@@ -292,6 +292,12 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
             .as_ref()
             .is_some_and(|r| r.is_retracted);
         paper.record_status(loaded_ref.index, result.status.clone(), is_retracted);
+        // If this ref was persisted with an fp_reason, carry the
+        // mark-safe adjustment into the paper stats so the queue table
+        // and totals line reflect the prior user decision on load.
+        if fp_reason.is_some() {
+            paper.apply_fp_delta(&result.status, is_retracted, 1);
+        }
 
         let raw_cit = loaded_ref.raw_citation.clone().unwrap_or_default();
         let ref_authors = loaded_ref.ref_authors.clone().unwrap_or_default();

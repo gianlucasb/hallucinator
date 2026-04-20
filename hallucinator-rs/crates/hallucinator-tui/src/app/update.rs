@@ -779,31 +779,26 @@ impl App {
                         let indices = self.paper_ref_indices(idx);
                         if self.paper_cursor < indices.len() {
                             let ref_idx = indices[self.paper_cursor];
-                            if let Some(refs) = self.ref_states.get_mut(idx)
-                                && let Some(rs) = refs.get_mut(ref_idx)
-                            {
-                                rs.fp_reason = FpReason::cycle(rs.fp_reason);
-                                if let Some(cache) = &self.current_query_cache {
-                                    cache.set_fp_override(
-                                        &rs.title,
-                                        rs.fp_reason.map(|r| r.as_str()),
-                                    );
-                                }
-                            }
+                            cycle_fp_reason_and_adjust_stats(
+                                &mut self.papers,
+                                &mut self.ref_states,
+                                idx,
+                                ref_idx,
+                                self.current_query_cache.as_ref(),
+                            );
                         }
                     }
                     Screen::RefDetail(paper_idx, ref_idx) => {
                         // Space on detail: cycle FP reason
                         let paper_idx = *paper_idx;
                         let ref_idx = *ref_idx;
-                        if let Some(refs) = self.ref_states.get_mut(paper_idx)
-                            && let Some(rs) = refs.get_mut(ref_idx)
-                        {
-                            rs.fp_reason = FpReason::cycle(rs.fp_reason);
-                            if let Some(cache) = &self.current_query_cache {
-                                cache.set_fp_override(&rs.title, rs.fp_reason.map(|r| r.as_str()));
-                            }
-                        }
+                        cycle_fp_reason_and_adjust_stats(
+                            &mut self.papers,
+                            &mut self.ref_states,
+                            paper_idx,
+                            ref_idx,
+                            self.current_query_cache.as_ref(),
+                        );
                     }
                     Screen::Config => {
                         // Space on config: toggle database or cycle theme
@@ -939,5 +934,62 @@ impl App {
             Action::None => {}
         }
         false
+    }
+}
+
+/// Cycle the FP reason on one reference and keep the paper-level
+/// stats in sync.
+///
+/// Pressing Space cycles `rs.fp_reason` through None → Some(r1) →
+/// Some(r2) → ... → None. Only the None ↔ Some transitions move the
+/// reference between the problematic bucket (not_found /
+/// mismatch / retracted) and `verified`; going between two Some
+/// variants is a purely-informational change. For the None↔Some
+/// transitions we call `PaperState::apply_fp_delta` so the queue
+/// table columns, the bottom-of-screen totals, and the paper-view
+/// "problems" counter all reflect the override immediately.
+///
+/// Takes disjoint mutable borrows (&mut papers, &mut ref_states)
+/// instead of &mut self so it can be called from both Screen::Paper
+/// and Screen::RefDetail arms without fighting the borrow checker
+/// over the enclosing match.
+fn cycle_fp_reason_and_adjust_stats(
+    papers: &mut [crate::model::queue::PaperState],
+    ref_states: &mut [Vec<crate::model::paper::RefState>],
+    paper_idx: usize,
+    ref_idx: usize,
+    cache: Option<&std::sync::Arc<hallucinator_core::QueryCache>>,
+) {
+    let Some(refs) = ref_states.get_mut(paper_idx) else {
+        return;
+    };
+    let Some(rs) = refs.get_mut(ref_idx) else {
+        return;
+    };
+
+    let was_safe = rs.fp_reason.is_some();
+    rs.fp_reason = FpReason::cycle(rs.fp_reason);
+    let is_safe = rs.fp_reason.is_some();
+
+    if let Some(cache) = cache {
+        cache.set_fp_override(&rs.title, rs.fp_reason.map(|r| r.as_str()));
+    }
+
+    // Only adjust stats on None↔Some boundary transitions. Some(r1)↔Some(r2)
+    // keeps the ref marked-safe, so the stats are already adjusted.
+    if was_safe == is_safe {
+        return;
+    }
+    let Some(result) = &rs.result else {
+        return; // ref hasn't been validated yet — no stats to adjust
+    };
+    let is_retracted = result
+        .retraction_info
+        .as_ref()
+        .is_some_and(|r| r.is_retracted);
+    let status = result.status.clone();
+    let dir: i32 = if is_safe { 1 } else { -1 };
+    if let Some(paper) = papers.get_mut(paper_idx) {
+        paper.apply_fp_delta(&status, is_retracted, dir);
     }
 }

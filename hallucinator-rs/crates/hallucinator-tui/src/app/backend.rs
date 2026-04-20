@@ -235,16 +235,31 @@ impl App {
             }
             ProgressEvent::Result { index, result, .. } => {
                 let result = *result;
+                let is_retracted = result
+                    .retraction_info
+                    .as_ref()
+                    .is_some_and(|r| r.is_retracted);
+                // Capture any fp_reason already on this ref (restored from
+                // the query cache during extraction, before validation
+                // completed). `record_status` will bump the raw bucket
+                // based on the validation outcome, and we then need to
+                // move the ref into `verified` via apply_fp_delta so the
+                // user's prior mark-safe decision continues to be
+                // reflected in the live queue counters.
+                let fp_preexisting = self
+                    .ref_states
+                    .get(paper_index)
+                    .and_then(|refs| refs.get(index))
+                    .is_some_and(|rs| rs.fp_reason.is_some());
                 if let Some(paper) = self.papers.get_mut(paper_index) {
                     // Track retry progress
                     if paper.phase == PaperPhase::Retrying {
                         paper.retry_done += 1;
                     }
-                    let is_retracted = result
-                        .retraction_info
-                        .as_ref()
-                        .is_some_and(|r| r.is_retracted);
                     paper.record_status(index, result.status.clone(), is_retracted);
+                    if fp_preexisting {
+                        paper.apply_fp_delta(&result.status, is_retracted, 1);
+                    }
                 }
                 if let Some(refs) = self.ref_states.get_mut(paper_index)
                     && let Some(rs) = refs.get_mut(index)
