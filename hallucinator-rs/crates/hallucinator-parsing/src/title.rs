@@ -246,25 +246,42 @@ pub(crate) fn clean_title_with_config(
         title = title[..=qmark_pos].to_string();
     }
 
-    // BUG #5 variant: `Title?: in VENUE …` or `Title!: in VENUE …`. Same
-    // venue-bleed artefact as the `.:` form handled in the cutoff table,
-    // but we want to preserve the `?` / `!`. Match `?:` or `!:` followed
-    // by a required `in` and a capitalised venue word.
+    // Venue bleed after `?:` or `!:`. This shape shows up in IEEE-style
+    // refs when the quote-handling path joins a quoted title (ending in
+    // `?` or `!`) with the text after the closing quote using `: ` as
+    // separator (see `extract_quoted_title` around the `format!("{}: {}",
+    // quoted_part, subtitle)` call) — producing `Title?: VENUE` even
+    // though the raw PDF text has `"Title?" VENUE`.
     //
-    // The `in ` is REQUIRED (not optional). A bare `?: [A-Z]…` would also
-    // match a legitimate subtitle split like
-    // `How do users experience moderation?: A systematic literature review`
-    // (bluesky-blocks-paper ref 26) or
-    // `Alexa, Are You Listening?: Privacy Perceptions, Concerns, …`
-    // (test_acm_non_numeric_issue), truncating the title at the `?`.
-    // Keeping the `in ` requirement still catches
-    // `… custom protocols?: in NDSS` (the original motivating case); the
-    // `. Proceedings of …` venue-bleed that a post-subtitle citation
-    // carries is then handled by the separate Proceedings/venue cutoffs
-    // further down the pipeline, which correctly cut at the period
-    // without damaging the subtitle.
-    static QMARK_COLON_VENUE_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[?!]:\s+[Ii]n\s+[A-Z]").unwrap());
+    // The rule needs to cut at `?`/`!` when what follows is a venue, but
+    // keep the colon and subtitle when what follows is a legitimate
+    // prose subtitle. The distinguishing signal is the shape of the
+    // first token after `?:`:
+    //
+    //   Venue:
+    //     • `in ` / `In:` + capital  (`in NDSS`, `In: EuroSys`)
+    //     • 3+ letter acronym        (`ACM`, `IEEE`, `JPDC`, `NDSS`)
+    //     • known journal opener     (`Proceedings`, `Advances`,
+    //                                 `Journal`, `Transactions`,
+    //                                 `Communications`)
+    //   Subtitle (keep):
+    //     • single capital + prose   (`A systematic literature review`,
+    //                                 `The implication of intel cet…`)
+    //     • any multi-word English phrase not starting with the above.
+    //
+    // Previous iterations of this rule have oscillated between too
+    // aggressive (any `?: [A-Z]` — lost legitimate subtitles on
+    // bluesky-blocks-paper ref 26 and test_acm_non_numeric_issue) and
+    // too lax (require `in ` — let `?: ACM`, `?: Advances`, `?: JPDC`,
+    // `?: In:` through on 4 NDSS 2026 refs). The shape here is the
+    // narrowest that catches the real venue-bleed cases without
+    // clipping prose subtitles.
+    static QMARK_COLON_VENUE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"[?!]:\s+(?:[Ii]n:?\s+[A-Z]|[A-Z]{3,}(?:[^a-z]|$)|(?:Proceedings|Advances|Journal|Transactions|Communications)\s)",
+        )
+        .unwrap()
+    });
     if let Some(m) = QMARK_COLON_VENUE_RE.find(&title) {
         let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
         title = title[..=punct_pos].to_string();
@@ -3663,6 +3680,50 @@ mod tests {
         assert_eq!(
             cleaned,
             "Private set intersection: Are garbled circuits better than custom protocols?"
+        );
+    }
+
+    #[test]
+    fn test_qmark_colon_acronym_venue_truncates() {
+        // NDSS 2026 s140 / s448 regressions from an earlier iteration of
+        // QMARK_COLON_VENUE_RE that only recognized `in `-prefixed
+        // venues. In the IEEE style, the quote-handling path joins
+        // `"Title?" ACM sigsoft …` into `Title?: ACM sigsoft …`, where
+        // `ACM` is a 3+ char acronym that must still be recognized as a
+        // venue. Same pattern for `JPDC,`.
+        let t1 = "When do changes induce fixes?: ACM sigsoft software engineering notes";
+        assert_eq!(clean_title(t1, true), "When do changes induce fixes?");
+
+        let t2 = "How to achieve adaptive security for asynchronous bft?: JPDC";
+        assert_eq!(
+            clean_title(t2, true),
+            "How to achieve adaptive security for asynchronous bft?"
+        );
+    }
+
+    #[test]
+    fn test_qmark_colon_journal_opener_truncates() {
+        // NDSS 2026 s1469 regression: `?: Advances in neural information
+        // processing systems` — `Advances` is a known journal opener
+        // and must be recognized as a venue even though it's a single
+        // capital followed by prose (which would otherwise look like a
+        // legitimate subtitle).
+        let t = "Why do tree-based models still outperform deep learning on typical tabular data?: Advances in neural information processing systems";
+        assert_eq!(
+            clean_title(t, true),
+            "Why do tree-based models still outperform deep learning on typical tabular data?"
+        );
+    }
+
+    #[test]
+    fn test_qmark_colon_in_with_colon_truncates() {
+        // NDSS 2026 f2443 regression: `!: In: EuroSys` — `In:` (with
+        // its own colon) must be recognized as the "In" venue prefix,
+        // not just `In ` with a space.
+        let t = "Dissecting BFT Consensus: In Trusted Components we Trust!: In: EuroSys";
+        assert_eq!(
+            clean_title(t, true),
+            "Dissecting BFT Consensus: In Trusted Components we Trust!"
         );
     }
 
