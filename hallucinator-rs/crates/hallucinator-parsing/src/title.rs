@@ -246,12 +246,25 @@ pub(crate) fn clean_title_with_config(
         title = title[..=qmark_pos].to_string();
     }
 
-    // BUG #5 variant: `Title?: in VENUE …` or `Title!: VENUE …`. Same
+    // BUG #5 variant: `Title?: in VENUE …` or `Title!: in VENUE …`. Same
     // venue-bleed artefact as the `.:` form handled in the cutoff table,
-    // but we want to preserve the `?` / `!`. Match `?:` or `!:` followed by
-    // an optional "in" and a capitalised venue word.
+    // but we want to preserve the `?` / `!`. Match `?:` or `!:` followed
+    // by a required `in` and a capitalised venue word.
+    //
+    // The `in ` is REQUIRED (not optional). A bare `?: [A-Z]…` would also
+    // match a legitimate subtitle split like
+    // `How do users experience moderation?: A systematic literature review`
+    // (bluesky-blocks-paper ref 26) or
+    // `Alexa, Are You Listening?: Privacy Perceptions, Concerns, …`
+    // (test_acm_non_numeric_issue), truncating the title at the `?`.
+    // Keeping the `in ` requirement still catches
+    // `… custom protocols?: in NDSS` (the original motivating case); the
+    // `. Proceedings of …` venue-bleed that a post-subtitle citation
+    // carries is then handled by the separate Proceedings/venue cutoffs
+    // further down the pipeline, which correctly cut at the period
+    // without damaging the subtitle.
     static QMARK_COLON_VENUE_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"[?!]:\s+(?:[Ii]n\s+)?[A-Z]").unwrap());
+        Lazy::new(|| Regex::new(r"[?!]:\s+[Ii]n\s+[A-Z]").unwrap());
     if let Some(m) = QMARK_COLON_VENUE_RE.find(&title) {
         let punct_pos = title[..m.end()].rfind(['?', '!']).unwrap();
         title = title[..=punct_pos].to_string();
@@ -3592,6 +3605,12 @@ mod tests {
     #[test]
     fn test_acm_non_numeric_issue() {
         // Issue #147: Non-numeric issue numbers (e.g., "Issue CSCW") cause title misparsing
+        //
+        // Also covers the `?:` subtitle-split case: the full paper title is
+        // `Alexa, Are You Listening?: Privacy Perceptions, Concerns and
+        // Privacy-seeking Behaviors with Smart Speakers`. Previously the
+        // QMARK_COLON_VENUE_RE truncated at the `?` because its `in`
+        // marker was optional; the subtitle is now preserved.
         let ref_text = "Josephine Lau, Benjamin Zimmerman, and Florian Schaub. 2018. Alexa, Are You Listening?: Privacy Perceptions, Concerns and Privacy-seeking Behaviors with Smart Speakers. Proceedings of the ACM on Human-Computer Interaction 2 (2018). Issue CSCW.";
         let (title, _) = extract_title_from_reference(ref_text);
         let cleaned = clean_title(&title, false);
@@ -3601,9 +3620,49 @@ mod tests {
             cleaned
         );
         assert!(
+            cleaned.contains("Privacy Perceptions"),
+            "Subtitle after '?:' should be preserved: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("Smart Speakers"),
+            "Full subtitle should be kept (cut at '. Proceedings', not '?:'): {}",
+            cleaned
+        );
+        assert!(
             !cleaned.contains("Issue CSCW"),
             "Title should not be 'Issue CSCW': {}",
             cleaned
+        );
+    }
+
+    #[test]
+    fn test_qmark_colon_subtitle_preserved_without_in_marker() {
+        // bluesky-blocks-paper ref 26: `?:` introduces a legitimate
+        // subtitle (`A systematic literature review`), not a venue. The
+        // QMARK_COLON_VENUE_RE now requires `in ` after `?:`, so only
+        // actual venue splits like `?: in NDSS` trigger truncation.
+        let ref_text = "Renkai Ma, Yue You, Xinning Gui, and Yubo Kou. 2023. How do users experience moderation?: A systematic literature review. Proceedings of the ACM on Human-Computer Interaction 7, CSCW2 (2023), 1–30";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert_eq!(
+            cleaned, "How do users experience moderation?: A systematic literature review",
+            "Subtitle after `?:` must be preserved when no `in` marker follows; `. Proceedings` then cuts the venue bleed."
+        );
+    }
+
+    #[test]
+    fn test_qmark_colon_in_venue_still_truncates() {
+        // Regression guard for the original motivating case of
+        // QMARK_COLON_VENUE_RE: `?: in <venue>` should still truncate at
+        // `?` and drop the venue. Equivalent coverage already exists in
+        // test_venue_bleed_after_colon_cutoff but keeping a focused
+        // assertion here makes the `in`-required contract explicit.
+        let title = "Private set intersection: Are garbled circuits better than custom protocols?: in NDSS. The Internet Society";
+        let cleaned = clean_title(title, true);
+        assert_eq!(
+            cleaned,
+            "Private set intersection: Are garbled circuits better than custom protocols?"
         );
     }
 
