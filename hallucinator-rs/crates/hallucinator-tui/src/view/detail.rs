@@ -31,43 +31,7 @@ pub fn render_in(
     let refs = &app.ref_states[paper_index];
     let rs = &refs[ref_index];
 
-    // --- Collect links for OSC 8 hyperlink rendering ---
-    let mut links: Vec<LinkEntry> = Vec::new();
-    if let Some(result) = &rs.result {
-        let scholar_query = encode_url_param(&rs.title);
-        let scholar_url = format!(
-            "https://scholar.google.com/scholar?q=%22{}%22",
-            scholar_query
-        );
-        links.push(LinkEntry {
-            label: "Open in Google Scholar".into(),
-            url: scholar_url,
-        });
-        if let Some(doi) = &result.doi_info {
-            let url = format!("https://doi.org/{}", doi.doi);
-            links.push(LinkEntry {
-                label: format!("DOI: {url}"),
-                url,
-            });
-        }
-        if let Some(arxiv) = &result.arxiv_info {
-            let url = format!("https://arxiv.org/abs/{}", arxiv.arxiv_id);
-            links.push(LinkEntry {
-                label: format!("arXiv: {url}"),
-                url,
-            });
-        }
-    } else if matches!(rs.phase, RefPhase::Skipped(_)) && !rs.title.is_empty() {
-        let scholar_query = encode_url_param(&rs.title);
-        let scholar_url = format!(
-            "https://scholar.google.com/scholar?q=%22{}%22",
-            scholar_query
-        );
-        links.push(LinkEntry {
-            label: "Open in Google Scholar".into(),
-            url: scholar_url,
-        });
-    }
+    let links = collect_links(rs);
 
     let chunks = Layout::vertical([
         Constraint::Length(1), // breadcrumb
@@ -509,6 +473,71 @@ fn render_footer(f: &mut Frame, area: Rect, theme: &Theme) {
     f.render_widget(Paragraph::new(footer), area);
 }
 
+/// Build the list of external links shown in the detail view's LINKS
+/// section. Pure function of the reference state so it can be unit-tested
+/// without constructing a ratatui Frame.
+///
+/// Order of links (top-down):
+///   1. Google Scholar verbatim-title query       (always, if title)
+///   2. Google Web verbatim-title query           (always, if title)
+///   3. DOI resolver URL                          (if validation found a DOI)
+///   4. arXiv abs URL                             (if validation found an arXiv ID)
+///   5. Each URL extracted from the reference     (all of rs.urls, in order)
+///
+/// The two search queries use `%22…%22` quoting so the engines treat
+/// the title as a literal phrase. Google Web catches things Scholar
+/// misses — GitHub READMEs, tech reports, vendor docs, blog posts —
+/// and is especially useful when all academic DBs came back not-found.
+///
+/// The reference-level URLs (`rs.urls`) come from the PDF reference
+/// text itself (e.g., `https://github.com/user/repo`). They're surfaced
+/// as clickable links alongside DOI/arXiv so the user can jump
+/// straight to the cited page.
+fn collect_links(rs: &crate::model::paper::RefState) -> Vec<LinkEntry> {
+    let mut links: Vec<LinkEntry> = Vec::new();
+
+    if !rs.title.is_empty() {
+        let title_query = encode_url_param(&rs.title);
+        links.push(LinkEntry {
+            label: "Open in Google Scholar".into(),
+            url: format!(
+                "https://scholar.google.com/scholar?q=%22{}%22",
+                title_query
+            ),
+        });
+        links.push(LinkEntry {
+            label: "Open in Google".into(),
+            url: format!("https://www.google.com/search?q=%22{}%22", title_query),
+        });
+    }
+
+    if let Some(result) = &rs.result {
+        if let Some(doi) = &result.doi_info {
+            let url = format!("https://doi.org/{}", doi.doi);
+            links.push(LinkEntry {
+                label: format!("DOI: {url}"),
+                url,
+            });
+        }
+        if let Some(arxiv) = &result.arxiv_info {
+            let url = format!("https://arxiv.org/abs/{}", arxiv.arxiv_id);
+            links.push(LinkEntry {
+                label: format!("arXiv: {url}"),
+                url,
+            });
+        }
+    }
+
+    for url in &rs.urls {
+        links.push(LinkEntry {
+            label: format!("URL: {url}"),
+            url: url.clone(),
+        });
+    }
+
+    links
+}
+
 /// Percent-encode a string for use in a URL query parameter.
 fn encode_url_param(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
@@ -529,3 +558,204 @@ fn encode_url_param(s: &str) -> String {
 }
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::paper::{RefPhase, RefState};
+    use hallucinator_core::{ArxivInfo, DoiInfo, Status, ValidationResult};
+
+    fn ref_state_with(
+        title: &str,
+        urls: Vec<String>,
+        result: Option<ValidationResult>,
+    ) -> RefState {
+        RefState {
+            index: 0,
+            title: title.to_string(),
+            phase: RefPhase::Pending,
+            result,
+            fp_reason: None,
+            raw_citation: String::new(),
+            authors: Vec::new(),
+            doi: None,
+            arxiv_id: None,
+            urls,
+        }
+    }
+
+    fn empty_val_result() -> ValidationResult {
+        ValidationResult {
+            title: String::new(),
+            raw_citation: String::new(),
+            ref_authors: Vec::new(),
+            status: Status::NotFound,
+            source: None,
+            found_authors: Vec::new(),
+            paper_url: None,
+            failed_dbs: Vec::new(),
+            db_results: Vec::new(),
+            doi_info: None,
+            arxiv_info: None,
+            retraction_info: None,
+        }
+    }
+
+    fn val_result_doi(doi: &str) -> ValidationResult {
+        ValidationResult {
+            doi_info: Some(DoiInfo {
+                doi: doi.to_string(),
+                valid: true,
+                title: None,
+            }),
+            ..empty_val_result()
+        }
+    }
+
+    fn val_result_arxiv(id: &str) -> ValidationResult {
+        ValidationResult {
+            arxiv_info: Some(ArxivInfo {
+                arxiv_id: id.to_string(),
+                valid: true,
+                title: None,
+            }),
+            ..empty_val_result()
+        }
+    }
+
+    #[test]
+    fn title_yields_scholar_and_google_search_links() {
+        // Both search engines should be offered for any ref with a
+        // title — Scholar for academic hits, Google Web for tech
+        // reports / GitHub READMEs / blog posts that Scholar misses.
+        let rs = ref_state_with("Attention Is All You Need", vec![], None);
+        let links = collect_links(&rs);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].label, "Open in Google Scholar");
+        assert!(links[0].url.starts_with("https://scholar.google.com/scholar?q=%22"));
+        assert!(links[0].url.contains("Attention+Is+All+You+Need"));
+        assert_eq!(links[1].label, "Open in Google");
+        assert!(links[1].url.starts_with("https://www.google.com/search?q=%22"));
+        assert!(links[1].url.contains("Attention+Is+All+You+Need"));
+        // Both queries wrap the title in %22 (URL-encoded double quotes)
+        // so the engines treat it as a literal phrase search.
+        assert!(links[0].url.ends_with("%22"));
+        assert!(links[1].url.ends_with("%22"));
+    }
+
+    #[test]
+    fn empty_title_skips_search_links() {
+        // No point offering `scholar.google.com/scholar?q=%22%22`.
+        let rs = ref_state_with("", vec![], None);
+        let links = collect_links(&rs);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn reference_urls_become_clickable_links() {
+        // `rs.urls` (from the PDF reference text) should appear as
+        // `URL: <url>` entries alongside the search/DOI/arXiv ones.
+        let rs = ref_state_with(
+            "bluesky_downloader: Tools to Download the Bluesky Network",
+            vec!["https://github.com/mrd0ll4r/bluesky_downloader".into()],
+            None,
+        );
+        let links = collect_links(&rs);
+        // 2 search + 1 url
+        assert_eq!(links.len(), 3);
+        assert_eq!(
+            links[2].label,
+            "URL: https://github.com/mrd0ll4r/bluesky_downloader"
+        );
+        assert_eq!(
+            links[2].url,
+            "https://github.com/mrd0ll4r/bluesky_downloader"
+        );
+    }
+
+    #[test]
+    fn multiple_reference_urls_preserved_in_order() {
+        // References occasionally list more than one URL (e.g., a
+        // main URL plus a mirror or a related tracker issue). All of
+        // them should be surfaced in extraction order.
+        let rs = ref_state_with(
+            "Some paper",
+            vec![
+                "https://github.com/a/repo".into(),
+                "https://example.com/blog/post".into(),
+            ],
+            None,
+        );
+        let links = collect_links(&rs);
+        assert_eq!(links.len(), 4);
+        assert_eq!(links[2].label, "URL: https://github.com/a/repo");
+        assert_eq!(links[3].label, "URL: https://example.com/blog/post");
+    }
+
+    #[test]
+    fn doi_and_arxiv_and_url_all_coexist_in_expected_order() {
+        // Verified ref with a DOI from validation, an arXiv ID from
+        // validation, AND a reference-level URL: all three must show
+        // up, with DOI / arXiv sitting between the search queries and
+        // the reference URLs (matches the order in the comment on
+        // collect_links).
+        let rs = ref_state_with(
+            "A paper",
+            vec!["https://github.com/x/y".into()],
+            Some(ValidationResult {
+                doi_info: Some(DoiInfo {
+                    doi: "10.1234/foo".into(),
+                    valid: true,
+                    title: None,
+                }),
+                arxiv_info: Some(ArxivInfo {
+                    arxiv_id: "2101.00001".into(),
+                    valid: true,
+                    title: None,
+                }),
+                ..empty_val_result()
+            }),
+        );
+        let links = collect_links(&rs);
+        assert_eq!(links.len(), 5);
+        assert_eq!(links[0].label, "Open in Google Scholar");
+        assert_eq!(links[1].label, "Open in Google");
+        assert_eq!(links[2].label, "DOI: https://doi.org/10.1234/foo");
+        assert_eq!(links[3].label, "arXiv: https://arxiv.org/abs/2101.00001");
+        assert_eq!(links[4].label, "URL: https://github.com/x/y");
+    }
+
+    #[test]
+    fn doi_alone_from_validation_adds_doi_link() {
+        // Regression: DOI/arXiv come from the *validation result*, not
+        // from the pre-validation rs.doi/rs.arxiv_id fields. Make sure
+        // the collect_links path still consults result.doi_info.
+        let rs = ref_state_with("Some title", vec![], Some(val_result_doi("10.5/test")));
+        let links = collect_links(&rs);
+        // Scholar + Google + DOI
+        assert_eq!(links.len(), 3);
+        assert_eq!(links[2].label, "DOI: https://doi.org/10.5/test");
+        assert_eq!(links[2].url, "https://doi.org/10.5/test");
+    }
+
+    #[test]
+    fn arxiv_alone_from_validation_adds_arxiv_link() {
+        let rs = ref_state_with("Some title", vec![], Some(val_result_arxiv("2305.12345")));
+        let links = collect_links(&rs);
+        assert_eq!(links.len(), 3);
+        assert_eq!(links[2].label, "arXiv: https://arxiv.org/abs/2305.12345");
+        assert_eq!(links[2].url, "https://arxiv.org/abs/2305.12345");
+    }
+
+    #[test]
+    fn url_only_with_empty_title_still_shown() {
+        // Skipped-with-URL refs (e.g., short-title refs that still
+        // have a cited GitHub link) should at minimum expose that
+        // URL clickably, even when Scholar/Google are suppressed for
+        // lack of a title.
+        let rs = ref_state_with("", vec!["https://github.com/a/b".into()], None);
+        let links = collect_links(&rs);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "URL: https://github.com/a/b");
+    }
+}
