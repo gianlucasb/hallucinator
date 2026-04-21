@@ -17,6 +17,7 @@ use crate::authors::validate_authors;
 use crate::db::DatabaseBackend;
 use crate::db::searxng::Searxng;
 use crate::db::url_check::UrlChecker;
+use crate::db::wayback;
 use crate::orchestrator::{build_database_list, query_local_databases};
 use crate::rate_limit::{self, ArxivIdContext, DbQueryError, DoiContext};
 use crate::{
@@ -548,6 +549,52 @@ async fn apply_fallbacks(
             paper_index: 0,
             ref_index,
             db_name: "URL Check".to_string(),
+            status: DbStatus::NoMatch,
+            elapsed,
+        });
+    }
+
+    // ── Wayback Machine fallback ───────────────────────────────────────
+    //
+    // URL Check didn't find anything live at any of the cited URLs — but
+    // the URLs may have been live when the citation was written and
+    // since 404'd (link rot). If the Internet Archive has a valid
+    // snapshot, that's strong evidence the citation was real; report the
+    // archived URL so the user can read the captured content.
+    if status == Status::NotFound && !urls.is_empty() {
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let start = std::time::Instant::now();
+        let wayback_result = wayback::check_first_snapshot(urls, client, timeout).await;
+        let elapsed = start.elapsed();
+
+        if let Some(result) = wayback_result {
+            progress(ProgressEvent::DatabaseQueryComplete {
+                paper_index: 0,
+                ref_index,
+                db_name: "Wayback Machine".to_string(),
+                status: DbStatus::Match,
+                elapsed,
+            });
+            db_results.push(DbResult {
+                db_name: "Wayback Machine".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: Some(result.snapshot_url.clone()),
+                error_message: None,
+            });
+            return (
+                Status::Verified,
+                Some("Wayback Machine".into()),
+                vec![],
+                Some(result.snapshot_url),
+                db_results,
+            );
+        }
+        progress(ProgressEvent::DatabaseQueryComplete {
+            paper_index: 0,
+            ref_index,
+            db_name: "Wayback Machine".to_string(),
             status: DbStatus::NoMatch,
             elapsed,
         });

@@ -275,6 +275,47 @@ pub async fn check_single_reference(
         }
     }
 
+    // Step 2.55: Wayback Machine fallback for link-rotted URLs.
+    // If URL Check found no live URL, a cited URL may still have been
+    // real when the paper was written — check archive.org for a valid
+    // snapshot. Mirrors the same logic as the pool's `apply_fallbacks`.
+    if db_result.status == Status::NotFound && !reference.urls.is_empty() {
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let start = std::time::Instant::now();
+        let wayback_result =
+            crate::db::wayback::check_first_snapshot(&reference.urls, client, timeout).await;
+        let elapsed = start.elapsed();
+
+        if let Some(result) = wayback_result {
+            let wayback_db_result = DbResult {
+                db_name: "Wayback Machine".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: Some(result.snapshot_url.clone()),
+                error_message: None,
+            };
+            if let Some(cb) = on_db_complete {
+                cb(wayback_db_result.clone());
+            }
+            db_result.db_results.push(wayback_db_result);
+
+            db_result.status = Status::Verified;
+            db_result.source = Some("Wayback Machine".into());
+            db_result.found_authors = vec![];
+            db_result.paper_url = Some(result.snapshot_url);
+        } else if let Some(cb) = on_db_complete {
+            cb(DbResult {
+                db_name: "Wayback Machine".into(),
+                status: DbStatus::NoMatch,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: None,
+                error_message: None,
+            });
+        }
+    }
+
     // Step 2.6: SearxNG fallback for NotFound references
     if db_result.status == Status::NotFound
         && let Some(ref searxng_url) = config.searxng_url
