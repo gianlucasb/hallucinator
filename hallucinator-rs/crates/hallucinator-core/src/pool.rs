@@ -236,6 +236,25 @@ async fn drainer_loop(
             continue;
         }
 
+        // Online arXiv + offline arXiv enabled + no arxiv_id on ref:
+        // skip online. Offline carries the same latest-version title,
+        // so online would return the identical answer — the only case
+        // where online adds value is the retitled-paper walk over
+        // `/abs/{id}v{1..N}`, which needs an explicit arXiv ID on the
+        // reference. Without an ID, online is pure latency.
+        if db.name() == "arXiv"
+            && config.arxiv_offline_db.is_some()
+            && collector.reference.arxiv_id.is_none()
+        {
+            tracing::debug!(
+                db = db.name(),
+                title = %collector.title,
+                "skipping: offline arXiv covers title lookup (no arXiv ID on ref)"
+            );
+            skip_and_decrement(collector, db.name()).await;
+            continue;
+        }
+
         // Build DOI context if this ref has a DOI (used by DOI backend)
         let doi_ctx = collector.reference.doi.as_deref().map(|doi| DoiContext {
             doi,

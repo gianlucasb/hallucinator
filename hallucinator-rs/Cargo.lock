@@ -1437,6 +1437,7 @@ dependencies = [
  "dirs",
  "dotenvy",
  "hallucinator-acl",
+ "hallucinator-arxiv-offline",
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",

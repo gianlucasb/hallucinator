@@ -65,7 +65,7 @@ enum Command {
         #[arg(long)]
         acl_offline: Option<PathBuf>,
 
-        /// Path to offline arXiv metadata database (OAI-PMH harvest)
+        /// Path to offline arXiv metadata database (Kaggle snapshot)
         #[arg(long)]
         arxiv_offline: Option<PathBuf>,
 

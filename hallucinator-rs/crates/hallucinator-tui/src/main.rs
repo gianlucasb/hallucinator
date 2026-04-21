@@ -63,6 +63,10 @@ struct Cli {
     #[arg(long)]
     acl_offline: Option<PathBuf>,
 
+    /// Path to offline arXiv metadata database (Kaggle snapshot)
+    #[arg(long)]
+    arxiv_offline: Option<PathBuf>,
+
     /// Path to offline OpenAlex Tantivy index
     #[arg(long)]
     openalex_offline: Option<PathBuf>,
@@ -231,6 +235,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref path) = cli.acl_offline {
         config_state.acl_offline_path = path.display().to_string();
     }
+    if let Some(ref path) = cli.arxiv_offline {
+        config_state.arxiv_offline_path = path.display().to_string();
+    }
     if let Some(ref path) = cli.openalex_offline {
         config_state.openalex_offline_path = path.display().to_string();
     }
@@ -287,6 +294,22 @@ async fn main() -> anyhow::Result<()> {
         for candidate in &candidates {
             if candidate.exists() {
                 config_state.acl_offline_path = candidate.display().to_string();
+                break;
+            }
+        }
+    }
+    // Auto-detect default arXiv DB if no explicit path configured
+    if config_state.arxiv_offline_path.is_empty() {
+        let candidates = [
+            PathBuf::from("arxiv.db"),
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hallucinator")
+                .join("arxiv.db"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                config_state.arxiv_offline_path = candidate.display().to_string();
                 break;
             }
         }
@@ -348,6 +371,30 @@ async fn main() -> anyhow::Result<()> {
             match backend::open_acl_db(path) {
                 Ok(db) => {
                     startup_info.push(format!("ACL offline DB loaded: {}", path.display()));
+                    Some(db)
+                }
+                Err(e) => {
+                    startup_warnings.push(format!("{e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    // Resolve arXiv offline path from config state
+    let arxiv_offline_path: Option<PathBuf> = if config_state.arxiv_offline_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&config_state.arxiv_offline_path))
+    };
+
+    // Open arXiv database if configured (fall back to None if file missing or corrupt)
+    let arxiv_offline_db: Option<Arc<Mutex<hallucinator_arxiv_offline::ArxivDatabase>>> =
+        if let Some(ref path) = arxiv_offline_path {
+            match backend::open_arxiv_db(path) {
+                Ok(db) => {
+                    startup_info.push(format!("arXiv offline DB loaded: {}", path.display()));
                     Some(db)
                 }
                 Err(e) => {
@@ -596,6 +643,8 @@ async fn main() -> anyhow::Result<()> {
     let mut cached_dblp_db = dblp_offline_db.clone();
     let mut cached_acl_path = acl_offline_path.clone();
     let mut cached_acl_db = acl_offline_db.clone();
+    let mut cached_arxiv_path = arxiv_offline_path.clone();
+    let mut cached_arxiv_db = arxiv_offline_db.clone();
     let mut cached_openalex_path = openalex_offline_path.clone();
     let mut cached_openalex_db = openalex_offline_db.clone();
     let check_openalex_authors = cli.check_openalex_authors;
@@ -633,6 +682,16 @@ async fn main() -> anyhow::Result<()> {
                         };
                     }
 
+                    // If user changed the arXiv path in config, try to open the new DB
+                    if config.arxiv_offline_path != cached_arxiv_path {
+                        cached_arxiv_path = config.arxiv_offline_path.clone();
+                        cached_arxiv_db = if let Some(ref path) = cached_arxiv_path {
+                            backend::open_arxiv_db(path).ok()
+                        } else {
+                            None
+                        };
+                    }
+
                     // If user changed the OpenAlex path in config, try to open the new index
                     if config.openalex_offline_path != cached_openalex_path {
                         cached_openalex_path = config.openalex_offline_path.clone();
@@ -647,6 +706,8 @@ async fn main() -> anyhow::Result<()> {
                     config.dblp_offline_db = cached_dblp_db.clone();
                     config.acl_offline_path = cached_acl_path.clone();
                     config.acl_offline_db = cached_acl_db.clone();
+                    config.arxiv_offline_path = cached_arxiv_path.clone();
+                    config.arxiv_offline_db = cached_arxiv_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
@@ -669,6 +730,8 @@ async fn main() -> anyhow::Result<()> {
                     config.dblp_offline_db = cached_dblp_db.clone();
                     config.acl_offline_path = cached_acl_path.clone();
                     config.acl_offline_db = cached_acl_db.clone();
+                    config.arxiv_offline_path = cached_arxiv_path.clone();
+                    config.arxiv_offline_db = cached_arxiv_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
