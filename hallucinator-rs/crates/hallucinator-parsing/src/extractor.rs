@@ -214,13 +214,24 @@ fn parse_single_reference(
     {
         // Short titles can still be real citations if we have strong signals:
         // DOI, arXiv ID, URLs, or venue/year markers in the raw text.
-        // Note: from_quotes alone is not a strong signal — most IEEE/ACM refs
-        // use quoted titles, which would bypass min_title_words for nearly everything.
-        let has_strong_signal = !cleaned_title.is_empty()
-            && (doi.is_some()
-                || arxiv_id.is_some()
-                || !urls.is_empty()
-                || looks_like_citation(&ref_text));
+        //
+        // A verifiable identifier alone is enough to keep the ref alive
+        // even when the title extractor returned nothing usable. Typical
+        // shape: "Ze Jiang. trace-ruler. https://github.com/…" — the
+        // author-period-title-period prefix confuses the title
+        // extractor, cleaned_title comes back empty, but the URL is
+        // directly checkable. Previously the ref was skipped and URL
+        // Check never ran; now URL Check verifies the link, and the
+        // ref is reported as Verified (URL Check) with an empty
+        // title rather than as a potential hallucination.
+        //
+        // `looks_like_citation` alone isn't enough without a title — it
+        // only inspects structural hints (venue/year/conf words) that
+        // aren't verifiable on their own.
+        let has_strong_signal = doi.is_some()
+            || arxiv_id.is_some()
+            || !urls.is_empty()
+            || (!cleaned_title.is_empty() && looks_like_citation(&ref_text));
 
         if !has_strong_signal {
             static WS_SKIP_RE2: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
@@ -266,9 +277,21 @@ fn parse_single_reference(
         }
     }
 
+    // A ref that reached this point via an identifier-only strong signal
+    // (URL / DOI / arXiv with an empty title) goes out with `title = None`,
+    // not `title = Some("")`. Downstream lookups tolerate a None title
+    // (URL Check and Wayback don't use it; DOI / arXiv backends compare
+    // against an empty string and return NotFound if no additional
+    // identifier logic kicks in), so this keeps the identifier-only
+    // code path honest without changing behavior for the normal case
+    // where cleaned_title is populated.
     ParsedRef::Ref(Reference {
         raw_citation,
-        title: Some(cleaned_title),
+        title: if cleaned_title.is_empty() {
+            None
+        } else {
+            Some(cleaned_title)
+        },
         authors: ref_authors,
         doi,
         arxiv_id,
@@ -636,6 +659,78 @@ mod tests {
                 assert!(!r.urls.is_empty(), "Should have extracted URL");
             }
             ParsedRef::Skip(..) => panic!("Short title with URL should be rescued"),
+        }
+    }
+
+    #[test]
+    fn test_empty_title_with_url_is_not_skipped() {
+        // NDSS 2026 f456 refs 14/29/43/46/47 and many huggingface refs:
+        // `Author. short-repo-name. https://github.com/user/repo` — the
+        // `author. name. url` prefix confuses the title extractor and
+        // cleaned_title comes back empty. Previously the ref was skipped
+        // and URL Check never ran. With the strong-signal tweak, any
+        // identifier alone keeps the ref alive so URL Check / Wayback
+        // can verify it.
+        let ext = ReferenceExtractor::new();
+        let ref_text = "Ze Jiang. trace-ruler. https://github.com/Ming-bc/trace-ruler";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                assert!(!r.urls.is_empty(), "Should surface the GitHub URL");
+                assert!(
+                    r.urls[0].contains("github.com/Ming-bc/trace-ruler"),
+                    "URL should be the cited GitHub repo, got {:?}",
+                    r.urls
+                );
+            }
+            ParsedRef::Skip(reason, _, _) => {
+                panic!("URL-bearing ref should not be skipped (skipped due to {:?})", reason);
+            }
+        }
+    }
+
+    #[test]
+    fn test_identifier_only_ref_keeps_title_as_none() {
+        // Companion to test_empty_title_with_url_is_not_skipped: when
+        // cleaned_title is empty and the ref survives via the URL
+        // strong-signal, the output Reference.title is `None` — not
+        // `Some("")` — so downstream display / lookup logic can cleanly
+        // distinguish "we have a title" from "we have no title".
+        let ext = ReferenceExtractor::new();
+        let ref_text = "Author. short. https://github.com/a/b";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                // The extractor may successfully recover a short title
+                // like "short" or return None; either is acceptable
+                // here. What we're pinning is that if title is present,
+                // it's non-empty — never Some("").
+                if let Some(t) = &r.title {
+                    assert!(!t.is_empty(), "title field must be None, not Some(\"\")");
+                }
+            }
+            ParsedRef::Skip(reason, _, _) => {
+                panic!("URL-bearing ref should not be skipped (skipped due to {:?})", reason);
+            }
+        }
+    }
+
+    #[test]
+    fn test_short_title_with_no_signal_still_skipped() {
+        // Guard: refs with neither a title nor any identifier MUST still
+        // get skipped — the Fix 1 change only keeps them alive when
+        // there is something verifiable to act on.
+        let ext = ReferenceExtractor::new();
+        let ref_text = "Foo. bar.";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Skip(..) => { /* expected */ }
+            ParsedRef::Ref(r) => {
+                panic!(
+                    "Ref with no title and no identifier should still be skipped (got title={:?}, urls={:?})",
+                    r.title, r.urls
+                );
+            }
         }
     }
 
