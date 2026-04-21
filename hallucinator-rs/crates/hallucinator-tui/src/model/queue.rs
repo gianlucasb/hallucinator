@@ -137,6 +137,60 @@ impl PaperState {
         });
     }
 
+    /// Adjust the status-bucket counters for a false-positive override
+    /// on a single reference.
+    ///
+    /// `dir = +1` means "user just marked this ref safe" — move it out
+    /// of its current status bucket (not_found / mismatch / retracted)
+    /// into `verified`.  `dir = -1` undoes that (user un-marked it).
+    ///
+    /// Mirrors the bucket structure of `record_status`: Status::Verified
+    /// is unchanged (already counted in `verified`); Status::Mismatch
+    /// decrements the overall `mismatch` counter plus each matching
+    /// sub-flag (`author_mismatch`, `doi_mismatch`, `arxiv_mismatch`);
+    /// `is_retracted` is an independent counter and is always toggled.
+    ///
+    /// Called from three places:
+    ///   * `app/update.rs` when the user cycles the fp reason with Space,
+    ///   * `app/backend.rs` when a ProgressEvent::Result arrives for a
+    ///     ref whose fp override was already restored from the query
+    ///     cache during extraction,
+    ///   * `load.rs` after loading a JSON export whose refs carry
+    ///     persisted fp_reason fields.
+    pub fn apply_fp_delta(&mut self, status: &Status, is_retracted: bool, dir: i32) {
+        debug_assert!(dir == 1 || dir == -1, "dir must be +1 or -1");
+        let add = |n: &mut usize, delta: i32| {
+            if delta >= 0 {
+                *n = n.saturating_add(delta as usize);
+            } else {
+                *n = n.saturating_sub(delta.unsigned_abs() as usize);
+            }
+        };
+        match status {
+            Status::Verified => {}
+            Status::NotFound => {
+                add(&mut self.stats.not_found, -dir);
+                add(&mut self.stats.verified, dir);
+            }
+            Status::Mismatch(kind) => {
+                add(&mut self.stats.mismatch, -dir);
+                if kind.contains(MismatchKind::AUTHOR) {
+                    add(&mut self.stats.author_mismatch, -dir);
+                }
+                if kind.contains(MismatchKind::DOI) {
+                    add(&mut self.stats.doi_mismatch, -dir);
+                }
+                if kind.contains(MismatchKind::ARXIV_ID) {
+                    add(&mut self.stats.arxiv_mismatch, -dir);
+                }
+                add(&mut self.stats.verified, dir);
+            }
+        }
+        if is_retracted {
+            add(&mut self.stats.retracted, -dir);
+        }
+    }
+
     /// Number of completed results.
     pub fn completed_count(&self) -> usize {
         self.results.iter().filter(|r| r.is_some()).count()
@@ -271,4 +325,101 @@ pub fn filtered_indices(
         })
         .map(|(i, _)| i)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paper_with_recorded(statuses: &[(Status, bool)]) -> PaperState {
+        // Helper: build a paper and run record_status for each entry so
+        // the raw counters land in the exact shape the live event loop
+        // would produce. `.1` is `is_retracted`.
+        let mut p = PaperState::new("t".into());
+        p.init_results(statuses.len());
+        for (i, (status, is_retracted)) in statuses.iter().enumerate() {
+            p.record_status(i, status.clone(), *is_retracted);
+        }
+        p.stats.total = statuses.len();
+        p.total_refs = statuses.len();
+        p
+    }
+
+    #[test]
+    fn apply_fp_delta_not_found_marks_safe() {
+        // Single not_found ref → raw stats: not_found=1, verified=0.
+        // Mark safe → not_found=0, verified=1.
+        let mut p = paper_with_recorded(&[(Status::NotFound, false)]);
+        assert_eq!(p.stats.not_found, 1);
+        assert_eq!(p.stats.verified, 0);
+        p.apply_fp_delta(&Status::NotFound, false, 1);
+        assert_eq!(p.stats.not_found, 0);
+        assert_eq!(p.stats.verified, 1);
+    }
+
+    #[test]
+    fn apply_fp_delta_not_found_is_reversible() {
+        // Mark safe then un-mark → back to original raw counts.
+        let mut p = paper_with_recorded(&[(Status::NotFound, false)]);
+        p.apply_fp_delta(&Status::NotFound, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, -1);
+        assert_eq!(p.stats.not_found, 1);
+        assert_eq!(p.stats.verified, 0);
+    }
+
+    #[test]
+    fn apply_fp_delta_mismatch_decrements_all_matching_subflags() {
+        let kind = MismatchKind::AUTHOR | MismatchKind::DOI;
+        let mut p = paper_with_recorded(&[(Status::Mismatch(kind), false)]);
+        assert_eq!(p.stats.mismatch, 1);
+        assert_eq!(p.stats.author_mismatch, 1);
+        assert_eq!(p.stats.doi_mismatch, 1);
+        assert_eq!(p.stats.arxiv_mismatch, 0);
+        p.apply_fp_delta(&Status::Mismatch(kind), false, 1);
+        assert_eq!(p.stats.mismatch, 0);
+        assert_eq!(p.stats.author_mismatch, 0);
+        assert_eq!(p.stats.doi_mismatch, 0);
+        assert_eq!(p.stats.arxiv_mismatch, 0);
+        assert_eq!(p.stats.verified, 1);
+    }
+
+    #[test]
+    fn apply_fp_delta_retracted_toggles_independently_of_status() {
+        // A retracted ref can coexist with any status; the `retracted`
+        // counter is separate and must be toggled on apply_fp_delta.
+        let mut p = paper_with_recorded(&[(Status::Verified, true)]);
+        assert_eq!(p.stats.verified, 1);
+        assert_eq!(p.stats.retracted, 1);
+        p.apply_fp_delta(&Status::Verified, true, 1);
+        // Status::Verified: verified unchanged. Retracted decrements.
+        assert_eq!(p.stats.verified, 1);
+        assert_eq!(p.stats.retracted, 0);
+    }
+
+    #[test]
+    fn apply_fp_delta_verified_status_only_retracted_flips() {
+        let mut p = paper_with_recorded(&[(Status::Verified, false)]);
+        let before = p.stats.clone();
+        p.apply_fp_delta(&Status::Verified, false, 1);
+        // Status::Verified + not_retracted → nothing to move.
+        assert_eq!(p.stats.verified, before.verified);
+        assert_eq!(p.stats.not_found, before.not_found);
+        assert_eq!(p.stats.mismatch, before.mismatch);
+    }
+
+    #[test]
+    fn problems_count_drops_when_all_refs_marked_safe() {
+        // End-to-end: a paper with 2 not_found + 1 verified refs. After
+        // marking both not_found refs safe, problems() must read 0.
+        let mut p = paper_with_recorded(&[
+            (Status::NotFound, false),
+            (Status::NotFound, false),
+            (Status::Verified, false),
+        ]);
+        assert_eq!(p.problems(), 2);
+        p.apply_fp_delta(&Status::NotFound, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, 1);
+        assert_eq!(p.problems(), 0);
+        assert_eq!(p.stats.verified, 3);
+    }
 }

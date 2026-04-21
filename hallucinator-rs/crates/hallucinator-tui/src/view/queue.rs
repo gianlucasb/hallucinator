@@ -140,10 +140,12 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let wide = area.width >= 80;
 
-    // Build header row
+    // Build header row. `Safe` counts references the user has marked safe
+    // (any FpReason). Grouped next to `OK` because both represent
+    // references the user / auto-check believe to be legitimate.
     let header_cells = if wide {
         vec![
-            "#", "Paper", "Refs", "OK", "Mis", "NF", "Skip", "%", "Ret", "Status",
+            "#", "Paper", "Refs", "OK", "Safe", "Mis", "NF", "Skip", "%", "Ret", "Status",
         ]
     } else {
         vec!["#", "Paper", "Refs", "Prob", "Status"]
@@ -237,12 +239,27 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(theme.dim)
                 };
                 let skip_text = format!("{}", paper.stats.skipped);
+                // `Safe` = count of refs where the user pressed Space to
+                // cycle an FP reason on. Derived on-the-fly from
+                // ref_states rather than stored on PaperState so it can
+                // never drift from the per-ref fp_reason source of truth.
+                let safe_count = app
+                    .ref_states
+                    .get(paper_idx)
+                    .map(|refs| refs.iter().filter(|rs| rs.is_marked_safe()).count())
+                    .unwrap_or(0);
+                let safe_style = if safe_count > 0 {
+                    Style::default().fg(theme.verified)
+                } else {
+                    Style::default().fg(theme.dim)
+                };
                 Row::new(vec![
                     Cell::from(num),
                     Cell::from(name).style(name_style),
                     Cell::from(refs),
                     Cell::from(format!("{}", paper.stats.verified))
                         .style(Style::default().fg(theme.verified)),
+                    Cell::from(format!("{}", safe_count)).style(safe_style),
                     Cell::from(format!("{}", paper.stats.mismatch))
                         .style(Style::default().fg(theme.mismatch)),
                     Cell::from(format!("{}", paper.stats.not_found))
@@ -281,6 +298,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Min(15),    // Paper
             Constraint::Length(5),  // Refs
             Constraint::Length(5),  // OK
+            Constraint::Length(5),  // Safe
             Constraint::Length(5),  // Mis
             Constraint::Length(5),  // NF
             Constraint::Length(5),  // Skip
