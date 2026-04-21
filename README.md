@@ -69,7 +69,7 @@ The tool queries these databases simultaneously:
 | Database | What it covers |
 |----------|----------------|
 | **CrossRef** | DOIs, journal articles, conference papers |
-| **arXiv** | Preprints (CS, physics, math, etc.) |
+| **arXiv** | Preprints (CS, physics, math, etc.) — online or offline |
 | **DBLP** | Computer science bibliography (online or offline) |
 | **Semantic Scholar** | Aggregates Academia.edu, SSRN, PubMed, and more |
 | **ACL Anthology** | Computational linguistics papers (online or offline) |
@@ -84,7 +84,7 @@ The tool queries these databases simultaneously:
 
 ~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
 
-We **strongly recommend** downloading the **DBLP** and **ACL Anthology** databases for local querying—DBLP in particular rate-limits online requests aggressively. See the "Offline Databases" section below.
+We **strongly recommend** downloading the **DBLP**, **ACL Anthology**, and **arXiv** databases for local querying—DBLP and arXiv in particular rate-limit online requests aggressively (arXiv enforces a 3-second gap between requests). See the "Offline Databases" section below.
 
 ---
 
@@ -116,16 +116,20 @@ GovInfo covers Public Laws, Congressional Bills, Code of Federal Regulations (CF
 
 ## Offline Databases
 
-Three databases can be downloaded for local querying. Offline databases are faster than online APIs and avoid rate limits.
+Four databases can be downloaded for local querying. Offline databases are faster than online APIs and avoid rate limits.
 
 ```bash
-# Build all three (run once, refresh periodically)
+# Build all four (run once, refresh periodically)
 hallucinator-cli update-dblp dblp.db
 hallucinator-cli update-acl acl.db
+hallucinator-cli update-arxiv arxiv.db
 hallucinator-cli update-openalex openalex.idx
 
 # Use them
-hallucinator-cli check --dblp-offline=dblp.db --acl-offline=acl.db --openalex-offline=openalex.idx paper.pdf
+hallucinator-cli check \
+    --dblp-offline=dblp.db --acl-offline=acl.db \
+    --arxiv-offline=arxiv.db --openalex-offline=openalex.idx \
+    paper.pdf
 ```
 
 If you place the databases in `~/.local/share/hallucinator/`, they're detected automatically—no flags needed.
@@ -139,6 +143,29 @@ hallucinator-cli update-dblp dblp.db
 ```
 
 This downloads the latest [DBLP N-Triples dump](https://dblp.org/rdf/) and builds a SQLite database with ~6M publications. Takes 20-30 minutes.
+
+### arXiv (strongly recommended)
+
+arXiv enforces a 3-second gap between API requests, so on a paper with 50 references the online backend alone can take 2+ minutes. The offline DB ingests the weekly [Kaggle `Cornell-University/arxiv` snapshot](https://www.kaggle.com/datasets/Cornell-University/arxiv) (~4 GB, ~2.5M records) into a local SQLite + FTS5 index.
+
+```bash
+hallucinator-cli update-arxiv arxiv.db
+```
+
+**First-time setup:** Kaggle requires authentication to download datasets. You'll need a free Kaggle account and an API token:
+
+1. Sign up at https://www.kaggle.com and go to https://www.kaggle.com/settings
+2. Click **Create New Token** — this downloads `kaggle.json`
+3. Place it at `~/.kaggle/kaggle.json` (the standard Kaggle CLI location), or export the credentials as env vars: `export KAGGLE_USERNAME=… KAGGLE_KEY=…`
+4. Open https://www.kaggle.com/datasets/Cornell-University/arxiv **once in a browser** and accept the dataset license (Kaggle returns 403 on first download otherwise)
+
+The full build takes ~10-20 minutes (download + ingest). If you already have the Kaggle zip or extracted JSON, point at it directly and skip the download:
+
+```bash
+hallucinator-cli update-arxiv arxiv.db --dump /path/to/arxiv-metadata-oai-snapshot.json
+```
+
+When `--arxiv-offline` is configured, the online arXiv backend is **replaced entirely** (same pattern as DBLP and ACL). The Kaggle snapshot carries only each paper's latest-version title — the rare retitled-paper edge case (reference cites an old title, paper was renamed in a later version) is not caught. Clear the offline DB config and re-run if you need that coverage.
 
 ### ACL Anthology
 

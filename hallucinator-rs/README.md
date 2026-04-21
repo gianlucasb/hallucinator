@@ -54,7 +54,7 @@ Binaries are placed in `target/release/`:
 hallucinator-cli check paper.pdf
 
 # With offline databases (recommended)
-hallucinator-cli check --dblp-offline=dblp.db --acl-offline=acl.db paper.pdf
+hallucinator-cli check --dblp-offline=dblp.db --acl-offline=acl.db --arxiv-offline=arxiv.db paper.pdf
 
 # With API keys
 hallucinator-cli check --openalex-key=KEY --s2-api-key=KEY paper.pdf
@@ -78,6 +78,7 @@ hallucinator-cli check --no-color paper.pdf
 | `--govinfo-key=KEY` | GovInfo API key (for US federal laws) |
 | `--dblp-offline=PATH` | Path to offline DBLP database |
 | `--acl-offline=PATH` | Path to offline ACL Anthology database |
+| `--arxiv-offline=PATH` | Path to offline arXiv database (Kaggle snapshot) |
 | `--output=PATH` | Write output to file |
 | `--no-color` | Disable colored output |
 | `--disable-dbs=CSV` | Comma-separated database names to skip |
@@ -93,7 +94,18 @@ hallucinator-cli update-dblp dblp.db
 
 # ACL Anthology
 hallucinator-cli update-acl acl.db
+
+# arXiv (~4GB download from Kaggle — needs ~/.kaggle/kaggle.json or
+# KAGGLE_USERNAME+KAGGLE_KEY env vars; accept the dataset license once
+# at https://www.kaggle.com/datasets/Cornell-University/arxiv)
+hallucinator-cli update-arxiv arxiv.db
+
+# Alternative: skip the download and point at an already-downloaded
+# Kaggle zip / JSON dump (useful for retries)
+hallucinator-cli update-arxiv arxiv.db --dump /path/to/arxiv-metadata-oai-snapshot.json
 ```
+
+When `--arxiv-offline` is configured, the online arXiv backend is replaced entirely (same pattern as DBLP / ACL / OpenAlex).
 
 ---
 
@@ -109,7 +121,7 @@ hallucinator-tui
 hallucinator-tui paper1.pdf paper2.pdf proceedings.zip
 
 # With options
-hallucinator-tui --dblp-offline=dblp.db --acl-offline=acl.db --theme=modern
+hallucinator-tui --dblp-offline=dblp.db --acl-offline=acl.db --arxiv-offline=arxiv.db --theme=modern
 ```
 
 ### TUI Options
@@ -122,7 +134,7 @@ All CLI options above, plus:
 | `--mouse` | Enable mouse support |
 | `--fps N` | Target framerate, 1-120 (default: 30) |
 
-The TUI also has `update-dblp` and `update-acl` subcommands, same as the CLI.
+The TUI also has `update-dblp`, `update-acl`, and `update-arxiv` subcommands, same as the CLI.
 
 ### Screens
 
@@ -183,6 +195,7 @@ govinfo_key = "..."  # Free from api.data.gov
 [databases]
 dblp_offline_path = "/path/to/dblp.db"
 acl_offline_path = "/path/to/acl.db"
+arxiv_offline_path = "/path/to/arxiv.db"
 disabled = ["OpenAlex", "PubMed"]
 
 [concurrency]
@@ -200,7 +213,7 @@ fps = 30
 ### Offline Database Auto-Detection
 
 If no path is specified, the tool checks:
-1. `dblp.db` / `acl.db` in the current directory
+1. `dblp.db` / `acl.db` / `arxiv.db` in the current directory
 2. `~/.local/share/hallucinator/dblp.db` (or platform equivalent)
 
 ---
@@ -210,7 +223,7 @@ If no path is specified, the tool checks:
 | Database | Coverage | Notes |
 |----------|----------|-------|
 | CrossRef | DOIs, journal articles, conference papers | |
-| arXiv | Preprints (CS, physics, math, etc.) | |
+| arXiv | Preprints (CS, physics, math, etc.) | Online API or offline SQLite + FTS5 (Kaggle snapshot) |
 | DBLP | Computer science bibliography | Online API or offline SQLite + FTS5 |
 | Semantic Scholar | Aggregates Academia.edu, SSRN, PubMed, and more | Optional API key for higher rate limits |
 | ACL Anthology | Computational linguistics | Online API or offline SQLite + FTS5 |
@@ -324,6 +337,7 @@ GovInfo indexes:
 | `hallucinator-core` | Validation engine, database backends, fuzzy matching, retraction checks |
 | `hallucinator-dblp` | Offline DBLP database builder and querier (SQLite + FTS5) |
 | `hallucinator-acl` | Offline ACL Anthology database builder and querier |
+| `hallucinator-arxiv-offline` | Offline arXiv database builder (Kaggle snapshot ingester) and querier |
 | `hallucinator-cli` | CLI binary |
 | `hallucinator-tui` | Terminal UI (Ratatui) |
 | `hallucinator-web` | Web interface |
