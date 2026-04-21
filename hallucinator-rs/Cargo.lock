@@ -1239,6 +1239,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-arxiv-offline"
+version = "0.1.2"
+dependencies = [
+ "dirs",
+ "flate2",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zip",
+]
+
+[[package]]
 name = "hallucinator-bbl"
 version = "0.1.2"
 dependencies = [
@@ -1256,7 +1272,9 @@ dependencies = [
  "anyhow",
  "clap",
  "dotenvy",
+ "flate2",
  "hallucinator-acl",
+ "hallucinator-arxiv-offline",
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
@@ -1271,6 +1289,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]
@@ -1285,6 +1304,7 @@ dependencies = [
  "fastrand",
  "governor",
  "hallucinator-acl",
+ "hallucinator-arxiv-offline",
  "hallucinator-dblp",
  "hallucinator-openalex",
  "http",
@@ -1417,6 +1437,7 @@ dependencies = [
  "dirs",
  "dotenvy",
  "hallucinator-acl",
+ "hallucinator-arxiv-offline",
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",

@@ -362,6 +362,22 @@ pub fn open_acl_db(
     Ok(Arc::new(Mutex::new(db)))
 }
 
+/// Open offline arXiv metadata database if a path is configured, returning the Arc<Mutex<..>> handle.
+pub fn open_arxiv_db(
+    path: &std::path::Path,
+) -> anyhow::Result<Arc<Mutex<hallucinator_arxiv_offline::ArxivDatabase>>> {
+    if !path.exists() {
+        anyhow::bail!(
+            "Offline arXiv database not found at {}. Build with `hallucinator-cli update-arxiv {}`.",
+            path.display(),
+            path.display(),
+        );
+    }
+    let db = hallucinator_arxiv_offline::ArxivDatabase::open(path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(Arc::new(Mutex::new(db)))
+}
+
 /// Open offline OpenAlex Tantivy index if a path is configured, returning the Arc<Mutex<..>> handle.
 pub fn open_openalex_db(
     path: &std::path::Path,

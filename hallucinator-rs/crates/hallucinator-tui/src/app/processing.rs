@@ -166,6 +166,14 @@ impl App {
                 ))
             },
             acl_offline_db: None, // Populated from main.rs
+            arxiv_offline_path: if self.config_state.arxiv_offline_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(
+                    &self.config_state.arxiv_offline_path,
+                ))
+            },
+            arxiv_offline_db: None, // Populated from main.rs
             openalex_offline_path: if self.config_state.openalex_offline_path.is_empty() {
                 None
             } else {

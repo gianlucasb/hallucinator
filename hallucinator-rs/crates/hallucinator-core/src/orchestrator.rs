@@ -592,8 +592,20 @@ pub(crate) fn build_database_list(
             mailto: config.crossref_mailto.clone(),
         }));
     }
+    // arXiv: offline replaces online when configured (same pattern
+    // as DBLP / ACL / OpenAlex). Online arXiv is slow and the Kaggle
+    // snapshot answers the common case offline at ~0 latency. The
+    // edge case online catches that offline doesn't — retitled-paper
+    // version walks — is rare enough that users can opt back in by
+    // temporarily clearing the offline DB config.
     if should_include("arXiv") {
-        databases.push(Box::new(arxiv::Arxiv));
+        if let Some(ref db) = config.arxiv_offline_db {
+            databases.push(Box::new(arxiv_offline::ArxivOffline::new(
+                std::sync::Arc::clone(db),
+            )));
+        } else {
+            databases.push(Box::new(arxiv::Arxiv));
+        }
     }
     if should_include("DBLP") {
         if let Some(ref db) = config.dblp_offline_db {
