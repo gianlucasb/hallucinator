@@ -2,6 +2,7 @@
 
 pub mod acl;
 pub mod arxiv;
+pub mod arxiv_offline;
 pub mod crossref;
 pub mod dblp;
 pub mod doi_resolver;

@@ -143,6 +143,11 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
             } else {
                 Some(state.acl_offline_path.clone())
             },
+            arxiv_offline_path: if state.arxiv_offline_path.is_empty() {
+                None
+            } else {
+                Some(state.arxiv_offline_path.clone())
+            },
             openalex_offline_path: if state.openalex_offline_path.is_empty() {
                 None
             } else {

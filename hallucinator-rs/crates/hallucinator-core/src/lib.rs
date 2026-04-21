@@ -280,6 +280,8 @@ pub struct Config {
     pub dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>>,
     pub acl_offline_path: Option<PathBuf>,
     pub acl_offline_db: Option<Arc<Mutex<hallucinator_acl::AclDatabase>>>,
+    pub arxiv_offline_path: Option<PathBuf>,
+    pub arxiv_offline_db: Option<Arc<Mutex<hallucinator_arxiv_offline::ArxivDatabase>>>,
     pub openalex_offline_path: Option<PathBuf>,
     pub openalex_offline_db: Option<Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>>,
     pub num_workers: usize,
@@ -318,6 +320,11 @@ impl std::fmt::Debug for Config {
             .field(
                 "dblp_offline_db",
                 &self.dblp_offline_db.as_ref().map(|_| "<open>"),
+            )
+            .field("arxiv_offline_path", &self.arxiv_offline_path)
+            .field(
+                "arxiv_offline_db",
+                &self.arxiv_offline_db.as_ref().map(|_| "<open>"),
             )
             .field("acl_offline_path", &self.acl_offline_path)
             .field(
@@ -362,6 +369,8 @@ impl Default for Config {
             dblp_offline_db: None,
             acl_offline_path: None,
             acl_offline_db: None,
+            arxiv_offline_path: None,
+            arxiv_offline_db: None,
             openalex_offline_path: None,
             openalex_offline_db: None,
             num_workers: 4,

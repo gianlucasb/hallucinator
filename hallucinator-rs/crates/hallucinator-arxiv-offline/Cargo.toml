@@ -1,0 +1,22 @@
+[package]
+name = "hallucinator-arxiv-offline"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-or-later OR MIT"
+description = "Offline arXiv metadata database builder and querier (OAI-PMH harvest)"
+
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+rusqlite.workspace = true
+reqwest.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+quick-xml.workspace = true
+urlencoding = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

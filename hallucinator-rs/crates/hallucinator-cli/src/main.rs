@@ -65,6 +65,10 @@ enum Command {
         #[arg(long)]
         acl_offline: Option<PathBuf>,
 
+        /// Path to offline arXiv metadata database (OAI-PMH harvest)
+        #[arg(long)]
+        arxiv_offline: Option<PathBuf>,
+
         /// Path to offline OpenAlex Tantivy index
         #[arg(long)]
         openalex_offline: Option<PathBuf>,
@@ -121,6 +125,27 @@ enum Command {
     UpdateAcl {
         /// Path to store the ACL SQLite database
         path: PathBuf,
+    },
+
+    /// Harvest arXiv metadata into a local SQLite database (OAI-PMH)
+    UpdateArxiv {
+        /// Path to store the arXiv SQLite database
+        path: PathBuf,
+
+        /// Harvest only records modified on or after this date (YYYY-MM-DD).
+        /// Pair with an existing database file to do an incremental refresh.
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Harvest only records modified up to and including this date
+        /// (YYYY-MM-DD). Mostly useful for bounded test runs.
+        #[arg(long)]
+        until: Option<String>,
+
+        /// Restrict to an arXiv set (e.g. "cs", "cs.CR"). Useful for
+        /// quick smoke tests — leave unset to harvest all categories.
+        #[arg(long)]
+        set: Option<String>,
     },
 
     /// Download and build the offline OpenAlex Tantivy index
@@ -191,6 +216,12 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::UpdateDblp { path } => update_dblp(&path).await,
         Command::UpdateAcl { path } => update_acl(&path).await,
+        Command::UpdateArxiv {
+            path,
+            from,
+            until,
+            set,
+        } => update_arxiv(&path, from.as_deref(), until.as_deref(), set.as_deref()).await,
         Command::UpdateOpenalex {
             path,
             since,
@@ -206,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
             output,
             dblp_offline,
             acl_offline,
+            arxiv_offline,
             openalex_offline,
             disable_dbs,
             check_openalex_authors,
@@ -277,6 +309,7 @@ async fn main() -> anyhow::Result<()> {
                     output,
                     dblp_offline,
                     acl_offline,
+                    arxiv_offline,
                     openalex_offline,
                     disable_dbs,
                     check_openalex_authors,
@@ -392,6 +425,7 @@ async fn check(
     output: Option<PathBuf>,
     dblp_offline: Option<PathBuf>,
     acl_offline: Option<PathBuf>,
+    arxiv_offline: Option<PathBuf>,
     openalex_offline: Option<PathBuf>,
     disable_dbs: Vec<String>,
     check_openalex_authors: bool,
@@ -458,6 +492,15 @@ async fn check(
                 .databases
                 .as_ref()
                 .and_then(|d| d.acl_offline_path.as_ref())
+                .map(PathBuf::from)
+        });
+    let arxiv_offline_path = arxiv_offline
+        .or_else(|| std::env::var("ARXIV_OFFLINE_PATH").ok().map(PathBuf::from))
+        .or_else(|| {
+            file_config
+                .databases
+                .as_ref()
+                .and_then(|d| d.arxiv_offline_path.as_ref())
                 .map(PathBuf::from)
         });
     let openalex_offline_path = openalex_offline
@@ -613,6 +656,47 @@ async fn check(
         None
     };
 
+    // Open offline arXiv database if configured
+    let arxiv_offline_db = if let Some(ref path) = arxiv_offline_path {
+        if !path.exists() {
+            anyhow::bail!(
+                "Offline arXiv database not found at {}. Build it with: hallucinator-cli update-arxiv {}",
+                path.display(),
+                path.display()
+            );
+        }
+        let db = hallucinator_arxiv_offline::ArxivDatabase::open(path)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        if let Ok(staleness) = db.staleness(30)
+            && staleness.is_stale
+        {
+            let msg = if let Some(days) = staleness.age_days {
+                format!(
+                    "Offline arXiv database is {} days old. Consider running: hallucinator-cli update-arxiv {}",
+                    days,
+                    path.display()
+                )
+            } else {
+                format!(
+                    "Offline arXiv database may be stale. Consider running: hallucinator-cli update-arxiv {}",
+                    path.display()
+                )
+            };
+            if color.enabled() {
+                use owo_colors::OwoColorize;
+                writeln!(writer, "{}", msg.yellow())?;
+            } else {
+                writeln!(writer, "{}", msg)?;
+            }
+            writeln!(writer)?;
+        }
+
+        Some(Arc::new(Mutex::new(db)))
+    } else {
+        None
+    };
+
     // Open offline OpenAlex index if configured
     let openalex_offline_db = if let Some(ref path) = openalex_offline_path {
         if !path.exists() {
@@ -723,6 +807,8 @@ async fn check(
         dblp_offline_db,
         acl_offline_path: acl_offline_path.clone(),
         acl_offline_db,
+        arxiv_offline_path: arxiv_offline_path.clone(),
+        arxiv_offline_db,
         openalex_offline_path: openalex_offline_path.clone(),
         openalex_offline_db,
         num_workers,
@@ -1748,4 +1834,159 @@ async fn update_openalex(
     }
 
     Ok(())
+}
+
+async fn update_arxiv(
+    db_path: &PathBuf,
+    from: Option<&str>,
+    until: Option<&str>,
+    set: Option<&str>,
+) -> anyhow::Result<()> {
+    use hallucinator_arxiv_offline::harvest::{Harvester, HarvesterOptions, HarvestProgress};
+    use hallucinator_arxiv_offline::ArxivDatabase;
+    use indicatif::{HumanCount, ProgressBar, ProgressStyle};
+    use std::time::{Duration, Instant};
+
+    // Open (or create) the database BEFORE harvesting, so we fail fast
+    // on a bad path rather than after an hour of downloading.
+    let db = if db_path.exists() {
+        let opened = ArxivDatabase::open(db_path)
+            .map_err(|e| anyhow::anyhow!("open {}: {}", db_path.display(), e))?;
+        println!(
+            "Resuming into existing database ({} papers): {}",
+            opened.paper_count().unwrap_or(0),
+            db_path.display()
+        );
+        opened
+    } else {
+        let created = ArxivDatabase::create(db_path)
+            .map_err(|e| anyhow::anyhow!("create {}: {}", db_path.display(), e))?;
+        println!("Creating new database at: {}", db_path.display());
+        created
+    };
+
+    // Auto-compute a `from` value for incremental refreshes: if the
+    // user didn't pass --from explicitly AND the database has a
+    // previous build_date, use the previous build_date so we
+    // re-fetch only the records that changed since then.
+    let auto_from = if from.is_none() {
+        db.staleness(0).ok().and_then(|s| s.build_date)
+    } else {
+        None
+    };
+    let effective_from = from.map(String::from).or(auto_from);
+    if let Some(ref f) = effective_from {
+        println!("Incremental refresh (harvesting from: {})", f);
+    } else {
+        println!("Full harvest (this can take a while — arXiv throttles bulk requests).");
+    }
+    if let Some(s) = set {
+        println!("Restricted to set: {}", s);
+    }
+
+    let options = HarvesterOptions {
+        from: effective_from.clone(),
+        until: until.map(String::from),
+        set: set.map(String::from),
+        ..Default::default()
+    };
+    let harvester = Harvester::new(options)?;
+
+    let bar = ProgressBar::new_spinner();
+    bar.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.cyan} {msg}  [{elapsed_precise}]  {pos} records",
+        )
+        .unwrap(),
+    );
+    bar.enable_steady_tick(Duration::from_millis(100));
+    bar.set_message("harvesting …");
+
+    let start = Instant::now();
+    let mut inserted: u64 = 0;
+
+    // The harvester feeds each parsed record through a sink. We upsert
+    // into SQLite directly. Using a single connection + per-record
+    // INSERTs keeps peak memory bounded; a full harvest writes
+    // ~2.5M small rows over a couple of hours.
+    let result = harvester
+        .run(
+            |rec| {
+                db.upsert(&rec)
+                    .map_err(|e| hallucinator_arxiv_offline::ArxivError::Harvest(e.to_string()))?;
+                inserted += 1;
+                if inserted % 500 == 0 {
+                    bar.set_position(inserted);
+                }
+                Ok(())
+            },
+            |ev| match ev {
+                HarvestProgress::BatchParsed {
+                    records_in_batch,
+                    records_total_so_far,
+                    resumption_token_present,
+                } => {
+                    bar.set_position(records_total_so_far);
+                    bar.set_message(format!(
+                        "harvesting … (batch={}, more={})",
+                        records_in_batch, resumption_token_present
+                    ));
+                }
+                HarvestProgress::Complete { total } => {
+                    bar.set_position(total);
+                    bar.finish_with_message(format!(
+                        "Harvested {} records in {:.0?}",
+                        HumanCount(total),
+                        start.elapsed()
+                    ));
+                }
+            },
+        )
+        .await;
+
+    // Stamp the build date even on partial failures so a follow-up
+    // `update-arxiv` picks up via `from=<this_date>`. Worst case: a
+    // couple of hours of records get re-fetched on retry.
+    let today = format_today_iso();
+    if let Err(e) = db.record_build_date(&today) {
+        eprintln!("warning: failed to record build_date: {e}");
+    }
+
+    result.map_err(|e| anyhow::anyhow!("harvest failed: {e}"))?;
+
+    let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
+    println!(
+        "arXiv database saved to: {} ({} total papers)",
+        canonical.display(),
+        db.paper_count().unwrap_or(0)
+    );
+    Ok(())
+}
+
+/// Today's date as `YYYY-MM-DD` (UTC). Avoids pulling in chrono just
+/// for this one stamp — matches the simple formatter used by the
+/// update-dblp / update-acl commands.
+fn format_today_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = secs / 86_400;
+    let (y, m, d) = days_to_ymd(days as i64 + 719_162);
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// Inverse of `hallucinator_arxiv_offline::ymd_to_days` — good enough
+/// for human-readable build stamps.
+fn days_to_ymd(days: i64) -> (i32, u32, u32) {
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = (days - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32)
 }

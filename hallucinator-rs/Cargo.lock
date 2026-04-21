@@ -1239,6 +1239,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-arxiv-offline"
+version = "0.1.2"
+dependencies = [
+ "once_cell",
+ "quick-xml",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
 name = "hallucinator-bbl"
 version = "0.1.2"
 dependencies = [
@@ -1257,6 +1272,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "hallucinator-acl",
+ "hallucinator-arxiv-offline",
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
@@ -1285,6 +1301,7 @@ dependencies = [
  "fastrand",
  "governor",
  "hallucinator-acl",
+ "hallucinator-arxiv-offline",
  "hallucinator-dblp",
  "hallucinator-openalex",
  "http",

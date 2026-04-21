@@ -592,6 +592,18 @@ pub(crate) fn build_database_list(
             mailto: config.crossref_mailto.clone(),
         }));
     }
+    // Offline arXiv — local/fast — runs in the inline phase before
+    // the online backend, so a hit in the offline index short-circuits
+    // the remote request. On miss, the online arXiv backend still
+    // gets to run because it carries the earlier-versions fallback
+    // the offline index doesn't (arXivRaw only exposes latest title).
+    if should_include("arXiv (offline)")
+        && let Some(ref db) = config.arxiv_offline_db
+    {
+        databases.push(Box::new(arxiv_offline::ArxivOffline::new(
+            std::sync::Arc::clone(db),
+        )));
+    }
     if should_include("arXiv") {
         databases.push(Box::new(arxiv::Arxiv));
     }
