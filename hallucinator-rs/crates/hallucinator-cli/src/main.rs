@@ -127,25 +127,25 @@ enum Command {
         path: PathBuf,
     },
 
-    /// Harvest arXiv metadata into a local SQLite database (OAI-PMH)
+    /// Ingest the Kaggle arXiv metadata snapshot into a local SQLite database.
+    ///
+    /// By default downloads the ~4 GB Kaggle dump (Cornell-University/arxiv)
+    /// using credentials from KAGGLE_USERNAME+KAGGLE_KEY env vars or
+    /// ~/.kaggle/kaggle.json, then streams it into the SQLite schema.
+    /// Use --dump to point at an already-downloaded zip or JSON file.
     UpdateArxiv {
         /// Path to store the arXiv SQLite database
         path: PathBuf,
 
-        /// Harvest only records modified on or after this date (YYYY-MM-DD).
-        /// Pair with an existing database file to do an incremental refresh.
+        /// Use an already-downloaded Kaggle dump (.zip or
+        /// arxiv-metadata-oai-snapshot.json). Skips the download step.
         #[arg(long)]
-        from: Option<String>,
+        dump: Option<PathBuf>,
 
-        /// Harvest only records modified up to and including this date
-        /// (YYYY-MM-DD). Mostly useful for bounded test runs.
+        /// Keep the downloaded zip instead of deleting it after ingest.
+        /// Useful for retrying an ingest without re-downloading 4 GB.
         #[arg(long)]
-        until: Option<String>,
-
-        /// Restrict to an arXiv set (e.g. "cs", "cs.CR"). Useful for
-        /// quick smoke tests — leave unset to harvest all categories.
-        #[arg(long)]
-        set: Option<String>,
+        keep_download: bool,
     },
 
     /// Download and build the offline OpenAlex Tantivy index
@@ -218,10 +218,9 @@ async fn main() -> anyhow::Result<()> {
         Command::UpdateAcl { path } => update_acl(&path).await,
         Command::UpdateArxiv {
             path,
-            from,
-            until,
-            set,
-        } => update_arxiv(&path, from.as_deref(), until.as_deref(), set.as_deref()).await,
+            dump,
+            keep_download,
+        } => update_arxiv(&path, dump.as_deref(), keep_download).await,
         Command::UpdateOpenalex {
             path,
             since,
@@ -1838,22 +1837,22 @@ async fn update_openalex(
 
 async fn update_arxiv(
     db_path: &PathBuf,
-    from: Option<&str>,
-    until: Option<&str>,
-    set: Option<&str>,
+    dump: Option<&std::path::Path>,
+    keep_download: bool,
 ) -> anyhow::Result<()> {
-    use hallucinator_arxiv_offline::harvest::{Harvester, HarvesterOptions, HarvestProgress};
     use hallucinator_arxiv_offline::ArxivDatabase;
-    use indicatif::{HumanCount, ProgressBar, ProgressStyle};
+    use hallucinator_arxiv_offline::download::{self, DownloadProgress};
+    use hallucinator_arxiv_offline::ingest::IngestProgress;
+    use indicatif::{HumanBytes, HumanCount, ProgressBar, ProgressStyle};
     use std::time::{Duration, Instant};
 
-    // Open (or create) the database BEFORE harvesting, so we fail fast
-    // on a bad path rather than after an hour of downloading.
+    // Open (or create) the database BEFORE downloading, so we fail
+    // fast on a bad path rather than after an hour of downloading.
     let db = if db_path.exists() {
         let opened = ArxivDatabase::open(db_path)
             .map_err(|e| anyhow::anyhow!("open {}: {}", db_path.display(), e))?;
         println!(
-            "Resuming into existing database ({} papers): {}",
+            "Refreshing existing database ({} papers): {}",
             opened.paper_count().unwrap_or(0),
             db_path.display()
         );
@@ -1865,102 +1864,249 @@ async fn update_arxiv(
         created
     };
 
-    // Auto-compute a `from` value for incremental refreshes: if the
-    // user didn't pass --from explicitly AND the database has a
-    // previous build_date, use the previous build_date so we
-    // re-fetch only the records that changed since then.
-    let auto_from = if from.is_none() {
-        db.staleness(0).ok().and_then(|s| s.build_date)
-    } else {
-        None
+    // 1. Acquire the dump. Either the caller pre-downloaded one
+    // (--dump) or we download a fresh copy from Kaggle next to the
+    // DB (so it stays on the same volume as the target SQLite file).
+    let (dump_path, downloaded_fresh) = match dump {
+        Some(p) => {
+            if !p.exists() {
+                return Err(anyhow::anyhow!(
+                    "--dump path does not exist: {}",
+                    p.display()
+                ));
+            }
+            (p.to_path_buf(), false)
+        }
+        None => {
+            let dest = db_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("arxiv-kaggle.zip");
+            println!(
+                "Downloading Kaggle arxiv snapshot to: {}",
+                dest.display()
+            );
+            println!(
+                "(If this is your first run, open https://www.kaggle.com/datasets/Cornell-University/arxiv\n\
+                 once in a browser and accept the dataset license.)"
+            );
+            let bar = ProgressBar::new(0);
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.cyan} {msg} [{elapsed_precise}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, eta {eta})",
+                )
+                .unwrap(),
+            );
+            bar.enable_steady_tick(Duration::from_millis(100));
+            bar.set_message("downloading …");
+            let bar_cb = bar.clone();
+            download::download_kaggle_zip(&dest, move |ev| match ev {
+                DownloadProgress::Started { total_bytes } => {
+                    if let Some(t) = total_bytes {
+                        bar_cb.set_length(t);
+                    }
+                }
+                DownloadProgress::Progress {
+                    bytes_downloaded, ..
+                } => {
+                    bar_cb.set_position(bytes_downloaded);
+                }
+                DownloadProgress::Complete { bytes, elapsed } => {
+                    bar_cb.set_position(bytes);
+                    bar_cb.finish_with_message(format!(
+                        "downloaded {} in {:.0?}",
+                        HumanBytes(bytes),
+                        elapsed
+                    ));
+                }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("download failed: {e}"))?;
+            (dest, true)
+        }
     };
-    let effective_from = from.map(String::from).or(auto_from);
-    if let Some(ref f) = effective_from {
-        println!("Incremental refresh (harvesting from: {})", f);
-    } else {
-        println!("Full harvest (this can take a while — arXiv throttles bulk requests).");
-    }
-    if let Some(s) = set {
-        println!("Restricted to set: {}", s);
-    }
 
-    let options = HarvesterOptions {
-        from: effective_from.clone(),
-        until: until.map(String::from),
-        set: set.map(String::from),
-        ..Default::default()
-    };
-    let harvester = Harvester::new(options)?;
-
-    let bar = ProgressBar::new_spinner();
+    // 2. Stream records into SQLite. Auto-detect by extension:
+    //    .zip           — look for arxiv-metadata-oai-snapshot.json inside
+    //    .json / .jsonl — read directly
+    //    .json.gz       — gzip-decompress and read
+    // The zip path is the common one; the others exist for users who
+    // decompress the download themselves.
+    let ingest_start = Instant::now();
+    let bar = ProgressBar::new(2_500_000);
     bar.set_style(
         ProgressStyle::with_template(
-            "{spinner:.cyan} {msg}  [{elapsed_precise}]  {pos} records",
+            "{spinner:.cyan} {msg} [{elapsed_precise}] {pos}/~{len} ({per_sec}, eta {eta})",
         )
         .unwrap(),
     );
     bar.enable_steady_tick(Duration::from_millis(100));
-    bar.set_message("harvesting …");
+    bar.set_message("ingesting …");
+    let bar_for_sink = bar.clone();
+    let bar_for_progress = bar.clone();
 
-    let start = Instant::now();
+    // Batch all upserts into a single transaction with periodic
+    // checkpoints. Without this, SQLite autocommits after every
+    // statement and fsync-caps us at a few hundred inserts/sec —
+    // a full ingest takes hours. With batching, disk sync fires
+    // ~50× per ingest, not 10M+ times.
+    const COMMIT_EVERY: u64 = 50_000;
+    db.begin_bulk()
+        .map_err(|e| anyhow::anyhow!("begin transaction: {e}"))?;
+
     let mut inserted: u64 = 0;
+    let sink = |rec: hallucinator_arxiv_offline::ArxivRecord| {
+        // `upsert_bulk` skips the FTS5 index update — we rebuild
+        // it once after the ingest completes. For 2.5M records
+        // this is ~10× faster than updating FTS inline.
+        db.upsert_bulk(&rec)
+            .map_err(|e| hallucinator_arxiv_offline::ArxivError::Harvest(e.to_string()))?;
+        inserted += 1;
+        if inserted % 1_000 == 0 {
+            bar_for_sink.set_position(inserted);
+        }
+        if inserted % COMMIT_EVERY == 0 {
+            db.commit_and_continue()
+                .map_err(|e| hallucinator_arxiv_offline::ArxivError::Harvest(
+                    format!("mid-ingest commit: {e}"),
+                ))?;
+        }
+        Ok(())
+    };
+    let on_progress = move |ev| match ev {
+        IngestProgress::Started => {
+            bar_for_progress.set_message("ingesting …");
+        }
+        IngestProgress::Progress { records_parsed } => {
+            bar_for_progress.set_position(records_parsed);
+        }
+        IngestProgress::Complete { total, elapsed } => {
+            bar_for_progress.set_position(total);
+            bar_for_progress.finish_with_message(format!(
+                "ingested {} records in {:.0?}",
+                HumanCount(total),
+                elapsed
+            ));
+        }
+    };
 
-    // The harvester feeds each parsed record through a sink. We upsert
-    // into SQLite directly. Using a single connection + per-record
-    // INSERTs keeps peak memory bounded; a full harvest writes
-    // ~2.5M small rows over a couple of hours.
-    let result = harvester
-        .run(
-            |rec| {
-                db.upsert(&rec)
-                    .map_err(|e| hallucinator_arxiv_offline::ArxivError::Harvest(e.to_string()))?;
-                inserted += 1;
-                if inserted % 500 == 0 {
-                    bar.set_position(inserted);
-                }
-                Ok(())
-            },
-            |ev| match ev {
-                HarvestProgress::BatchParsed {
-                    records_in_batch,
-                    records_total_so_far,
-                    resumption_token_present,
-                } => {
-                    bar.set_position(records_total_so_far);
-                    bar.set_message(format!(
-                        "harvesting … (batch={}, more={})",
-                        records_in_batch, resumption_token_present
-                    ));
-                }
-                HarvestProgress::Complete { total } => {
-                    bar.set_position(total);
-                    bar.finish_with_message(format!(
-                        "Harvested {} records in {:.0?}",
-                        HumanCount(total),
-                        start.elapsed()
-                    ));
-                }
-            },
-        )
-        .await;
+    let result = ingest_dump(&dump_path, 10_000, sink, on_progress);
 
-    // Stamp the build date even on partial failures so a follow-up
-    // `update-arxiv` picks up via `from=<this_date>`. Worst case: a
-    // couple of hours of records get re-fetched on retry.
+    // Always close the transaction — commit on success, roll back
+    // on failure. Rolling back avoids leaving the DB in an
+    // in-transaction state that would block subsequent opens.
+    match &result {
+        Ok(_) => {
+            // Rebuild the FTS index from `papers` before final commit.
+            // Surfaces progress in its own bar because the rebuild
+            // takes a minute or two on a full ingest and would
+            // otherwise look like the CLI hung.
+            let fts_bar = ProgressBar::new_spinner();
+            fts_bar.set_style(
+                ProgressStyle::with_template("{spinner:.cyan} {msg} [{elapsed_precise}]")
+                    .unwrap(),
+            );
+            fts_bar.enable_steady_tick(Duration::from_millis(100));
+            fts_bar.set_message("rebuilding FTS title index …");
+            db.rebuild_fts()
+                .map_err(|e| anyhow::anyhow!("rebuild FTS: {e}"))?;
+            fts_bar.finish_with_message("FTS title index rebuilt");
+
+            db.commit_bulk()
+                .map_err(|e| anyhow::anyhow!("final commit: {e}"))?;
+        }
+        Err(_) => {
+            if let Err(rb) = db.rollback_bulk() {
+                eprintln!("warning: rollback failed: {rb}");
+            }
+        }
+    }
+
+    // Record build_date BEFORE propagating any ingest error — even
+    // partial builds get a timestamp so the staleness check has
+    // something to compare against. (An explicit error-logged partial
+    // ingest is better than a DB whose age says "never built".)
     let today = format_today_iso();
     if let Err(e) = db.record_build_date(&today) {
         eprintln!("warning: failed to record build_date: {e}");
     }
 
-    result.map_err(|e| anyhow::anyhow!("harvest failed: {e}"))?;
+    let total = result.map_err(|e| anyhow::anyhow!("ingest failed: {e}"))?;
+
+    // 4. Clean up the downloaded zip — unless --keep-download was
+    // passed or the user supplied their own file (which we don't own).
+    if downloaded_fresh && !keep_download {
+        if let Err(e) = std::fs::remove_file(&dump_path) {
+            eprintln!(
+                "warning: could not remove downloaded zip {}: {e}",
+                dump_path.display()
+            );
+        }
+    }
 
     let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
+    let count = db.paper_count().unwrap_or(0);
+    let _ = ingest_start; // kept for potential future summary use
     println!(
-        "arXiv database saved to: {} ({} total papers)",
+        "arXiv database saved to: {} ({} total papers, {} ingested this run)",
         canonical.display(),
-        db.paper_count().unwrap_or(0)
+        HumanCount(count),
+        HumanCount(total)
     );
     Ok(())
+}
+
+/// Ingest a Kaggle dump from disk into a sink. Auto-detects the
+/// compression / container:
+/// - `.zip` — open the archive, read `arxiv-metadata-oai-snapshot.json`
+/// - `.json.gz` / `.jsonl.gz` — gzip-streams
+/// - `.json` / `.jsonl` — reads directly
+///
+/// Inlined rather than returning a `Box<dyn BufRead>` because the zip
+/// entry reader borrows from the `ZipArchive`, which must stay on
+/// the stack for the lifetime of the ingest. Keeping the match arms
+/// local sidesteps the self-referential-struct gymnastics.
+fn ingest_dump<F, P>(
+    path: &std::path::Path,
+    progress_every: u64,
+    sink: F,
+    progress: P,
+) -> Result<u64, hallucinator_arxiv_offline::ArxivError>
+where
+    F: FnMut(hallucinator_arxiv_offline::ArxivRecord) -> Result<(), hallucinator_arxiv_offline::ArxivError>,
+    P: FnMut(hallucinator_arxiv_offline::ingest::IngestProgress),
+{
+    use hallucinator_arxiv_offline::ArxivError;
+    use hallucinator_arxiv_offline::download::KAGGLE_DUMP_ENTRY;
+    use hallucinator_arxiv_offline::ingest;
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let file = File::open(path)
+        .map_err(|e| ArxivError::Harvest(format!("open {}: {e}", path.display())))?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    if name.ends_with(".zip") {
+        let mut archive = zip::ZipArchive::new(BufReader::new(file))
+            .map_err(|e| ArxivError::Harvest(format!("open zip {}: {e}", path.display())))?;
+        let entry = archive.by_name(KAGGLE_DUMP_ENTRY).map_err(|e| {
+            ArxivError::Harvest(format!(
+                "zip `{}` does not contain `{KAGGLE_DUMP_ENTRY}`: {e} \
+                 (Kaggle dataset layout may have changed)",
+                path.display()
+            ))
+        })?;
+        let reader = BufReader::with_capacity(1 << 20, entry);
+        return ingest::ingest_jsonl(reader, progress_every, sink, progress);
+    }
+    if name.ends_with(".json.gz") || name.ends_with(".jsonl.gz") {
+        let gz = flate2::read::GzDecoder::new(file);
+        let reader = BufReader::with_capacity(1 << 20, gz);
+        return ingest::ingest_jsonl(reader, progress_every, sink, progress);
+    }
+    let reader = BufReader::with_capacity(1 << 20, file);
+    ingest::ingest_jsonl(reader, progress_every, sink, progress)
 }
 
 /// Today's date as `YYYY-MM-DD` (UTC). Avoids pulling in chrono just

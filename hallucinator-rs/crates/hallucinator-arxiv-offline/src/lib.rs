@@ -2,21 +2,23 @@
 
 //! Offline arXiv metadata database builder and querier.
 //!
-//! Harvests arXiv's OAI-PMH endpoint into a SQLite database with an
-//! FTS5 title index. Sibling crate to `hallucinator-dblp` and
-//! `hallucinator-acl`; same build/query/staleness idioms, different
-//! upstream protocol (OAI-PMH instead of RDF / XML-dump).
+//! Ingests the weekly Kaggle `Cornell-University/arxiv` snapshot into
+//! a SQLite database with an FTS5 title index. Sibling crate to
+//! `hallucinator-dblp` and `hallucinator-acl`; same build/query/
+//! staleness idioms, different upstream source (Kaggle JSONL dump
+//! instead of RDF / XML).
 //!
 //! Architecture:
-//! - [`harvest`] knows how to walk OAI-PMH's ListRecords pagination and
-//!   parse arXiv's proprietary `arXivRaw` metadata format.
+//! - [`download`] fetches the Kaggle zip via the public dataset API.
+//! - [`ingest`] streams JSONL records out of the zip into [`ArxivRecord`]s.
 //! - [`db`] owns the SQLite schema and the single-row lookup /
 //!   FTS title search used by the online backend.
 //! - [`ArxivDatabase`] is the high-level handle the rest of the
 //!   workspace holds (similar to `DblpDatabase` / `AclDatabase`).
 
 pub mod db;
-pub mod harvest;
+pub mod download;
+pub mod ingest;
 
 use std::path::{Path, PathBuf};
 
@@ -152,6 +154,99 @@ impl ArxivDatabase {
     /// Insert or replace a record. Used by the harvester.
     pub fn upsert(&self, rec: &ArxivRecord) -> Result<(), ArxivError> {
         db::upsert_record(&self.conn, rec)
+    }
+
+    /// Fast-path upsert that skips the FTS5 index update. Use inside
+    /// a bulk ingest loop and call [`rebuild_fts`](Self::rebuild_fts)
+    /// once at the end. Typically 5-10× faster than `upsert` for
+    /// 2M+ record runs because FTS5 inverted-index maintenance
+    /// dominates per-record cost.
+    pub fn upsert_bulk(&self, rec: &ArxivRecord) -> Result<(), ArxivError> {
+        db::upsert_record_no_fts(&self.conn, rec)
+    }
+
+    /// Rebuild the FTS5 title index from the `papers` table in one
+    /// shot. Call after a bulk ingest that used `upsert_bulk`.
+    pub fn rebuild_fts(&self) -> Result<(), ArxivError> {
+        db::rebuild_fts_from_papers(&self.conn)
+    }
+
+    /// Open an explicit transaction for bulk ingest. Without this,
+    /// each `upsert` runs in its own implicit BEGIN/COMMIT — fine for
+    /// individual writes, catastrophic for ~2.5M of them (fsync
+    /// per record drops throughput to ~150 rows/s).
+    ///
+    /// Usage pattern:
+    /// ```ignore
+    /// db.begin_bulk()?;
+    /// for rec in records {
+    ///     db.upsert(&rec)?;
+    ///     // Every N records, checkpoint to bound WAL growth:
+    ///     if i % 50_000 == 0 { db.commit_and_continue()?; }
+    /// }
+    /// db.commit_bulk()?;
+    /// ```
+    pub fn begin_bulk(&self) -> Result<(), ArxivError> {
+        // Bulk-tuned PRAGMAs. Applied before BEGIN so they stick for
+        // the lifetime of the ingest run:
+        //   - cache_size = -1048576 : 1 GiB page cache (SQLite
+        //     interprets negative values as kibibytes). Keeps the
+        //     FTS b-tree and hot papers pages resident, turning
+        //     random-access writes into in-memory updates.
+        //   - synchronous = OFF : no fsync on commit. Acceptable
+        //     here because the whole DB is re-buildable from the
+        //     Kaggle dump — a crash mid-ingest just means re-run.
+        //   - temp_store = MEMORY : FTS5 rebuild uses temp tables;
+        //     keeping them in RAM avoids spurious disk traffic.
+        //   - mmap_size = 1 GiB : cheaper read path for the hot
+        //     pages of the papers table during FTS rebuild.
+        // These are process-local — they don't persist in the DB.
+        self.conn.execute_batch(
+            "PRAGMA cache_size = -1048576; \
+             PRAGMA synchronous = OFF; \
+             PRAGMA temp_store = MEMORY; \
+             PRAGMA mmap_size = 1073741824;",
+        )?;
+        // IMMEDIATE acquires the write lock up front so a concurrent
+        // reader can't squeeze in between our statements and force
+        // SQLITE_BUSY. On a single-writer ingest it's free.
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    /// Commit the current bulk transaction. Call once at the end of
+    /// a successful ingest. Also restores `synchronous = NORMAL` so
+    /// subsequent writes to this connection are crash-safe again
+    /// (begin_bulk weakens it to OFF for throughput).
+    pub fn commit_bulk(&self) -> Result<(), ArxivError> {
+        self.conn.execute_batch("COMMIT")?;
+        self.conn
+            .execute_batch("PRAGMA synchronous = NORMAL;")?;
+        Ok(())
+    }
+
+    /// Roll back the current bulk transaction. For abort paths — the
+    /// rusqlite transaction guard would handle this automatically
+    /// but we're using raw statements to work around Connection
+    /// borrow limitations inside `Arc<Mutex<_>>`.
+    pub fn rollback_bulk(&self) -> Result<(), ArxivError> {
+        self.conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
+    /// Commit the current transaction and open a new one. Call every
+    /// N records to cap WAL file growth (SQLite's WAL can balloon to
+    /// the size of all pending writes if never checkpointed mid-run).
+    pub fn commit_and_continue(&self) -> Result<(), ArxivError> {
+        self.conn.execute_batch("COMMIT; BEGIN IMMEDIATE;")?;
+        Ok(())
+    }
+
+    /// Borrow the underlying SQLite connection — useful for callers
+    /// that need to stash metadata (e.g. resumption tokens) that
+    /// this handle's public API doesn't expose directly.
+    pub fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     /// Record the last-successful-harvest ISO-8601 timestamp. Used

@@ -72,47 +72,123 @@ pub fn create_schema(conn: &Connection) -> Result<(), ArxivError> {
 /// Record or update a single arXiv paper. Replaces an existing row for
 /// the same `arxiv_id` (used by incremental refreshes when an
 /// already-harvested paper got a new version).
+///
+/// Uses `prepare_cached` for every statement so bulk ingest doesn't
+/// re-parse the same SQL 2.5M times — rusqlite caches by SQL string
+/// on the connection, so subsequent calls skip the parser.
 pub fn upsert_record(conn: &Connection, rec: &ArxivRecord) -> Result<(), ArxivError> {
-    conn.execute(
-        "INSERT OR REPLACE INTO papers (arxiv_id, title, categories, doi, license, latest_v) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
+    {
+        let mut stmt = conn.prepare_cached(
+            "INSERT OR REPLACE INTO papers (arxiv_id, title, categories, doi, license, latest_v) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        stmt.execute(params![
             rec.id,
             rec.title,
             rec.categories.as_deref(),
             rec.doi.as_deref(),
             rec.license.as_deref(),
             rec.latest_version() as i64,
-        ],
-    )?;
-    // Replace authors and versions. `INSERT OR REPLACE` on the parent
-    // cascades deletes via the FK, so we always rewrite the child rows
-    // cleanly (no stale authors from an old version).
-    conn.execute("DELETE FROM authors WHERE arxiv_id = ?1", params![rec.id])?;
-    for (i, name) in rec.authors.iter().enumerate() {
-        conn.execute(
+        ])?;
+    }
+    // Replace authors and versions. On a fresh ingest the DELETE is a
+    // no-op but still cheap (indexed by PK); on a refresh it wipes
+    // stale entries before we insert the new list.
+    {
+        let mut stmt = conn.prepare_cached("DELETE FROM authors WHERE arxiv_id = ?1")?;
+        stmt.execute(params![rec.id])?;
+    }
+    {
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO authors (arxiv_id, position, name) VALUES (?1, ?2, ?3)",
-            params![rec.id, i as i64, name],
         )?;
+        for (i, name) in rec.authors.iter().enumerate() {
+            stmt.execute(params![rec.id, i as i64, name])?;
+        }
     }
-    conn.execute("DELETE FROM versions WHERE arxiv_id = ?1", params![rec.id])?;
-    for v in &rec.versions {
-        conn.execute(
+    {
+        let mut stmt = conn.prepare_cached("DELETE FROM versions WHERE arxiv_id = ?1")?;
+        stmt.execute(params![rec.id])?;
+    }
+    {
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO versions (arxiv_id, version, submitted) VALUES (?1, ?2, ?3)",
-            params![rec.id, v.version as i64, v.submitted.as_deref()],
         )?;
+        for v in &rec.versions {
+            stmt.execute(params![rec.id, v.version as i64, v.submitted.as_deref()])?;
+        }
     }
-    // Keep FTS in sync. `INSERT OR REPLACE` works because we store
-    // arxiv_id as the logical row key via the UNINDEXED column; delete
-    // + insert is the standard FTS5 pattern when the external key
-    // might already exist.
-    conn.execute(
-        "DELETE FROM titles_fts WHERE arxiv_id = ?1",
-        params![rec.id],
-    )?;
-    conn.execute(
-        "INSERT INTO titles_fts (arxiv_id, title) VALUES (?1, ?2)",
-        params![rec.id, rec.title],
+    // Keep FTS in sync. Delete-then-insert is the standard FTS5
+    // pattern when the external key (arxiv_id) might already exist.
+    {
+        let mut stmt = conn.prepare_cached("DELETE FROM titles_fts WHERE arxiv_id = ?1")?;
+        stmt.execute(params![rec.id])?;
+    }
+    {
+        let mut stmt =
+            conn.prepare_cached("INSERT INTO titles_fts (arxiv_id, title) VALUES (?1, ?2)")?;
+        stmt.execute(params![rec.id, rec.title])?;
+    }
+    Ok(())
+}
+
+/// Fast-path upsert that skips the FTS5 index update. Use during
+/// bulk ingest when the caller will rebuild the FTS index once at
+/// the end via [`rebuild_fts_from_papers`]. FTS5 is the single
+/// slowest part of `upsert_record` (tokenisation + inverted-index
+/// maintenance per row), so bypassing it during ingest and
+/// rebuilding in bulk is typically 5-10× faster overall.
+pub fn upsert_record_no_fts(conn: &Connection, rec: &ArxivRecord) -> Result<(), ArxivError> {
+    {
+        let mut stmt = conn.prepare_cached(
+            "INSERT OR REPLACE INTO papers (arxiv_id, title, categories, doi, license, latest_v) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        stmt.execute(params![
+            rec.id,
+            rec.title,
+            rec.categories.as_deref(),
+            rec.doi.as_deref(),
+            rec.license.as_deref(),
+            rec.latest_version() as i64,
+        ])?;
+    }
+    {
+        let mut stmt = conn.prepare_cached("DELETE FROM authors WHERE arxiv_id = ?1")?;
+        stmt.execute(params![rec.id])?;
+    }
+    {
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO authors (arxiv_id, position, name) VALUES (?1, ?2, ?3)",
+        )?;
+        for (i, name) in rec.authors.iter().enumerate() {
+            stmt.execute(params![rec.id, i as i64, name])?;
+        }
+    }
+    {
+        let mut stmt = conn.prepare_cached("DELETE FROM versions WHERE arxiv_id = ?1")?;
+        stmt.execute(params![rec.id])?;
+    }
+    {
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO versions (arxiv_id, version, submitted) VALUES (?1, ?2, ?3)",
+        )?;
+        for v in &rec.versions {
+            stmt.execute(params![rec.id, v.version as i64, v.submitted.as_deref()])?;
+        }
+    }
+    Ok(())
+}
+
+/// Truncate the FTS5 index and repopulate it from the `papers` table.
+/// Paired with [`upsert_record_no_fts`] for bulk-ingest workloads.
+/// A single `INSERT ... SELECT` is dramatically cheaper than 2.5M
+/// individual `INSERT`s because FTS5 can batch its internal tree
+/// writes and skip the delete-then-insert dance.
+pub fn rebuild_fts_from_papers(conn: &Connection) -> Result<(), ArxivError> {
+    conn.execute_batch(
+        "DELETE FROM titles_fts;\n\
+         INSERT INTO titles_fts (arxiv_id, title) SELECT arxiv_id, title FROM papers;",
     )?;
     Ok(())
 }

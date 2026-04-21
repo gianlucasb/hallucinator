@@ -3,7 +3,7 @@ name = "hallucinator-arxiv-offline"
 version.workspace = true
 edition.workspace = true
 license = "AGPL-3.0-or-later OR MIT"
-description = "Offline arXiv metadata database builder and querier (OAI-PMH harvest)"
+description = "Offline arXiv metadata database builder and querier (Kaggle snapshot ingest)"
 
 [package.metadata.dist]
 dist = false
@@ -11,12 +11,13 @@ dist = false
 [dependencies]
 rusqlite.workspace = true
 reqwest.workspace = true
-regex.workspace = true
-once_cell.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-quick-xml.workspace = true
-urlencoding = "2"
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+zip.workspace = true
+dirs.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

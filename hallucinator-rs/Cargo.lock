@@ -1242,15 +1242,16 @@ dependencies = [
 name = "hallucinator-arxiv-offline"
 version = "0.1.2"
 dependencies = [
- "once_cell",
- "quick-xml",
- "regex",
+ "dirs",
+ "flate2",
  "reqwest",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "urlencoding",
+ "zip",
 ]
 
 [[package]]
@@ -1271,6 +1272,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dotenvy",
+ "flate2",
  "hallucinator-acl",
  "hallucinator-arxiv-offline",
  "hallucinator-bbl",
@@ -1287,6 +1289,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]
