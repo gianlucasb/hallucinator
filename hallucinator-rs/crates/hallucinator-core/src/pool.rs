@@ -472,6 +472,136 @@ async fn report_result(
     }
 }
 
+/// Run the URL-liveness and SearxNG web-search fallbacks when the primary
+/// DB aggregation came back `NotFound`. Returns the possibly-updated
+/// `(status, source, found_authors, paper_url, db_results)` tuple.
+///
+/// Shared by three call sites in `pool.rs`:
+///
+///   * `finalize_collector` — after concurrent drainers finish.
+///   * `coordinator_loop`'s no-remote-DBs branch — when the user has
+///     disabled every remote backend.
+///   * `coordinator_loop`'s all-cache-hit-none-verified branch — where
+///     this used to be missing. Regression symptom: on a fresh run the
+///     URL-check fallback correctly verified refs that only lived on
+///     GitHub / blog posts, but on any subsequent run against the same
+///     cache every remote DB was a NotFound cache hit, the branch skipped
+///     straight to building a `Status::NotFound` result, and URL Check
+///     never ran — so previously-URL-verified refs came back as
+///     hallucinations. Folding all three sites through this helper makes
+///     it harder for one to drift again.
+///
+/// The retraction field is *not* touched here (it's threaded through
+/// separately from the cached CrossRef response).
+async fn apply_fallbacks(
+    status: Status,
+    source: Option<String>,
+    found_authors: Vec<String>,
+    paper_url: Option<String>,
+    mut db_results: Vec<DbResult>,
+    urls: &[String],
+    title: &str,
+    config: &Config,
+    client: &reqwest::Client,
+    progress: &(dyn Fn(ProgressEvent) + Send + Sync),
+    ref_index: usize,
+) -> (
+    Status,
+    Option<String>,
+    Vec<String>,
+    Option<String>,
+    Vec<DbResult>,
+) {
+    // ── URL liveness check ─────────────────────────────────────────────
+    if status == Status::NotFound && !urls.is_empty() {
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let start = std::time::Instant::now();
+        let url_result = UrlChecker::check_first_live(urls, client, timeout).await;
+        let elapsed = start.elapsed();
+
+        if let Some(url_result) = url_result {
+            let url = url_result.final_url.unwrap_or(url_result.url);
+            progress(ProgressEvent::DatabaseQueryComplete {
+                paper_index: 0,
+                ref_index,
+                db_name: "URL Check".to_string(),
+                status: DbStatus::Match,
+                elapsed,
+            });
+            db_results.push(DbResult {
+                db_name: "URL Check".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: Some(url.clone()),
+                error_message: None,
+            });
+            return (
+                Status::Verified,
+                Some("URL Check".into()),
+                vec![],
+                Some(url),
+                db_results,
+            );
+        }
+        progress(ProgressEvent::DatabaseQueryComplete {
+            paper_index: 0,
+            ref_index,
+            db_name: "URL Check".to_string(),
+            status: DbStatus::NoMatch,
+            elapsed,
+        });
+    }
+
+    // ── SearxNG web-search fallback ────────────────────────────────────
+    if status == Status::NotFound
+        && let Some(ref searxng_url) = config.searxng_url
+    {
+        let searxng = Searxng::new(searxng_url.clone());
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let start = std::time::Instant::now();
+        let searxng_result = searxng.query(title, client, timeout).await;
+        let elapsed = start.elapsed();
+
+        if let Ok(ref qr) = searxng_result
+            && qr.is_found()
+        {
+            let url = qr.paper_url.clone();
+            progress(ProgressEvent::DatabaseQueryComplete {
+                paper_index: 0,
+                ref_index,
+                db_name: "Web Search".to_string(),
+                status: DbStatus::Match,
+                elapsed,
+            });
+            db_results.push(DbResult {
+                db_name: "Web Search".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: url.clone(),
+                error_message: None,
+            });
+            return (
+                Status::Verified,
+                Some("Web Search".into()),
+                vec![],
+                url,
+                db_results,
+            );
+        }
+        progress(ProgressEvent::DatabaseQueryComplete {
+            paper_index: 0,
+            ref_index,
+            db_name: "Web Search".to_string(),
+            status: DbStatus::NoMatch,
+            elapsed,
+        });
+    }
+
+    (status, source, found_authors, paper_url, db_results)
+}
+
 /// Build the final result and send it on the oneshot channel.
 ///
 /// Called exactly once, by whichever drainer decrements `remaining` to 0.
@@ -520,113 +650,21 @@ async fn finalize_collector(collector: &RefCollector) {
         }
     };
 
-    // URL liveness check for references with embedded URLs
-    let (status, source, found_authors, paper_url, remote_db_results) =
-        if status == Status::NotFound && !collector.reference.urls.is_empty() {
-            let timeout = Duration::from_secs(collector.config.db_timeout_secs);
-            let start = std::time::Instant::now();
-
-            if let Some(url_result) =
-                UrlChecker::check_first_live(&collector.reference.urls, &collector.client, timeout)
-                    .await
-            {
-                let elapsed = start.elapsed();
-                let url = url_result.final_url.unwrap_or(url_result.url);
-                (collector.progress)(ProgressEvent::DatabaseQueryComplete {
-                    paper_index: 0,
-                    ref_index: collector.ref_index,
-                    db_name: "URL Check".to_string(),
-                    status: DbStatus::Match,
-                    elapsed,
-                });
-                let mut db_results = remote_db_results;
-                db_results.push(DbResult {
-                    db_name: "URL Check".into(),
-                    status: DbStatus::Match,
-                    elapsed: Some(elapsed),
-                    found_authors: vec![],
-                    paper_url: Some(url.clone()),
-                    error_message: None,
-                });
-                (
-                    Status::Verified,
-                    Some("URL Check".into()),
-                    vec![],
-                    Some(url),
-                    db_results,
-                )
-            } else {
-                let elapsed = start.elapsed();
-                (collector.progress)(ProgressEvent::DatabaseQueryComplete {
-                    paper_index: 0,
-                    ref_index: collector.ref_index,
-                    db_name: "URL Check".to_string(),
-                    status: DbStatus::NoMatch,
-                    elapsed,
-                });
-                (status, source, found_authors, paper_url, remote_db_results)
-            }
-        } else {
-            (status, source, found_authors, paper_url, remote_db_results)
-        };
-
-    // SearxNG fallback for NotFound references
-    let (status, source, found_authors, paper_url, remote_db_results) =
-        if status == Status::NotFound {
-            if let Some(ref searxng_url) = collector.config.searxng_url {
-                let searxng = Searxng::new(searxng_url.clone());
-                let timeout = Duration::from_secs(collector.config.db_timeout_secs);
-
-                let start = std::time::Instant::now();
-                let searxng_result = searxng
-                    .query(&collector.title, &collector.client, timeout)
-                    .await;
-                let elapsed = start.elapsed();
-
-                if let Ok(ref qr) = searxng_result
-                    && qr.is_found()
-                {
-                    let url = qr.paper_url.clone();
-                    (collector.progress)(ProgressEvent::DatabaseQueryComplete {
-                        paper_index: 0,
-                        ref_index: collector.ref_index,
-                        db_name: "Web Search".to_string(),
-                        status: DbStatus::Match,
-                        elapsed,
-                    });
-                    // Web search found the paper
-                    let mut db_results = remote_db_results;
-                    db_results.push(DbResult {
-                        db_name: "Web Search".into(),
-                        status: DbStatus::Match,
-                        elapsed: Some(elapsed),
-                        found_authors: vec![],
-                        paper_url: url.clone(),
-                        error_message: None,
-                    });
-                    (
-                        Status::Verified,
-                        Some("Web Search".into()),
-                        vec![],
-                        url,
-                        db_results,
-                    )
-                } else {
-                    (collector.progress)(ProgressEvent::DatabaseQueryComplete {
-                        paper_index: 0,
-                        ref_index: collector.ref_index,
-                        db_name: "Web Search".to_string(),
-                        status: DbStatus::NoMatch,
-                        elapsed,
-                    });
-                    (status, source, found_authors, paper_url, remote_db_results)
-                }
-            } else {
-                (status, source, found_authors, paper_url, remote_db_results)
-            }
-        } else {
-            (status, source, found_authors, paper_url, remote_db_results)
-        };
+    // URL liveness + SearxNG fallbacks (shared helper)
+    let (status, source, found_authors, paper_url, remote_db_results) = apply_fallbacks(
+        status,
+        source,
+        found_authors,
+        paper_url,
+        remote_db_results,
+        &collector.reference.urls,
+        &collector.title,
+        &collector.config,
+        &collector.client,
+        collector.progress.as_ref(),
+        collector.ref_index,
+    )
+    .await;
 
     // Merge local + remote results
     let mut all_db_results = collector.local_result.db_results.clone();
@@ -958,124 +996,36 @@ async fn coordinator_loop(
 
         // --- Fan out to drainer queues ---
         if drainer_txs.is_empty() {
-            // No remote DBs enabled — try URL check and SearxNG fallbacks
-            let result = if local_result.status == Status::NotFound {
-                // Try URL liveness check first
-                let url_check_result = if !reference.urls.is_empty() {
-                    let timeout = Duration::from_secs(config.db_timeout_secs);
-                    let start = std::time::Instant::now();
-                    let result =
-                        UrlChecker::check_first_live(&reference.urls, &client, timeout).await;
-                    let elapsed = start.elapsed();
-
-                    if let Some(url_result) = result {
-                        let url = url_result.final_url.unwrap_or(url_result.url);
-                        progress(ProgressEvent::DatabaseQueryComplete {
-                            paper_index: 0,
-                            ref_index,
-                            db_name: "URL Check".to_string(),
-                            status: DbStatus::Match,
-                            elapsed,
-                        });
-                        let mut db_results = local_result.db_results.clone();
-                        db_results.push(DbResult {
-                            db_name: "URL Check".into(),
-                            status: DbStatus::Match,
-                            elapsed: Some(elapsed),
-                            found_authors: vec![],
-                            paper_url: Some(url.clone()),
-                            error_message: None,
-                        });
-                        Some(ValidationResult {
-                            title: title.clone(),
-                            raw_citation: reference.raw_citation.clone(),
-                            ref_authors: reference.authors.clone(),
-                            status: Status::Verified,
-                            source: Some("URL Check".into()),
-                            found_authors: vec![],
-                            paper_url: Some(url),
-                            failed_dbs: local_result.failed_dbs.clone(),
-                            db_results,
-                            doi_info: None,
-                            arxiv_info: None,
-                            retraction_info: None,
-                        })
-                    } else {
-                        progress(ProgressEvent::DatabaseQueryComplete {
-                            paper_index: 0,
-                            ref_index,
-                            db_name: "URL Check".to_string(),
-                            status: DbStatus::NoMatch,
-                            elapsed,
-                        });
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                // If URL check succeeded, use that result
-                if let Some(result) = url_check_result {
-                    result
-                } else if let Some(ref searxng_url) = config.searxng_url {
-                    // Otherwise try SearxNG fallback
-                    let searxng = Searxng::new(searxng_url.clone());
-                    let timeout = Duration::from_secs(config.db_timeout_secs);
-
-                    let start = std::time::Instant::now();
-                    let searxng_result = searxng.query(&title, &client, timeout).await;
-                    let elapsed = start.elapsed();
-
-                    if let Ok(ref qr) = searxng_result
-                        && qr.is_found()
-                    {
-                        let url = qr.paper_url.clone();
-                        progress(ProgressEvent::DatabaseQueryComplete {
-                            paper_index: 0,
-                            ref_index,
-                            db_name: "Web Search".to_string(),
-                            status: DbStatus::Match,
-                            elapsed,
-                        });
-                        // Web search found the paper
-                        let mut db_results = local_result.db_results.clone();
-                        db_results.push(DbResult {
-                            db_name: "Web Search".into(),
-                            status: DbStatus::Match,
-                            elapsed: Some(elapsed),
-                            found_authors: vec![],
-                            paper_url: url.clone(),
-                            error_message: None,
-                        });
-                        ValidationResult {
-                            title: title.clone(),
-                            raw_citation: reference.raw_citation.clone(),
-                            ref_authors: reference.authors.clone(),
-                            status: Status::Verified,
-                            source: Some("Web Search".into()),
-                            found_authors: vec![],
-                            paper_url: url,
-                            failed_dbs: local_result.failed_dbs.clone(),
-                            db_results,
-                            doi_info: None,
-                            arxiv_info: None, // TODO(#124): implement arXiv ID validation
-                            retraction_info: None,
-                        }
-                    } else {
-                        progress(ProgressEvent::DatabaseQueryComplete {
-                            paper_index: 0,
-                            ref_index,
-                            db_name: "Web Search".to_string(),
-                            status: DbStatus::NoMatch,
-                            elapsed,
-                        });
-                        build_validation_result(&reference, &title, local_result, None)
-                    }
-                } else {
-                    build_validation_result(&reference, &title, local_result, None)
-                }
-            } else {
-                build_validation_result(&reference, &title, local_result, None)
+            // No remote DBs enabled — URL-check + SearxNG fallbacks only
+            // (on NotFound). The helper is a no-op when status is already
+            // Verified or Mismatch, so we always pass through it.
+            let (status, source, found_authors, paper_url, db_results) = apply_fallbacks(
+                local_result.status.clone(),
+                local_result.source.clone(),
+                local_result.found_authors.clone(),
+                local_result.paper_url.clone(),
+                local_result.db_results.clone(),
+                &reference.urls,
+                &title,
+                &config,
+                &client,
+                progress.as_ref(),
+                ref_index,
+            )
+            .await;
+            let result = ValidationResult {
+                title: title.clone(),
+                raw_citation: reference.raw_citation.clone(),
+                ref_authors: reference.authors.clone(),
+                status,
+                source,
+                found_authors,
+                paper_url,
+                failed_dbs: local_result.failed_dbs.clone(),
+                db_results,
+                doi_info: None,
+                arxiv_info: None,
+                retraction_info: None,
             };
             emit_final_events(progress.as_ref(), &result, ref_index, total, &title);
             let _ = result_tx.send(result);
@@ -1211,6 +1161,25 @@ async fn coordinator_loop(
             } else {
                 (Status::NotFound, None, vec![], None)
             };
+
+            // Run URL Check + SearxNG fallbacks on NotFound even though
+            // every DB was a cache hit — this is the path where a
+            // reference that was previously URL-verified would otherwise
+            // regress to NotFound on the second run.
+            let (status, source, found_authors, paper_url, all_db_results) = apply_fallbacks(
+                status,
+                source,
+                found_authors,
+                paper_url,
+                all_db_results,
+                &reference.urls,
+                &title,
+                &config,
+                &client,
+                progress.as_ref(),
+                ref_index,
+            )
+            .await;
 
             let result = ValidationResult {
                 title: title.clone(),
