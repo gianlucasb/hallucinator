@@ -18,6 +18,7 @@ pub mod semantic_scholar;
 pub mod ssrn;
 pub mod standards;
 pub mod url_check;
+pub mod wayback;
 
 #[cfg(test)]
 pub(crate) mod mock;

@@ -234,13 +234,22 @@ pub async fn check_single_reference(
     )
     .await;
 
+    // Expand `_` / `-` / <none> separator variants so URL Check and
+    // Wayback can recover URLs whose PDF-extracted separators got
+    // guessed wrong. See `expand_url_variants` for rationale.
+    let candidate_urls: Vec<String> = if reference.urls.is_empty() {
+        Vec::new()
+    } else {
+        crate::db::url_check::expand_url_variants(&reference.urls)
+    };
+
     // Step 2.5: URL liveness check for references with embedded URLs
-    if db_result.status == Status::NotFound && !reference.urls.is_empty() {
+    if db_result.status == Status::NotFound && !candidate_urls.is_empty() {
         let timeout = Duration::from_secs(config.db_timeout_secs);
         let start = std::time::Instant::now();
 
         if let Some(url_result) =
-            UrlChecker::check_first_live(&reference.urls, client, timeout).await
+            UrlChecker::check_first_live(&candidate_urls, client, timeout).await
         {
             let elapsed = start.elapsed();
             let paper_url = url_result.final_url.unwrap_or(url_result.url);
@@ -266,6 +275,47 @@ pub async fn check_single_reference(
             let elapsed = start.elapsed();
             cb(DbResult {
                 db_name: "URL Check".into(),
+                status: DbStatus::NoMatch,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: None,
+                error_message: None,
+            });
+        }
+    }
+
+    // Step 2.55: Wayback Machine fallback for link-rotted URLs.
+    // If URL Check found no live URL, a cited URL may still have been
+    // real when the paper was written — check archive.org for a valid
+    // snapshot. Mirrors the same logic as the pool's `apply_fallbacks`.
+    if db_result.status == Status::NotFound && !candidate_urls.is_empty() {
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let start = std::time::Instant::now();
+        let wayback_result =
+            crate::db::wayback::check_first_snapshot(&candidate_urls, client, timeout).await;
+        let elapsed = start.elapsed();
+
+        if let Some(result) = wayback_result {
+            let wayback_db_result = DbResult {
+                db_name: "Wayback Machine".into(),
+                status: DbStatus::Match,
+                elapsed: Some(elapsed),
+                found_authors: vec![],
+                paper_url: Some(result.snapshot_url.clone()),
+                error_message: None,
+            };
+            if let Some(cb) = on_db_complete {
+                cb(wayback_db_result.clone());
+            }
+            db_result.db_results.push(wayback_db_result);
+
+            db_result.status = Status::Verified;
+            db_result.source = Some("Wayback Machine".into());
+            db_result.found_authors = vec![];
+            db_result.paper_url = Some(result.snapshot_url);
+        } else if let Some(cb) = on_db_complete {
+            cb(DbResult {
+                db_name: "Wayback Machine".into(),
                 status: DbStatus::NoMatch,
                 elapsed: Some(elapsed),
                 found_authors: vec![],

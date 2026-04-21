@@ -161,9 +161,95 @@ impl UrlChecker {
     }
 }
 
+/// Expand a URL list with separator variants for fallback matching.
+///
+/// When the PDF extraction pipeline recovers a URL with an internal
+/// whitespace gap (e.g., a word that was line-broken without a hyphen),
+/// `fix_url_spacing` guesses that the intended join is an underscore.
+/// That's the right guess for file-path URLs (`cjson_read_fuzzer.c`) but
+/// wrong for blog-slug URLs where the space sat *inside* a single word —
+/// e.g., NDSS 2026 f1059 ref 41:
+///
+///   raw       `...authentication-s urvey-a-world-of-difference...`
+///   extracted `...authentication-s_urvey-a-world-of-difference...`
+///   correct   `...authentication-survey-a-world-of-difference...`
+///
+/// We can't tell at extraction time which is which, so the liveness and
+/// archive checkers try all three: the original, `_` → `-`, and
+/// `_` → ``. The first live URL wins. URLs that legitimately contain
+/// `_` (GitHub blob paths, etc.) are unaffected because the unmodified
+/// original is tried first; variants only fire when the original fails.
+///
+/// Order: always the original first, then the `-` variant, then the
+/// no-separator variant. Deduplicated (a URL without `_` contributes
+/// exactly one entry).
+pub fn expand_url_variants(urls: &[String]) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut out = Vec::with_capacity(urls.len() * 3);
+    let mut seen: HashSet<String> = HashSet::new();
+    for url in urls {
+        for variant in [url.clone(), url.replace('_', "-"), url.replace('_', "")] {
+            if seen.insert(variant.clone()) {
+                out.push(variant);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── expand_url_variants (hermetic) ──────────────────────────────────
+
+    #[test]
+    fn expand_variants_urls_without_underscore_unchanged() {
+        // Nothing to swap → exactly one entry per input URL.
+        let got = expand_url_variants(&[
+            "https://github.com/user/repo".into(),
+            "https://example.com/a/b/c".into(),
+        ]);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&"https://github.com/user/repo".to_string()));
+    }
+
+    #[test]
+    fn expand_variants_url_with_underscore_yields_three() {
+        // Original + `_` → `-` + `_` → ``. Original comes first so the
+        // common case (legitimate underscore in path) hits on first try.
+        let got =
+            expand_url_variants(&["https://example.com/my_page".into()]);
+        assert_eq!(
+            got,
+            vec![
+                "https://example.com/my_page",
+                "https://example.com/my-page",
+                "https://example.com/mypage",
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_variants_dedupes_collision_between_urls() {
+        // Two different inputs whose variants collapse to the same URL
+        // (e.g. both lose `_` the same way) must be emitted once.
+        let got = expand_url_variants(&[
+            "https://example.com/a_b".into(),
+            "https://example.com/a_b".into(),
+        ]);
+        assert_eq!(got.len(), 3);
+    }
+
+    #[test]
+    fn expand_variants_f1059_ref41_yubico_blog_slug() {
+        // The motivating case: the blog slug's `-s_urvey-` variants must
+        // include the no-separator form that matches the real URL.
+        let got = expand_url_variants(&[
+            "https://www.yubico.com/blog/2025-global-state-of-authentication-s_urvey-a-world-of-difference-in-cybersecurity-habits/".into(),
+        ]);
+        assert!(got.contains(&"https://www.yubico.com/blog/2025-global-state-of-authentication-survey-a-world-of-difference-in-cybersecurity-habits/".to_string()));
+    }
 
     // ── hermetic classification tests (no network) ──────────────────────
 
