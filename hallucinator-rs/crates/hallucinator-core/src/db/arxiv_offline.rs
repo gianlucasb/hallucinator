@@ -1,16 +1,19 @@
-//! Offline arXiv backend: a local SQLite index harvested from arXiv's
-//! OAI-PMH feed.
+//! Offline arXiv backend: a local SQLite index built from the Kaggle
+//! `Cornell-University/arxiv` weekly snapshot.
 //!
 //! Parallels `DblpOffline` / `AclOffline`: same `DatabaseBackend`
 //! contract, same `is_local = true` so the orchestrator runs it
-//! inline in the local phase before any remote DBs.
+//! inline in the local phase before any remote DBs. Reports the
+//! same `name() = "arXiv"` as the online backend so the offline
+//! DB fully replaces the online one when configured (same pattern
+//! as `DblpOffline`).
 //!
-//! The offline DB carries only the latest-version title per paper
-//! (that's all OAI-PMH's `arXivRaw` format surfaces), so the
-//! earlier-versions title fallback still needs the live arXiv API
-//! on miss. The `query_arxiv_id` path here returns `NotFound` when
-//! the title doesn't match — the orchestrator then falls through
-//! to the online `Arxiv` backend, which walks the version history.
+//! The snapshot carries only the latest-version title per paper;
+//! retitled-paper edge cases (reference cites an older version's
+//! title, the paper was renamed in a later version) are not caught
+//! by this backend. Callers who care about those can temporarily
+//! remove the offline DB config to fall back to online arXiv,
+//! which walks `/abs/{id}v{1..N}`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -35,13 +38,11 @@ impl ArxivOffline {
 
 impl DatabaseBackend for ArxivOffline {
     fn name(&self) -> &str {
-        // Distinct from the online backend's "arXiv" on purpose: the
-        // offline index carries only latest-version titles, so a
-        // cached "not found" from offline does NOT imply the online
-        // version-history fallback would also miss. Keeping the
-        // cache keys separate lets the online backend still run
-        // (and walk earlier versions) when offline misses on title.
-        "arXiv (offline)"
+        // Same name as the online backend — offline replaces online
+        // entirely when configured, matching DBLP/ACL semantics.
+        // Cache keys / UI / on_db_complete events all see "arXiv"
+        // regardless of which backend answered.
+        "arXiv"
     }
 
     fn is_local(&self) -> bool {
@@ -129,12 +130,10 @@ impl DatabaseBackend for ArxivOffline {
             };
 
             let Some(r) = rec else {
-                // No match by ID in the offline index. Return None so
-                // the orchestrator falls through to the online arXiv
-                // backend — which might have seen the paper more
-                // recently than our last harvest, or walks the
-                // earlier-versions fallback (the offline index
-                // doesn't carry per-version titles).
+                // No match by ID in the offline index — fall through
+                // to the title-search path inside `execute_query`.
+                // That almost always also misses, but keeps the
+                // control flow simple (single exit via title search).
                 return None;
             };
 
@@ -145,9 +144,12 @@ impl DatabaseBackend for ArxivOffline {
                     Some(format!("https://arxiv.org/abs/{}", r.id)),
                 )))
             } else {
-                // Title mismatch on a known ID. Same reason as above:
-                // fall through to the online backend so its
-                // earlier-version walk can try v1..v{N-1}.
+                // Title mismatch on a known ID. Could be a retitled
+                // paper the snapshot caught only at its latest form.
+                // Fall through to title search; if that also misses,
+                // the ref surfaces as NotFound. Users who want to
+                // catch retitled papers temporarily unset the
+                // offline DB config and re-run with online arXiv.
                 None
             }
         })

@@ -592,20 +592,20 @@ pub(crate) fn build_database_list(
             mailto: config.crossref_mailto.clone(),
         }));
     }
-    // Offline arXiv — local/fast — runs in the inline phase before
-    // the online backend, so a hit in the offline index short-circuits
-    // the remote request. On miss, the online arXiv backend still
-    // gets to run because it carries the earlier-versions fallback
-    // the offline index doesn't (arXivRaw only exposes latest title).
-    if should_include("arXiv (offline)")
-        && let Some(ref db) = config.arxiv_offline_db
-    {
-        databases.push(Box::new(arxiv_offline::ArxivOffline::new(
-            std::sync::Arc::clone(db),
-        )));
-    }
+    // arXiv: offline replaces online when configured (same pattern
+    // as DBLP / ACL / OpenAlex). Online arXiv is slow and the Kaggle
+    // snapshot answers the common case offline at ~0 latency. The
+    // edge case online catches that offline doesn't — retitled-paper
+    // version walks — is rare enough that users can opt back in by
+    // temporarily clearing the offline DB config.
     if should_include("arXiv") {
-        databases.push(Box::new(arxiv::Arxiv));
+        if let Some(ref db) = config.arxiv_offline_db {
+            databases.push(Box::new(arxiv_offline::ArxivOffline::new(
+                std::sync::Arc::clone(db),
+            )));
+        } else {
+            databases.push(Box::new(arxiv::Arxiv));
+        }
     }
     if should_include("DBLP") {
         if let Some(ref db) = config.dblp_offline_db {
