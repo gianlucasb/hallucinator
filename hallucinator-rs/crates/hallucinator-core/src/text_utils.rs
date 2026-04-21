@@ -171,6 +171,20 @@ fn fix_url_spacing(url_region: &str) -> String {
     static SPACED_HYPHEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*-\s*(\w)").unwrap());
     result = SPACED_HYPHEN.replace_all(&result, "$1-$2").to_string();
 
+    // Collapse whitespace immediately before a fragment: PDFs sometimes
+    // wrap a line after the trailing `/` of a path and before the `#`
+    // of a URL fragment. Example from NDSS 2026 s1381 ref 20 where the
+    // raw text is `…/docker/container/run/\n#example-join-…` — neither
+    // SLASH_SPACE (`/\s+\w`, `#` isn't a word char) nor PATH_SPLIT
+    // (requires the continuation to start with `/`) absorbs this shape.
+    //
+    // Uses `\s+` so both horizontal whitespace and newlines collapse,
+    // because the rule fires only inside URL_REGION matches (narrative
+    // `#hashtag` after a URL is vanishingly rare in academic citations
+    // — fragments are the overwhelming case).
+    static SPACE_BEFORE_HASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+#").unwrap());
+    result = SPACE_BEFORE_HASH.replace_all(&result, "#").to_string();
+
     // Join middle-segment spaces as underscores inside URL paths.
     //
     // A path segment wrapped between two `/`s that contains only word-like
@@ -238,8 +252,16 @@ fn fix_url_spacing(url_region: &str) -> String {
     // rule fire on real references.
     // The Rust regex crate does not support lookaround, so the trailer is
     // captured in group 2 and restored verbatim in the replacement closure.
+    //
+    // The token class is `[A-Za-z0-9\-]+` rather than `[A-Za-z0-9]+` so
+    // that filenames with hyphens — e.g.,
+    // `M3AAWG Hosting Abuse BCPs-2015-03.pdf` (NDSS 2026 f468 ref 2) or
+    // `24-27349-006 Matter-1.4-Core-Specification.pdf` (f94 ref 38) — match.
+    // The preceding whitespace still has to be the only separator between
+    // tokens (not another `-`), so existing hyphenated tails that already
+    // parse correctly stay untouched.
     static FILENAME_LOST_UNDERSCORES: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"/([A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[,;)]))")
+        Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[,;)]))")
             .unwrap()
     });
     result = FILENAME_LOST_UNDERSCORES
@@ -934,6 +956,54 @@ mod tests {
         let text = "see https://example.com/path/very long file.py";
         let urls = extract_urls(text);
         assert_eq!(urls, vec!["https://example.com/path/very_long_file.py"]);
+    }
+
+    #[test]
+    fn test_extract_urls_hyphenated_filename_lost_underscores() {
+        // NDSS 2026 f468 ref 2 / f94 ref 38: filename that contains
+        // hyphens AND had its internal underscores PDF-rendered as
+        // spaces. Requires FILENAME_LOST_UNDERSCORES's token class to
+        // include `-` (otherwise the hyphen breaks the greedy match
+        // and the rule can't anchor on the `.pdf` tail).
+        let text = "Available: https://www.m3aawg.org/sites/default/files/document/M3AAWG Hosting Abuse BCPs-2015-03.pdf";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec![
+                "https://www.m3aawg.org/sites/default/files/document/M3AAWG_Hosting_Abuse_BCPs-2015-03.pdf"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_fragment_after_whitespace() {
+        // NDSS 2026 s1381 ref 20: `.../run/\n#example-join-another-…`
+        // where `#` sits immediately after a PDF line break. Neither
+        // SLASH_SPACE (`\w` doesn't match `#`) nor PATH_SPLIT (needs
+        // `/` continuation) closes the gap. SPACE_BEFORE_HASH glues
+        // them so the fragment survives as part of the URL.
+        let text = "docs: https://docs.docker.com/reference/cli/docker/container/run/ #example-join-another-containers-pid-namespace";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec![
+                "https://docs.docker.com/reference/cli/docker/container/run/#example-join-another-containers-pid-namespace"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_fragment_after_newline() {
+        // Newline variant of the same shape — SPACE_BEFORE_HASH uses
+        // `\s+` so newlines collapse too.
+        let text = "docs: https://docs.docker.com/reference/cli/docker/container/run/\n#example-join-another-containers-pid-namespace";
+        let urls = extract_urls(text);
+        assert_eq!(
+            urls,
+            vec![
+                "https://docs.docker.com/reference/cli/docker/container/run/#example-join-another-containers-pid-namespace"
+            ]
+        );
     }
 
     #[test]
