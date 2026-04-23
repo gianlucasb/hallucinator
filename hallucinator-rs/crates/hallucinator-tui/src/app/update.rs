@@ -960,36 +960,59 @@ fn cycle_fp_reason_and_adjust_stats(
     ref_idx: usize,
     cache: Option<&std::sync::Arc<hallucinator_core::QueryCache>>,
 ) {
-    let Some(refs) = ref_states.get_mut(paper_idx) else {
-        return;
-    };
-    let Some(rs) = refs.get_mut(ref_idx) else {
-        return;
+    // Scoped borrow of (papers, ref_states) so we can release the
+    // &mut rs before the propagation sweep needs a fresh top-level
+    // borrow of ref_states.
+    let (origin_identity, new_fp_reason) = {
+        let Some(refs) = ref_states.get_mut(paper_idx) else {
+            return;
+        };
+        let Some(rs) = refs.get_mut(ref_idx) else {
+            return;
+        };
+
+        let was_safe = rs.fp_reason.is_some();
+        rs.fp_reason = FpReason::cycle(rs.fp_reason);
+        let is_safe = rs.fp_reason.is_some();
+
+        // Persist the mark only when the ref has enough identity
+        // information (title + ≥1 extracted author). Empty-author
+        // refs get a session-local mark — in-memory only — because
+        // a title-only key would collide with every other same-
+        // titled ref and could silently mark a fabricated ref as
+        // safe on paper load. See issue #267.
+        let identity = hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors);
+        if let Some(cache) = cache
+            && let Some(ref key) = identity
+        {
+            cache.set_fp_override(key, rs.fp_reason.map(|r| r.as_str()));
+        }
+
+        // Adjust origin paper's stats on a None↔Some transition.
+        // Some(r1)↔Some(r2) keeps the ref marked-safe, so the stats
+        // are already correct.
+        if was_safe != is_safe
+            && let Some(result) = &rs.result
+        {
+            let is_retracted = result
+                .retraction_info
+                .as_ref()
+                .is_some_and(|r| r.is_retracted);
+            let status = result.status.clone();
+            let dir: i32 = if is_safe { 1 } else { -1 };
+            if let Some(paper) = papers.get_mut(paper_idx) {
+                paper.apply_fp_delta(&status, is_retracted, dir);
+            }
+        }
+
+        (identity, rs.fp_reason)
     };
 
-    let was_safe = rs.fp_reason.is_some();
-    rs.fp_reason = FpReason::cycle(rs.fp_reason);
-    let is_safe = rs.fp_reason.is_some();
-
-    if let Some(cache) = cache {
-        cache.set_fp_override(&rs.title, rs.fp_reason.map(|r| r.as_str()));
-    }
-
-    // Only adjust stats on None↔Some boundary transitions. Some(r1)↔Some(r2)
-    // keeps the ref marked-safe, so the stats are already adjusted.
-    if was_safe == is_safe {
-        return;
-    }
-    let Some(result) = &rs.result else {
-        return; // ref hasn't been validated yet — no stats to adjust
-    };
-    let is_retracted = result
-        .retraction_info
-        .as_ref()
-        .is_some_and(|r| r.is_retracted);
-    let status = result.status.clone();
-    let dir: i32 = if is_safe { 1 } else { -1 };
-    if let Some(paper) = papers.get_mut(paper_idx) {
-        paper.apply_fp_delta(&status, is_retracted, dir);
-    }
+    // Retroactive propagation across the loaded queue (#266) lands
+    // in a follow-up commit; at that point this no-op `let _` call
+    // becomes `propagate_fp_override(...)`. Keeping the binding
+    // here documents where the hook lives and keeps the pattern
+    // identical to the follow-up commit's diff.
+    let _ = (origin_identity, new_fp_reason);
 }
+

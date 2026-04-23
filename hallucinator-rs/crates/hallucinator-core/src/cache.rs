@@ -105,10 +105,32 @@ impl SqliteWriter {
         // ALTER TABLE ADD COLUMN is a no-op if the column already exists (SQLite
         // returns "duplicate column name" error which we silently ignore).
         let _ = conn.execute_batch("ALTER TABLE query_cache ADD COLUMN retraction_json TEXT");
+        // fp_overrides schema (v2): keyed by a composite identity
+        // string derived from both title AND author set, not just
+        // title. Title-only collision (same title, different authors)
+        // was unsafe — a fabricated "Attention Is All You Need" could
+        // inherit the safe mark from a legitimate same-titled ref.
+        //
+        // Migration: if we find the legacy v1 table (single
+        // `normalized_title` column as PK), drop it. Safe marks are
+        // small and user-editable; the cost of asking users to
+        // re-mark is lower than the risk of silently misapplying
+        // overrides across the schema change.
+        let legacy_v1_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('fp_overrides') \
+                 WHERE name = 'normalized_title'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap_or(false);
+        if legacy_v1_exists {
+            let _ = conn.execute_batch("DROP TABLE fp_overrides");
+        }
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS fp_overrides (
-                 normalized_title TEXT PRIMARY KEY,
-                 fp_reason        TEXT NOT NULL
+                 identity_key TEXT PRIMARY KEY,
+                 fp_reason    TEXT NOT NULL
              );",
         )?;
         Ok(Self { conn })
@@ -204,17 +226,17 @@ impl SqliteWriter {
 
     // ── FP override methods ─────────────────────────────────────────
 
-    fn set_fp_override(&self, norm_title: &str, fp_reason: &str) {
+    fn set_fp_override(&self, identity_key: &str, fp_reason: &str) {
         let _ = self.conn.execute(
-            "INSERT OR REPLACE INTO fp_overrides (normalized_title, fp_reason) VALUES (?1, ?2)",
-            params![norm_title, fp_reason],
+            "INSERT OR REPLACE INTO fp_overrides (identity_key, fp_reason) VALUES (?1, ?2)",
+            params![identity_key, fp_reason],
         );
     }
 
-    fn delete_fp_override(&self, norm_title: &str) {
+    fn delete_fp_override(&self, identity_key: &str) {
         let _ = self.conn.execute(
-            "DELETE FROM fp_overrides WHERE normalized_title = ?1",
-            params![norm_title],
+            "DELETE FROM fp_overrides WHERE identity_key = ?1",
+            params![identity_key],
         );
     }
 
@@ -288,12 +310,12 @@ impl ReadPool {
         result
     }
 
-    fn get_fp_override(&self, norm_title: &str) -> Option<String> {
+    fn get_fp_override(&self, identity_key: &str) -> Option<String> {
         let conn = self.acquire()?;
         let result = conn
             .query_row(
-                "SELECT fp_reason FROM fp_overrides WHERE normalized_title = ?1",
-                params![norm_title],
+                "SELECT fp_reason FROM fp_overrides WHERE identity_key = ?1",
+                params![identity_key],
                 |row| row.get(0),
             )
             .ok();
@@ -730,34 +752,126 @@ impl QueryCache {
 
     // ── FP override methods ─────────────────────────────────────────
 
-    /// Store or remove a false-positive override for a reference title.
+    /// Store or remove a false-positive override keyed by the ref's
+    /// composite identity. `reason` is the string key from
+    /// [`FpReason::as_str`]; passing `None` removes the override.
     ///
-    /// `reason` is the string key from [`FpReason::as_str`]. Passing `None`
-    /// removes any existing override.
-    pub fn set_fp_override(&self, title: &str, reason: Option<&str>) {
-        let norm = normalize_title(title);
+    /// The `identity_key` is built by [`compute_fp_identity`] — callers
+    /// should skip persistence when that returns `None` (happens when
+    /// the ref has no extracted authors, where the identity would
+    /// collide with any other same-titled ref).
+    pub fn set_fp_override(&self, identity_key: &str, reason: Option<&str>) {
         if let Some(ref sqlite_mutex) = self.sqlite_writer
             && let Ok(store) = sqlite_mutex.lock()
         {
             if let Some(r) = reason {
-                store.set_fp_override(&norm, r);
+                store.set_fp_override(identity_key, r);
             } else {
-                store.delete_fp_override(&norm);
+                store.delete_fp_override(identity_key);
             }
         }
     }
 
-    /// Look up a persisted false-positive override for a reference title.
-    ///
-    /// Returns the reason string (e.g. `"broken_parse"`) if one was stored.
-    pub fn get_fp_override(&self, title: &str) -> Option<String> {
-        let norm = normalize_title(title);
+    /// Look up a persisted false-positive override by identity key.
+    /// Returns the reason string (e.g. `"broken_parse"`) if stored.
+    pub fn get_fp_override(&self, identity_key: &str) -> Option<String> {
         if let Some(ref pool) = self.read_pool {
-            pool.get_fp_override(&norm)
+            pool.get_fp_override(identity_key)
         } else {
             None
         }
     }
+}
+
+/// Build the composite identity key used for false-positive mark-safe
+/// persistence. The key combines the normalized title with a sorted
+/// fingerprint of the reference's authors — enough to distinguish
+/// "Attention Is All You Need" by Vaswani et al. from a fabricated
+/// same-titled ref with invented authors.
+///
+/// Returns `None` when the ref has no extracted authors. Empty-author
+/// refs would otherwise collide with every other same-titled ref,
+/// re-introducing the bug the identity change was meant to fix.
+/// Callers that get `None` should treat the mark as session-local:
+/// update UI state in memory, but skip cache persistence.
+///
+/// Author fingerprint construction:
+/// - For each author, extract `(first_initial, last_name)`.
+/// - Lowercase, strip diacritics and non-alphanumeric characters.
+/// - Sort lexicographically so author order in the citation doesn't
+///   affect identity (different bibliography styles list authors in
+///   different orders).
+/// - Join with `,`.
+///
+/// "J. Smith" and "John Smith" collapse to the same fingerprint
+/// (first initial `j`, last name `smith`), so different abbreviation
+/// styles in two citations of the same paper agree. "Jeremy Blackburn"
+/// and "Ashish Vaswani" do not collapse.
+pub fn compute_fp_identity(title: &str, authors: &[String]) -> Option<String> {
+    let has_nonempty = authors.iter().any(|a| !a.trim().is_empty());
+    if !has_nonempty {
+        return None;
+    }
+    let norm_title = normalize_title(title);
+    let mut pairs: Vec<String> = authors
+        .iter()
+        .filter_map(|a| author_fingerprint(a))
+        .collect();
+    if pairs.is_empty() {
+        // Every author string was whitespace-only or unparseable — no
+        // useful fingerprint. Treat as "no authors" rather than
+        // persisting a title-only identity.
+        return None;
+    }
+    pairs.sort();
+    pairs.dedup();
+    Some(format!("{}|{}", norm_title, pairs.join(",")))
+}
+
+/// Reduce a single author string to a `(first_initial, last_name)`
+/// fingerprint like `"j:smith"`. Returns `None` on empty input.
+///
+/// Heuristic: the last whitespace-separated token is the surname;
+/// the first character of the first token is the initial. Covers
+/// the common Western citation forms we see in practice:
+/// - `"John Smith"`   → `"j:smith"`
+/// - `"J. Smith"`     → `"j:smith"`
+/// - `"Smith, John"`  → `"j:smith"` (handled by the comma branch below)
+/// - `"C.-P. Yuan"`   → `"c:yuan"` (first ASCII letter of first token)
+/// - `"Balázs, C."`   → `"c:balazs"`
+fn author_fingerprint(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (first, last) = if let Some((surname, rest)) = s.split_once(',') {
+        // "Smith, John" form — surname before the comma.
+        let first = rest.trim();
+        (first, surname.trim())
+    } else {
+        // "John Smith" form — last whitespace token is the surname.
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.is_empty() {
+            return None;
+        }
+        if parts.len() == 1 {
+            // Single name — treat it as surname; no initial.
+            ("", parts[0])
+        } else {
+            (parts[0], *parts.last().unwrap())
+        }
+    };
+    let initial = first
+        .chars()
+        .find(|c| c.is_alphabetic())
+        .map(|c| c.to_ascii_lowercase())
+        .map(|c| c.to_string())
+        .unwrap_or_default();
+    let last_norm = normalize_title(last); // reuse diacritic-stripping + lowercase
+    if last_norm.is_empty() {
+        return None;
+    }
+    Some(format!("{}:{}", initial, last_norm))
 }
 
 fn cached_to_query_result(cached: &CachedResult) -> DbQueryResult {
@@ -1541,19 +1655,28 @@ mod tests {
 
     // ── FP override tests ──────────────────────────────────────────
 
+    /// Test helper: build an identity key for a title + author list.
+    /// Panics if authors is empty (the production call would return
+    /// `None`, but tests expect a real key).
+    fn ident(title: &str, authors: &[&str]) -> String {
+        let authors: Vec<String> = authors.iter().map(|s| s.to_string()).collect();
+        compute_fp_identity(title, &authors).expect("non-empty authors")
+    }
+
     #[test]
     fn fp_override_set_and_get() {
         let path = temp_cache_path();
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.set_fp_override("Some Paper Title", Some("broken_parse"));
-        let result = cache.get_fp_override("Some Paper Title");
+        let key = ident("Some Paper Title", &["A. Author"]);
+        cache.set_fp_override(&key, Some("broken_parse"));
+        let result = cache.get_fp_override(&key);
         assert_eq!(result.as_deref(), Some("broken_parse"));
 
         // Overwrite with a different reason
-        cache.set_fp_override("Some Paper Title", Some("known_good"));
-        let result = cache.get_fp_override("Some Paper Title");
+        cache.set_fp_override(&key, Some("known_good"));
+        let result = cache.get_fp_override(&key);
         assert_eq!(result.as_deref(), Some("known_good"));
 
         let _ = std::fs::remove_file(&path);
@@ -1565,12 +1688,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.set_fp_override("Paper To Remove", Some("all_timed_out"));
-        assert!(cache.get_fp_override("Paper To Remove").is_some());
+        let key = ident("Paper To Remove", &["B. Author"]);
+        cache.set_fp_override(&key, Some("all_timed_out"));
+        assert!(cache.get_fp_override(&key).is_some());
 
         // Setting None removes the override
-        cache.set_fp_override("Paper To Remove", None);
-        assert!(cache.get_fp_override("Paper To Remove").is_none());
+        cache.set_fp_override(&key, None);
+        assert!(cache.get_fp_override(&key).is_none());
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1580,15 +1704,16 @@ mod tests {
         let path = temp_cache_path();
         let _ = std::fs::remove_file(&path);
 
+        let key = ident("Persistent FP Paper", &["C. Author"]);
         {
             let cache =
                 QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-            cache.set_fp_override("Persistent FP Paper", Some("exists_elsewhere"));
+            cache.set_fp_override(&key, Some("exists_elsewhere"));
         }
 
         // Reopen — override should survive
         let cache2 = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        let result = cache2.get_fp_override("Persistent FP Paper");
+        let result = cache2.get_fp_override(&key);
         assert_eq!(result.as_deref(), Some("exists_elsewhere"));
 
         let _ = std::fs::remove_file(&path);
@@ -1600,10 +1725,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        // Insert with accented title
-        cache.set_fp_override("Résumé of Methods", Some("non_academic"));
-        // Look up with ASCII equivalent (normalization strips accents)
-        let result = cache.get_fp_override("Resume of Methods");
+        // Insert with accented title + author
+        let key_in = ident("Résumé of Methods", &["Jean Dupont"]);
+        cache.set_fp_override(&key_in, Some("non_academic"));
+        // Look up with ASCII equivalent — identity uses normalized
+        // title so diacritic stripping should cross-match.
+        let key_out = ident("Resume of Methods", &["Jean Dupont"]);
+        assert_eq!(key_in, key_out, "diacritics should normalize");
+        let result = cache.get_fp_override(&key_out);
         assert_eq!(result.as_deref(), Some("non_academic"));
 
         let _ = std::fs::remove_file(&path);
@@ -1615,7 +1744,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        cache.set_fp_override("FP Paper", Some("known_good"));
+        let key = ident("FP Paper", &["D. Author"]);
+        cache.set_fp_override(&key, Some("known_good"));
         cache.insert(
             "FP Paper",
             "DB",
@@ -1628,7 +1758,7 @@ mod tests {
         assert_eq!(cache.disk_len(), 0);
 
         // FP override should still be there
-        let result = cache.get_fp_override("FP Paper");
+        let result = cache.get_fp_override(&key);
         assert_eq!(result.as_deref(), Some("known_good"));
 
         let _ = std::fs::remove_file(&path);
@@ -1640,7 +1770,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
-        assert!(cache.get_fp_override("Nonexistent").is_none());
+        let key = ident("Nonexistent", &["E. Author"]);
+        assert!(cache.get_fp_override(&key).is_none());
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1649,8 +1780,88 @@ mod tests {
     fn fp_override_memory_only_cache() {
         // In-memory cache (no SQLite) — set/get should be no-ops, not panic
         let cache = QueryCache::default();
-        cache.set_fp_override("Paper", Some("broken_parse"));
-        assert!(cache.get_fp_override("Paper").is_none());
+        let key = ident("Paper", &["F. Author"]);
+        cache.set_fp_override(&key, Some("broken_parse"));
+        assert!(cache.get_fp_override(&key).is_none());
+    }
+
+    // ── Identity-key unit tests (#267) ─────────────────────────────
+
+    #[test]
+    fn compute_fp_identity_rejects_empty_authors() {
+        assert!(compute_fp_identity("Some Paper", &[]).is_none());
+        // Whitespace-only strings are also treated as empty.
+        assert!(
+            compute_fp_identity("Some Paper", &["".into(), "   ".into()]).is_none()
+        );
+    }
+
+    #[test]
+    fn compute_fp_identity_collapses_initials() {
+        let long = compute_fp_identity("A Paper", &["John Smith".into()]).unwrap();
+        let abbr = compute_fp_identity("A Paper", &["J. Smith".into()]).unwrap();
+        let comma = compute_fp_identity("A Paper", &["Smith, John".into()]).unwrap();
+        assert_eq!(long, abbr, "John Smith ≡ J. Smith");
+        assert_eq!(long, comma, "Smith, John ≡ John Smith");
+    }
+
+    #[test]
+    fn compute_fp_identity_is_order_independent() {
+        let ab = compute_fp_identity(
+            "A Paper",
+            &["Alice Aardvark".into(), "Bob Badger".into()],
+        )
+        .unwrap();
+        let ba = compute_fp_identity(
+            "A Paper",
+            &["Bob Badger".into(), "Alice Aardvark".into()],
+        )
+        .unwrap();
+        assert_eq!(ab, ba);
+    }
+
+    #[test]
+    fn compute_fp_identity_strips_diacritics() {
+        let with_accent =
+            compute_fp_identity("A Paper", &["C. Balázs".into()]).unwrap();
+        let plain = compute_fp_identity("A Paper", &["C. Balazs".into()]).unwrap();
+        assert_eq!(with_accent, plain);
+    }
+
+    #[test]
+    fn compute_fp_identity_distinguishes_different_author_sets() {
+        // The fake-cite regression: same title, different authors,
+        // must produce different identity keys so the propagation
+        // in #266 can't cross the boundary.
+        let real = compute_fp_identity(
+            "Attention Is All You Need",
+            &["Ashish Vaswani".into(), "Noam Shazeer".into()],
+        )
+        .unwrap();
+        let fake = compute_fp_identity(
+            "Attention Is All You Need",
+            &["Jeremy Blackburn".into(), "Gianluca Stringhini".into()],
+        )
+        .unwrap();
+        assert_ne!(
+            real, fake,
+            "fabricated same-title ref must not inherit real ref's identity"
+        );
+    }
+
+    #[test]
+    fn compute_fp_identity_dedups_duplicate_authors() {
+        // Defensive: if the extractor emits the same author twice
+        // (happens on some malformed citations), identity should
+        // still be deterministic and not double-count.
+        let once =
+            compute_fp_identity("A Paper", &["John Smith".into()]).unwrap();
+        let twice = compute_fp_identity(
+            "A Paper",
+            &["John Smith".into(), "J. Smith".into()],
+        )
+        .unwrap();
+        assert_eq!(once, twice);
     }
 
     #[test]
