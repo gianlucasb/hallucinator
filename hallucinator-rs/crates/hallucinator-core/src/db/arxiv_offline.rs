@@ -70,22 +70,21 @@ impl DatabaseBackend for ArxivOffline {
         Box::pin(async move {
             let maybe_record = tokio::task::spawn_blocking(move || {
                 let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
-                let ids = db
-                    .search_by_title(&title, 5)
+                // Batch-hydrate in a single mutex hold. The older
+                // `search_by_title` + per-ID `lookup_by_id` loop
+                // issued up to 1 + 5×3 = 16 sequential SQL queries
+                // inside the lock — 4 concurrent workers queued
+                // behind each other's arxiv mutex hold and slowed
+                // the local phase noticeably. This variant always
+                // does exactly 3 round-trips regardless of how
+                // many candidates match.
+                let candidates = db
+                    .search_by_title_hydrated(&title, 5)
                     .map_err(|e| DbQueryError::Other(e.to_string()))?;
-                // Iterate the top candidates and accept the first whose
-                // stored title fuzz-matches the citation title. This is
-                // how the online backend works too, just against a much
-                // smaller top-5 instead of the ~5 results returned from
-                // the API.
-                for id in ids {
-                    let rec = db
-                        .lookup_by_id(&id)
-                        .map_err(|e| DbQueryError::Other(e.to_string()))?;
-                    if let Some(r) = rec
-                        && titles_match(&title, &r.title)
-                    {
-                        return Ok::<_, DbQueryError>(Some(r));
+                drop(db); // release mutex before the (in-memory) title match
+                for rec in candidates {
+                    if titles_match(&title, &rec.title) {
+                        return Ok::<_, DbQueryError>(Some(rec));
                     }
                 }
                 Ok(None)

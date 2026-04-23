@@ -52,7 +52,22 @@ impl ValidationPool {
     /// One drainer task is spawned per enabled remote DB. Coordinators handle
     /// local DBs inline, then fan out to per-DB drainer queues (including DOI).
     pub fn new(config: Arc<Config>, cancel: CancellationToken, num_workers: usize) -> Self {
-        let (job_tx, job_rx) = async_channel::unbounded::<RefJob>();
+        // Bounded job queue so no single paper can monopolize the pool
+        // by dumping all its refs in a tight await-less loop before
+        // yielding. With an unbounded queue, paper A's submission loop
+        // enqueues all 50 of its refs instantly → the 4 coordinators
+        // drain FIFO → they work on paper A to completion before paper
+        // B ever sees a worker. Visible in the TUI as "only 1-2 paper
+        // progress bars fire at a time".
+        //
+        // Capacity = `num_workers × 4` keeps coordinators fed across a
+        // few scheduler hops without letting any one paper buffer more
+        // than ~16 refs ahead. When the buffer fills, the submitter's
+        // `send.await` suspends, tokio schedules another paper, and
+        // refs naturally interleave — every paper's progress bar
+        // shows activity as soon as its extraction is done.
+        let capacity = num_workers.max(1).saturating_mul(4);
+        let (job_tx, job_rx) = async_channel::bounded::<RefJob>(capacity);
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(2)
             .pool_idle_timeout(Duration::from_secs(30))
