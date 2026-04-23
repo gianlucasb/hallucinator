@@ -51,11 +51,11 @@ pub fn strip_title_decorations(title: &str) -> String {
         )
         .unwrap()
     });
-    static SUFFIX_BRACKET: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)\s*\[(?:invited paper|extended abstract)\]\s*\.?\s*$").unwrap());
+    static SUFFIX_BRACKET: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\s*\[(?:invited paper|extended abstract)\]\s*\.?\s*$").unwrap()
+    });
     static SUFFIX_PAREN: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\s*\((?:extended abstract|invited paper|short paper)\)\s*\.?\s*$")
-            .unwrap()
+        Regex::new(r"(?i)\s*\((?:extended abstract|invited paper|short paper)\)\s*\.?\s*$").unwrap()
     });
     static SUFFIX_CORRECTION: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i),\s*correction\s*\.?\s*$").unwrap());
@@ -131,8 +131,8 @@ pub fn get_query_words(title: &str) -> Vec<String> {
             // Short (2-3 char) prepositions / articles / copulas. Needed now
             // that short non-acronym tokens can pass the filter as a fallback
             // when the strong-token set is sparse.
-            "is", "as", "of", "to", "in", "on", "at", "it", "or", "an", "be", "we", "by",
-            "if", "so", "up", "do", "no",
+            "is", "as", "of", "to", "in", "on", "at", "it", "or", "an", "be", "we", "by", "if",
+            "so", "up", "do", "no",
         ]
         .into_iter()
         .collect()
@@ -185,7 +185,10 @@ pub fn get_query_words(title: &str) -> Vec<String> {
             .filter_map(|(o, l, p, s)| if s { Some((o, l, p)) } else { None })
             .collect()
     } else {
-        all_tokens.into_iter().map(|(o, l, p, _)| (o, l, p)).collect()
+        all_tokens
+            .into_iter()
+            .map(|(o, l, p, _)| (o, l, p))
+            .collect()
     };
 
     if words_with_info.len() <= 6 {
@@ -355,12 +358,8 @@ fn fts_match(
                     norm_candidate.chars(),
                 ))
             } else {
-                let a =
-                    rapidfuzz::fuzz::ratio(norm_query.chars(), norm_stripped.chars());
-                let b = rapidfuzz::fuzz::ratio(
-                    norm_query_stripped.chars(),
-                    norm_stripped.chars(),
-                );
+                let a = rapidfuzz::fuzz::ratio(norm_query.chars(), norm_stripped.chars());
+                let b = rapidfuzz::fuzz::ratio(norm_query_stripped.chars(), norm_stripped.chars());
                 raw_score.max(a).max(b)
             }
         };
@@ -682,7 +681,9 @@ mod tests {
     fn test_strip_title_decorations() {
         // Prefixes
         assert_eq!(
-            strip_title_decorations("Extended Abstract: HotStuff-2: Optimal Two-Phase Responsive BFT."),
+            strip_title_decorations(
+                "Extended Abstract: HotStuff-2: Optimal Two-Phase Responsive BFT."
+            ),
             "HotStuff-2: Optimal Two-Phase Responsive BFT"
         );
         assert_eq!(
@@ -695,12 +696,16 @@ mod tests {
         );
         // Bracket suffixes
         assert_eq!(
-            strip_title_decorations("LTE-advanced: next-generation wireless broadband technology [Invited Paper]."),
+            strip_title_decorations(
+                "LTE-advanced: next-generation wireless broadband technology [Invited Paper]."
+            ),
             "LTE-advanced: next-generation wireless broadband technology"
         );
         // Paren suffix
         assert_eq!(
-            strip_title_decorations("A Note on Efficient Zero-Knowledge Proofs and Arguments (Extended Abstract)"),
+            strip_title_decorations(
+                "A Note on Efficient Zero-Knowledge Proofs and Arguments (Extended Abstract)"
+            ),
             "A Note on Efficient Zero-Knowledge Proofs and Arguments"
         );
         // ", correction." suffix
@@ -714,10 +719,7 @@ mod tests {
             "Attention is All You Need"
         );
         // Case-insensitive prefix match
-        assert_eq!(
-            strip_title_decorations("EXTENDED ABSTRACT: X"),
-            "X"
-        );
+        assert_eq!(strip_title_decorations("EXTENDED ABSTRACT: X"), "X");
     }
 
     /// Populate a DB with a target paper plus enough noise to push it out of the
@@ -738,12 +740,9 @@ mod tests {
             )
             .unwrap();
         }
-        let target = insert_or_get_publication(
-            &conn,
-            "conf/podc/KeidarKNS21",
-            "All You Need is DAG.",
-        )
-        .unwrap();
+        let target =
+            insert_or_get_publication(&conn, "conf/podc/KeidarKNS21", "All You Need is DAG.")
+                .unwrap();
 
         let mut batch = InsertBatch::new();
         batch.publication_authors.push((target, keidar));
@@ -878,8 +877,16 @@ mod tests {
 
     #[test]
     fn test_surname_overlap() {
-        let ref_a = vec!["Loi Luu".into(), "Duc-Hiep Chu".into(), "Aquinas Hobor".into()];
-        let correct = vec!["Loi Luu".into(), "Duc-Hiep Chu".into(), "Aquinas Hobor".into()];
+        let ref_a = vec![
+            "Loi Luu".into(),
+            "Duc-Hiep Chu".into(),
+            "Aquinas Hobor".into(),
+        ];
+        let correct = vec![
+            "Loi Luu".into(),
+            "Duc-Hiep Chu".into(),
+            "Aquinas Hobor".into(),
+        ];
         let wrong = vec!["Ram Dantu".into(), "Mark Thompson".into()];
         assert_eq!(surname_overlap(&ref_a, &correct), 3);
         assert_eq!(surname_overlap(&ref_a, &wrong), 0);
@@ -941,10 +948,9 @@ mod tests {
         // records share an identical title, so whichever wins must be
         // stable across invocations.
         let conn = setup_db_with_shared_title();
-        let result =
-            query_fts(&conn, "Making smart contracts smarter", DEFAULT_THRESHOLD)
-                .unwrap()
-                .expect("title match exists");
+        let result = query_fts(&conn, "Making smart contracts smarter", DEFAULT_THRESHOLD)
+            .unwrap()
+            .expect("title match exists");
         // Two entries share the exact same title — the returned URL must
         // be one of them, and the call must not panic or return None.
         let url = result.record.url.unwrap();
@@ -1004,7 +1010,12 @@ mod tests {
         .unwrap()
         .expect("title match exists");
         assert!(
-            result.record.url.as_deref().unwrap().contains("/BadruddojaDHUT21"),
+            result
+                .record
+                .url
+                .as_deref()
+                .unwrap()
+                .contains("/BadruddojaDHUT21"),
             "expected Badruddoja entry, got {:?}",
             result.record.url
         );
@@ -1020,12 +1031,8 @@ mod tests {
         init_database(&conn).unwrap();
 
         // Target: perfect title match, no author overlap with citation.
-        let target = insert_or_get_publication(
-            &conn,
-            "conf/correct/X99",
-            "The Exact Target Title",
-        )
-        .unwrap();
+        let target =
+            insert_or_get_publication(&conn, "conf/correct/X99", "The Exact Target Title").unwrap();
         let stranger = insert_or_get_author(&conn, "Stranger Author").unwrap();
 
         // Decoy: partial title match with the citation's author.

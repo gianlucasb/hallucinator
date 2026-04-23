@@ -73,9 +73,7 @@ pub async fn check_first_snapshot(
 /// Parse the Availability API's JSON response into a `WaybackResult`.
 fn parse_availability_response(original_url: &str, body: &str) -> Option<WaybackResult> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    let closest = value
-        .get("archived_snapshots")?
-        .get("closest")?;
+    let closest = value.get("archived_snapshots")?.get("closest")?;
     if !closest
         .get("available")
         .and_then(|v| v.as_bool())
@@ -84,10 +82,7 @@ fn parse_availability_response(original_url: &str, body: &str) -> Option<Wayback
         return None;
     }
     // `status` is a string in the API response, e.g. "200".
-    let status = closest
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let status = closest.get("status").and_then(|v| v.as_str()).unwrap_or("");
     if !status_counts_as_captured(status) {
         return None;
     }

@@ -878,8 +878,7 @@ mod tests {
                 url: Some("https://dblp.org/rec/books/sp/voecking2011/Blomer11".into()),
             },
         ));
-        let result =
-            query_single_mock_db(mock, &["Adi Shamir".into()]).await;
+        let result = query_single_mock_db(mock, &["Adi Shamir".into()]).await;
         assert_eq!(result.status, Status::Verified);
         assert_eq!(result.source.as_deref(), Some("DBLP"));
         assert!(result.found_authors.is_empty());

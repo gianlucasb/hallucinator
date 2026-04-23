@@ -99,9 +99,8 @@ pub fn upsert_record(conn: &Connection, rec: &ArxivRecord) -> Result<(), ArxivEr
         stmt.execute(params![rec.id])?;
     }
     {
-        let mut stmt = conn.prepare_cached(
-            "INSERT INTO authors (arxiv_id, position, name) VALUES (?1, ?2, ?3)",
-        )?;
+        let mut stmt = conn
+            .prepare_cached("INSERT INTO authors (arxiv_id, position, name) VALUES (?1, ?2, ?3)")?;
         for (i, name) in rec.authors.iter().enumerate() {
             stmt.execute(params![rec.id, i as i64, name])?;
         }
@@ -158,9 +157,8 @@ pub fn upsert_record_no_fts(conn: &Connection, rec: &ArxivRecord) -> Result<(), 
         stmt.execute(params![rec.id])?;
     }
     {
-        let mut stmt = conn.prepare_cached(
-            "INSERT INTO authors (arxiv_id, position, name) VALUES (?1, ?2, ?3)",
-        )?;
+        let mut stmt = conn
+            .prepare_cached("INSERT INTO authors (arxiv_id, position, name) VALUES (?1, ?2, ?3)")?;
         for (i, name) in rec.authors.iter().enumerate() {
             stmt.execute(params![rec.id, i as i64, name])?;
         }
@@ -283,9 +281,8 @@ pub fn search_by_title(
 }
 
 fn load_authors(conn: &Connection, arxiv_id: &str) -> Result<Vec<String>, ArxivError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT name FROM authors WHERE arxiv_id = ?1 ORDER BY position",
-    )?;
+    let mut stmt =
+        conn.prepare_cached("SELECT name FROM authors WHERE arxiv_id = ?1 ORDER BY position")?;
     let rows = stmt
         .query_map(params![arxiv_id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;

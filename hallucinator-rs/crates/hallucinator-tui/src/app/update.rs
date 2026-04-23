@@ -56,8 +56,12 @@ impl App {
             return false;
         }
 
-        // Export modal intercepts
-        if self.export_state.active {
+        // Export modal intercepts — but not while the file picker
+        // is open on top of it (issue #112 browse flow). Without
+        // this guard, MoveDown/MoveUp would cycle the export modal
+        // cursor instead of moving the file picker cursor, making
+        // the picker appear frozen.
+        if self.export_state.active && self.screen != Screen::FilePicker {
             // If editing path, handle text input
             if self.export_state.editing_path {
                 match action {
@@ -156,6 +160,30 @@ impl App {
                 }
                 Action::MoveUp => {
                     self.export_state.cursor = self.export_state.cursor.saturating_sub(1);
+                }
+                Action::BrowsePath => {
+                    // Issue #112: when the user is on the path field,
+                    // `.` opens the file picker in directory-select
+                    // mode. The file picker, on confirm, rebuilds the
+                    // output_path as `<picked_dir>/<filename_stem>`
+                    // and restores this screen. Inline-edit (Enter on
+                    // cursor=3) is still available for users who
+                    // prefer typing the path directly.
+                    if self.export_state.cursor == 3 {
+                        // Extract just the filename part of the
+                        // current output_path so we preserve the
+                        // user's chosen stem across the browse
+                        // round-trip.
+                        let stem = std::path::Path::new(&self.export_state.output_path)
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| self.export_state.output_path.clone());
+                        self.pre_file_picker_screen = Some(self.screen.clone());
+                        self.file_picker_context = FilePickerContext::SelectExportDirectory {
+                            filename_stem: stem,
+                        };
+                        self.screen = Screen::FilePicker;
+                    }
                 }
                 Action::DrillIn => match self.export_state.cursor {
                     0 => {
@@ -944,6 +972,9 @@ impl App {
             Action::Resize(_w, h) => {
                 self.visible_rows = (h as usize).saturating_sub(11);
             }
+            // No-op outside the export modal — handled above when
+            // `export_state.active` is true.
+            Action::BrowsePath => {}
             Action::None => {}
         }
         false
@@ -1119,8 +1150,7 @@ pub(crate) fn collect_propagation_targets(
             if (p_idx, r_idx) == (origin_paper_idx, origin_ref_idx) {
                 continue;
             }
-            let Some(ident) =
-                hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
+            let Some(ident) = hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
             else {
                 continue;
             };
@@ -1164,10 +1194,7 @@ pub(crate) fn summarize_targets_by_paper(
 
 /// Count of distinct papers (excluding the origin paper) in a target
 /// set. Used to decide threshold-crossing for the confirmation popup.
-pub(crate) fn distinct_other_papers(
-    targets: &[(usize, usize)],
-    origin_paper_idx: usize,
-) -> usize {
+pub(crate) fn distinct_other_papers(targets: &[(usize, usize)], origin_paper_idx: usize) -> usize {
     use std::collections::BTreeSet;
     targets
         .iter()
@@ -1219,8 +1246,7 @@ fn propagate_fp_override(
             if (p_idx, r_idx) == (origin_paper_idx, origin_ref_idx) {
                 continue;
             }
-            let Some(ident) =
-                hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
+            let Some(ident) = hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
             else {
                 continue;
             };
@@ -1360,13 +1386,21 @@ mod propagation_tests {
 
     #[test]
     fn propagate_ignores_nonmatching_titles() {
-        let mut papers = vec![PaperState::new("a.pdf".into()), PaperState::new("b.pdf".into())];
+        let mut papers = vec![
+            PaperState::new("a.pdf".into()),
+            PaperState::new("b.pdf".into()),
+        ];
         papers[0].init_results(1);
         papers[0].record_status(0, Status::NotFound, false);
         papers[1].init_results(1);
         papers[1].record_status(0, Status::NotFound, false);
         let mut ref_states = vec![
-            vec![refs("Some Paper", &["A. Author"], Some(Status::NotFound), None)],
+            vec![refs(
+                "Some Paper",
+                &["A. Author"],
+                Some(Status::NotFound),
+                None,
+            )],
             vec![refs(
                 "A Completely Different Paper",
                 &["A. Author"],
@@ -1440,8 +1474,7 @@ mod propagation_tests {
 
     #[test]
     fn propagate_some_to_some_does_not_shift_counts() {
-        let (mut papers, mut ref_states) =
-            fixture(2, "Shared", &["A. Author"], Status::NotFound);
+        let (mut papers, mut ref_states) = fixture(2, "Shared", &["A. Author"], Status::NotFound);
         for i in 0..2 {
             ref_states[i][0].fp_reason = Some(FpReason::KnownGood);
             papers[i].apply_fp_delta(&Status::NotFound, false, 1);
@@ -1518,12 +1551,25 @@ mod propagation_tests {
             },
         ];
         let mut ref_states = vec![
-            vec![refs(real_title, &real_authors, Some(Status::NotFound), None)],
-            vec![refs(real_title, &fake_authors, Some(Status::NotFound), None)],
+            vec![refs(
+                real_title,
+                &real_authors,
+                Some(Status::NotFound),
+                None,
+            )],
+            vec![refs(
+                real_title,
+                &fake_authors,
+                Some(Status::NotFound),
+                None,
+            )],
         ];
         let key = compute_fp_identity(
             real_title,
-            &real_authors.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &real_authors
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
         )
         .unwrap();
 
@@ -1544,19 +1590,19 @@ mod propagation_tests {
 
     #[test]
     fn collect_targets_is_empty_when_no_other_refs_match() {
-        let (_papers, ref_states) =
-            fixture(1, "Lonely Paper", &["A. Author"], Status::NotFound);
+        let (_papers, ref_states) = fixture(1, "Lonely Paper", &["A. Author"], Status::NotFound);
         let key = compute_fp_identity("Lonely Paper", &["A. Author".into()]).unwrap();
-        let targets = super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
+        let targets =
+            super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
         assert!(targets.is_empty());
     }
 
     #[test]
     fn collect_targets_finds_all_matching_refs_across_papers() {
-        let (_papers, ref_states) =
-            fixture(4, "Shared", &["A. Author"], Status::NotFound);
+        let (_papers, ref_states) = fixture(4, "Shared", &["A. Author"], Status::NotFound);
         let key = compute_fp_identity("Shared", &["A. Author".into()]).unwrap();
-        let targets = super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
+        let targets =
+            super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
         // 4 papers with 1 matching ref each; origin skipped → 3 matches.
         assert_eq!(targets.len(), 3);
         assert!(!targets.contains(&(0, 0)));
@@ -1567,13 +1613,13 @@ mod propagation_tests {
 
     #[test]
     fn collect_targets_skips_refs_already_at_target_state() {
-        let (_papers, mut ref_states) =
-            fixture(3, "Shared", &["A. Author"], Status::NotFound);
+        let (_papers, mut ref_states) = fixture(3, "Shared", &["A. Author"], Status::NotFound);
         // Pre-mark paper 1 with the target reason — propagation should
         // skip it (no net change).
         ref_states[1][0].fp_reason = Some(FpReason::KnownGood);
         let key = compute_fp_identity("Shared", &["A. Author".into()]).unwrap();
-        let targets = super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
+        let targets =
+            super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
         assert_eq!(targets.len(), 1); // only paper 2 still needs flipping
         assert_eq!(targets[0], (2, 0));
     }
@@ -1592,11 +1638,14 @@ mod propagation_tests {
         let targets = vec![(0, 0), (1, 0), (1, 1), (2, 0)];
         let summary = super::summarize_targets_by_paper(&targets, &papers);
         // Sorted by filename ascending.
-        assert_eq!(summary, vec![
-            ("a.pdf".into(), 2),
-            ("b.pdf".into(), 1),
-            ("c.pdf".into(), 1),
-        ]);
+        assert_eq!(
+            summary,
+            vec![
+                ("a.pdf".into(), 2),
+                ("b.pdf".into(), 1),
+                ("c.pdf".into(), 1),
+            ]
+        );
     }
 
     #[test]
@@ -1652,4 +1701,3 @@ mod propagation_tests {
         assert!(ref_states[1][0].fp_reason.is_none());
     }
 }
-

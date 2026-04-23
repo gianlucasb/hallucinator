@@ -36,17 +36,22 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::vertical(constraints).split(area);
 
     // Header — context-aware
-    let header_text =
-        if let FilePickerContext::SelectDatabase { config_item } = &app.file_picker_context {
+    let header_text = match &app.file_picker_context {
+        FilePickerContext::SelectDatabase { config_item } => {
             if *config_item == 2 {
                 " > Select OpenAlex Index Directory".to_string()
             } else {
                 let db_name = if *config_item == 0 { "DBLP" } else { "ACL" };
                 format!(" > Select {} Database (.db / .sqlite)", db_name)
             }
-        } else {
+        }
+        FilePickerContext::SelectExportDirectory { filename_stem } => {
+            format!(" > Select Export Directory (will save as: {filename_stem}.<ext>)")
+        }
+        FilePickerContext::AddFiles => {
             " > Select PDFs / .bbl / .bib / Archives / Results (.json)".to_string()
-        };
+        }
+    };
     let header = Line::from(vec![
         Span::styled(" Files ", theme.header_style()),
         Span::styled(
@@ -283,7 +288,13 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Footer — context-aware
-    let footer_text = if is_dir_mode {
+    let is_export_dir_mode = matches!(
+        app.file_picker_context,
+        FilePickerContext::SelectExportDirectory { .. }
+    );
+    let footer_text = if is_export_dir_mode {
+        " j/k:navigate  Enter:open dir  Space:save here  Esc:cancel  ?:help  q:quit"
+    } else if is_dir_mode {
         " j/k:navigate  Enter:open dir  Space:select dir  Esc:confirm  ?:help  q:quit"
     } else if is_db_mode {
         " j/k:navigate  Enter:select & confirm  Esc:cancel  ?:help  q:quit"

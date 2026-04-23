@@ -85,6 +85,11 @@ pub enum FilePickerContext {
         /// 0 = DBLP offline path, 1 = ACL offline path
         config_item: usize,
     },
+    /// Selecting a destination directory for an export report. The
+    /// filename stem is captured on entry so the export modal can
+    /// reconstruct the full `<dir>/<stem>` path when the picker
+    /// returns. (Issue #112.)
+    SelectExportDirectory { filename_stem: String },
 }
 
 /// State for the file picker screen.
@@ -346,6 +351,12 @@ pub struct App {
     /// Active mark-safe propagation confirmation popup (issue #266).
     /// `Some` while the dialog is open; `None` otherwise.
     pub pending_propagation: Option<PendingPropagation>,
+
+    /// Screen to restore when the file picker returns from a
+    /// `SelectExportDirectory` session. `None` when the file picker
+    /// was entered from its normal contexts (Queue / Config).
+    /// (Issue #112.)
+    pub pre_file_picker_screen: Option<Screen>,
 }
 
 impl App {
@@ -412,6 +423,7 @@ impl App {
             measured_fps: 0.0,
             measured_rss_bytes: get_rss_bytes().unwrap_or(0),
             pending_propagation: None,
+            pre_file_picker_screen: None,
         }
     }
 

@@ -500,10 +500,7 @@ fn collect_links(rs: &crate::model::paper::RefState) -> Vec<LinkEntry> {
         let title_query = encode_url_param(&rs.title);
         links.push(LinkEntry {
             label: "Open in Google Scholar".into(),
-            url: format!(
-                "https://scholar.google.com/scholar?q=%22{}%22",
-                title_query
-            ),
+            url: format!("https://scholar.google.com/scholar?q=%22{}%22", title_query),
         });
         links.push(LinkEntry {
             label: "Open in Google".into(),
@@ -632,10 +629,18 @@ mod tests {
         let links = collect_links(&rs);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].label, "Open in Google Scholar");
-        assert!(links[0].url.starts_with("https://scholar.google.com/scholar?q=%22"));
+        assert!(
+            links[0]
+                .url
+                .starts_with("https://scholar.google.com/scholar?q=%22")
+        );
         assert!(links[0].url.contains("Attention+Is+All+You+Need"));
         assert_eq!(links[1].label, "Open in Google");
-        assert!(links[1].url.starts_with("https://www.google.com/search?q=%22"));
+        assert!(
+            links[1]
+                .url
+                .starts_with("https://www.google.com/search?q=%22")
+        );
         assert!(links[1].url.contains("Attention+Is+All+You+Need"));
         // Both queries wrap the title in %22 (URL-encoded double quotes)
         // so the engines treat it as a literal phrase search.

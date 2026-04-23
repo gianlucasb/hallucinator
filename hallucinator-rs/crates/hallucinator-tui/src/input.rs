@@ -61,6 +61,7 @@ fn map_key_normal(key: &KeyEvent) -> Action {
         KeyCode::Char('y') => Action::CopyToClipboard,
         KeyCode::Char('p') => Action::OpenPdf,
         KeyCode::Char(',') | KeyCode::Char('c') => Action::OpenConfig,
+        KeyCode::Char('.') => Action::BrowsePath,
         KeyCode::Char(' ') => Action::ToggleSafe,
         KeyCode::Tab => Action::ToggleActivityPanel,
         KeyCode::Char('b') => Action::BuildDatabase,
