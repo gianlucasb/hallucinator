@@ -312,6 +312,18 @@ If something is flagged as "not found," verify manually with Google Scholar befo
 
 ---
 
+## Contributing
+
+The repo ships a small pre-commit hook that runs `cargo fmt --all --check` on any commit that touches Rust sources. Enable it once per clone with:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook exits quickly on non-Rust commits (docs, config, Python legacy). To bypass it for a single commit — e.g. a work-in-progress stash commit — use `git commit --no-verify`. CI runs the same check, plus clippy and the workspace test suite.
+
+---
+
 ## License
 
 GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE).
