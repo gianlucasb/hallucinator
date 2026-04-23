@@ -1008,11 +1008,410 @@ fn cycle_fp_reason_and_adjust_stats(
         (identity, rs.fp_reason)
     };
 
-    // Retroactive propagation across the loaded queue (#266) lands
-    // in a follow-up commit; at that point this no-op `let _` call
-    // becomes `propagate_fp_override(...)`. Keeping the binding
-    // here documents where the hook lives and keeps the pattern
-    // identical to the follow-up commit's diff.
-    let _ = (origin_identity, new_fp_reason);
+    // Retroactive propagation (issue #266): apply the new fp_reason
+    // to every other ref in the queue whose identity matches. No-op
+    // when the origin ref has no extracted authors (identity is
+    // None) — there's no safe way to propagate in that case.
+    if let Some(key) = origin_identity {
+        propagate_fp_override(papers, ref_states, paper_idx, ref_idx, &key, new_fp_reason);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn __test_propagate_fp_override(
+    papers: &mut [crate::model::queue::PaperState],
+    ref_states: &mut [Vec<crate::model::paper::RefState>],
+    origin_paper_idx: usize,
+    origin_ref_idx: usize,
+    origin_identity: &str,
+    new_fp_reason: Option<FpReason>,
+) -> usize {
+    propagate_fp_override(
+        papers,
+        ref_states,
+        origin_paper_idx,
+        origin_ref_idx,
+        origin_identity,
+        new_fp_reason,
+    )
+}
+
+/// Apply `new_fp_reason` to every ref (across all loaded papers)
+/// whose composite identity key matches `origin_identity`, skipping
+/// the origin ref itself. Adjusts the `PaperState` stats for each
+/// paper whose ref's safe-state flipped. Returns the count of refs
+/// actually updated (useful for tests / diagnostics).
+///
+/// Refs whose `compute_fp_identity` returns `None` (empty authors)
+/// are skipped — they couldn't have been persisted and aren't
+/// meaningfully "the same reference" as the origin from our
+/// identity model's perspective.
+fn propagate_fp_override(
+    papers: &mut [crate::model::queue::PaperState],
+    ref_states: &mut [Vec<crate::model::paper::RefState>],
+    origin_paper_idx: usize,
+    origin_ref_idx: usize,
+    origin_identity: &str,
+    new_fp_reason: Option<FpReason>,
+) -> usize {
+    let mut updated = 0;
+    for (p_idx, refs) in ref_states.iter_mut().enumerate() {
+        for (r_idx, rs) in refs.iter_mut().enumerate() {
+            if (p_idx, r_idx) == (origin_paper_idx, origin_ref_idx) {
+                continue;
+            }
+            let Some(ident) =
+                hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
+            else {
+                continue;
+            };
+            if ident != origin_identity {
+                continue;
+            }
+            // Already in the target state? nothing to do (avoids
+            // spurious stat churn from toggling a ref that was
+            // already synced on a previous propagation or on paper
+            // load via `get_fp_override`).
+            if rs.fp_reason == new_fp_reason {
+                continue;
+            }
+            let was_safe = rs.fp_reason.is_some();
+            let will_be_safe = new_fp_reason.is_some();
+            rs.fp_reason = new_fp_reason;
+            updated += 1;
+
+            if was_safe == will_be_safe {
+                // Some(a) → Some(b): the safe-state didn't flip, so
+                // the paper's bucket counts are already correct.
+                // We've just updated the displayed reason.
+                continue;
+            }
+            let Some(result) = &rs.result else {
+                continue; // unvalidated ref; no stats to adjust
+            };
+            let is_retracted = result
+                .retraction_info
+                .as_ref()
+                .is_some_and(|r| r.is_retracted);
+            let status = result.status.clone();
+            let dir: i32 = if will_be_safe { 1 } else { -1 };
+            if let Some(paper) = papers.get_mut(p_idx) {
+                paper.apply_fp_delta(&status, is_retracted, dir);
+            }
+        }
+    }
+    updated
+}
+
+#[cfg(test)]
+mod propagation_tests {
+    use super::*;
+    use crate::model::paper::{FpReason, RefPhase, RefState};
+    use crate::model::queue::PaperState;
+    use hallucinator_core::cache::compute_fp_identity;
+    use hallucinator_core::{Status, ValidationResult};
+
+    fn val(status: Status) -> ValidationResult {
+        ValidationResult {
+            title: String::new(),
+            raw_citation: String::new(),
+            ref_authors: Vec::new(),
+            status,
+            source: None,
+            found_authors: Vec::new(),
+            paper_url: None,
+            failed_dbs: Vec::new(),
+            db_results: Vec::new(),
+            doi_info: None,
+            arxiv_info: None,
+            retraction_info: None,
+        }
+    }
+
+    fn refs(
+        title: &str,
+        authors: &[&str],
+        status: Option<Status>,
+        fp_reason: Option<FpReason>,
+    ) -> RefState {
+        RefState {
+            index: 0,
+            title: title.into(),
+            phase: RefPhase::Done,
+            result: status.map(val),
+            fp_reason,
+            raw_citation: String::new(),
+            authors: authors.iter().map(|s| s.to_string()).collect(),
+            doi: None,
+            arxiv_id: None,
+            urls: Vec::new(),
+        }
+    }
+
+    /// Build `n_papers` each holding one ref with the given title/authors/status,
+    /// populating `paper.stats` so propagation can adjust it.
+    fn fixture(
+        n_papers: usize,
+        title: &str,
+        authors: &[&str],
+        status: Status,
+    ) -> (Vec<PaperState>, Vec<Vec<RefState>>) {
+        let mut papers = Vec::with_capacity(n_papers);
+        let mut ref_states = Vec::with_capacity(n_papers);
+        for i in 0..n_papers {
+            let mut p = PaperState::new(format!("paper{i}.pdf"));
+            p.init_results(1);
+            p.record_status(0, status.clone(), false);
+            papers.push(p);
+            ref_states.push(vec![refs(title, authors, Some(status.clone()), None)]);
+        }
+        (papers, ref_states)
+    }
+
+    #[test]
+    fn propagate_across_papers_flips_safe_counts() {
+        let (mut papers, mut ref_states) =
+            fixture(3, "Shared Paper", &["Alice Author"], Status::NotFound);
+        assert_eq!(papers[0].stats.not_found, 1);
+        assert_eq!(papers[1].stats.not_found, 1);
+        assert_eq!(papers[2].stats.not_found, 1);
+
+        ref_states[0][0].fp_reason = Some(FpReason::KnownGood);
+        papers[0].apply_fp_delta(&Status::NotFound, false, 1);
+
+        let key = compute_fp_identity("Shared Paper", &["Alice Author".into()]).unwrap();
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::KnownGood),
+        );
+        assert_eq!(n, 2, "two other refs should have been updated");
+
+        for p in &papers {
+            assert_eq!(p.stats.not_found, 0);
+            assert_eq!(p.stats.verified, 1);
+        }
+        for refs in &ref_states {
+            assert_eq!(refs[0].fp_reason, Some(FpReason::KnownGood));
+        }
+    }
+
+    #[test]
+    fn propagate_ignores_nonmatching_titles() {
+        let mut papers = vec![PaperState::new("a.pdf".into()), PaperState::new("b.pdf".into())];
+        papers[0].init_results(1);
+        papers[0].record_status(0, Status::NotFound, false);
+        papers[1].init_results(1);
+        papers[1].record_status(0, Status::NotFound, false);
+        let mut ref_states = vec![
+            vec![refs("Some Paper", &["A. Author"], Some(Status::NotFound), None)],
+            vec![refs(
+                "A Completely Different Paper",
+                &["A. Author"],
+                Some(Status::NotFound),
+                None,
+            )],
+        ];
+        let key = compute_fp_identity("Some Paper", &["A. Author".into()]).unwrap();
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::KnownGood),
+        );
+        assert_eq!(n, 0, "no other refs share the origin's identity");
+        assert!(ref_states[1][0].fp_reason.is_none());
+        assert_eq!(papers[1].stats.not_found, 1);
+    }
+
+    #[test]
+    fn propagate_skips_origin() {
+        let (mut papers, mut ref_states) =
+            fixture(1, "Only Paper", &["A. Author"], Status::NotFound);
+        let key = compute_fp_identity("Only Paper", &["A. Author".into()]).unwrap();
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::KnownGood),
+        );
+        assert_eq!(n, 0, "origin skipped; no other refs in queue");
+        assert!(ref_states[0][0].fp_reason.is_none());
+        assert_eq!(papers[0].stats.not_found, 1);
+    }
+
+    #[test]
+    fn propagate_handles_same_paper_siblings() {
+        let mut paper = PaperState::new("p.pdf".into());
+        paper.init_results(2);
+        paper.record_status(0, Status::NotFound, false);
+        paper.record_status(1, Status::NotFound, false);
+        assert_eq!(paper.stats.not_found, 2);
+
+        let mut papers = vec![paper];
+        let mut ref_states = vec![vec![
+            refs("Dup", &["A. Author"], Some(Status::NotFound), None),
+            refs("Dup", &["A. Author"], Some(Status::NotFound), None),
+        ]];
+
+        ref_states[0][0].fp_reason = Some(FpReason::KnownGood);
+        papers[0].apply_fp_delta(&Status::NotFound, false, 1);
+
+        let key = compute_fp_identity("Dup", &["A. Author".into()]).unwrap();
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::KnownGood),
+        );
+        assert_eq!(n, 1, "one sibling updated");
+        assert_eq!(ref_states[0][1].fp_reason, Some(FpReason::KnownGood));
+        assert_eq!(papers[0].stats.not_found, 0);
+        assert_eq!(papers[0].stats.verified, 2);
+    }
+
+    #[test]
+    fn propagate_some_to_some_does_not_shift_counts() {
+        let (mut papers, mut ref_states) =
+            fixture(2, "Shared", &["A. Author"], Status::NotFound);
+        for i in 0..2 {
+            ref_states[i][0].fp_reason = Some(FpReason::KnownGood);
+            papers[i].apply_fp_delta(&Status::NotFound, false, 1);
+        }
+        assert_eq!(papers[0].stats.verified, 1);
+        assert_eq!(papers[1].stats.verified, 1);
+
+        ref_states[0][0].fp_reason = Some(FpReason::NonAcademic);
+        let key = compute_fp_identity("Shared", &["A. Author".into()]).unwrap();
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::NonAcademic),
+        );
+        assert_eq!(n, 1);
+        assert_eq!(ref_states[1][0].fp_reason, Some(FpReason::NonAcademic));
+        assert_eq!(papers[1].stats.verified, 1);
+        assert_eq!(papers[1].stats.not_found, 0);
+    }
+
+    #[test]
+    fn propagate_skips_unvalidated_refs() {
+        let p0 = {
+            let mut p = PaperState::new("a.pdf".into());
+            p.init_results(1);
+            p.record_status(0, Status::NotFound, false);
+            p
+        };
+        let p1 = PaperState::new("b.pdf".into()); // no results recorded
+        let mut papers = vec![p0, p1];
+        let mut ref_states = vec![
+            vec![refs("Same", &["A. Author"], Some(Status::NotFound), None)],
+            vec![refs("Same", &["A. Author"], None, None)], // unvalidated
+        ];
+        let key = compute_fp_identity("Same", &["A. Author".into()]).unwrap();
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::KnownGood),
+        );
+        assert_eq!(n, 1);
+        assert_eq!(ref_states[1][0].fp_reason, Some(FpReason::KnownGood));
+        assert_eq!(papers[1].stats.not_found, 0);
+        assert_eq!(papers[1].stats.verified, 0);
+    }
+
+    #[test]
+    fn propagate_does_not_cross_author_boundaries_with_same_title() {
+        // The fake-cite regression (from reviewer feedback on #266).
+        // Two papers cite the same title but with disjoint author
+        // sets — the propagation must NOT flip the fabrication to safe.
+        let real_title = "Attention Is All You Need";
+        let real_authors: Vec<&str> = vec!["Ashish Vaswani", "Noam Shazeer"];
+        let fake_authors: Vec<&str> = vec!["Jeremy Blackburn", "Gianluca Stringhini"];
+
+        let mut papers = vec![
+            {
+                let mut p = PaperState::new("real.pdf".into());
+                p.init_results(1);
+                p.record_status(0, Status::NotFound, false);
+                p
+            },
+            {
+                let mut p = PaperState::new("fake.pdf".into());
+                p.init_results(1);
+                p.record_status(0, Status::NotFound, false);
+                p
+            },
+        ];
+        let mut ref_states = vec![
+            vec![refs(real_title, &real_authors, Some(Status::NotFound), None)],
+            vec![refs(real_title, &fake_authors, Some(Status::NotFound), None)],
+        ];
+        let key = compute_fp_identity(
+            real_title,
+            &real_authors.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::KnownGood),
+        );
+        assert_eq!(n, 0, "fake-cite must not inherit the real ref's safe mark");
+        assert!(ref_states[1][0].fp_reason.is_none());
+        assert_eq!(papers[1].stats.not_found, 1);
+    }
+
+    #[test]
+    fn propagate_skips_refs_with_empty_authors() {
+        let mut papers = vec![
+            {
+                let mut p = PaperState::new("a.pdf".into());
+                p.init_results(1);
+                p.record_status(0, Status::NotFound, false);
+                p
+            },
+            {
+                let mut p = PaperState::new("b.pdf".into());
+                p.init_results(1);
+                p.record_status(0, Status::NotFound, false);
+                p
+            },
+        ];
+        let mut ref_states = vec![
+            vec![refs("Same", &["A. Author"], Some(Status::NotFound), None)],
+            vec![refs("Same", &[], Some(Status::NotFound), None)], // empty authors
+        ];
+        let key = compute_fp_identity("Same", &["A. Author".into()]).unwrap();
+        let n = __test_propagate_fp_override(
+            &mut papers,
+            &mut ref_states,
+            0,
+            0,
+            &key,
+            Some(FpReason::KnownGood),
+        );
+        assert_eq!(n, 0, "empty-authors ref is not a match");
+        assert!(ref_states[1][0].fp_reason.is_none());
+    }
 }
 
