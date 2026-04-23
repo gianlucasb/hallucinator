@@ -145,8 +145,29 @@ impl ArxivDatabase {
     /// BM25-rank order; the caller resolves each ID with
     /// [`lookup_by_id`](Self::lookup_by_id) and applies its own fuzzy
     /// title / author validation.
+    ///
+    /// Hot-path callers that need the full records should prefer
+    /// [`search_by_title_hydrated`](Self::search_by_title_hydrated),
+    /// which hydrates all top-N candidates' authors and versions in
+    /// a single round-trip each — avoiding the `search → N ×
+    /// lookup_by_id` pattern that holds the SQLite mutex across
+    /// many sequential queries.
     pub fn search_by_title(&self, query: &str, limit: usize) -> Result<Vec<String>, ArxivError> {
         db::search_by_title(&self.conn, query, limit)
+    }
+
+    /// Title search with full hydration: one mutex hold, exactly
+    /// three SQL round-trips (FTS+papers JOIN, authors batched via
+    /// `IN (...)`, versions batched via `IN (...)`) regardless of
+    /// how many candidates match. Returns full [`ArxivRecord`]s in
+    /// BM25-rank order so the caller can do title / author
+    /// validation entirely in memory.
+    pub fn search_by_title_hydrated(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ArxivRecord>, ArxivError> {
+        db::search_by_title_hydrated(&self.conn, query, limit)
     }
 
     /// Insert or replace a record. Used by the harvester.

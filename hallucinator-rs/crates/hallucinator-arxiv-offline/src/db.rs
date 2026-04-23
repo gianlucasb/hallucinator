@@ -251,9 +251,143 @@ pub fn lookup_by_id(conn: &Connection, arxiv_id: &str) -> Result<Option<ArxivRec
     }))
 }
 
+/// FTS5 title search with one-trip hydration. Returns up to `limit`
+/// full [`ArxivRecord`]s (paper + authors + versions) matched by
+/// BM25 rank. Replaces the older `search_by_title` + per-ID
+/// `lookup_by_id` pattern, which held the SQLite mutex across up
+/// to 1 + 5×3 = 16 sequential round-trips. This version uses three
+/// batched queries: (1) FTS + papers JOIN, (2) authors for all
+/// candidates via `IN (...)`, (3) versions for all candidates via
+/// `IN (...)`. At 4 concurrent workers this dropped contention
+/// visibly; see the commit message on the PR that introduced this.
+pub fn search_by_title_hydrated(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ArxivRecord>, ArxivError> {
+    let sanitized = sanitize_fts_query(query);
+    if sanitized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 1. Top-N candidates with core paper fields in one query.
+    //    JOIN papers so callers get title / categories / doi / license
+    //    without a second round-trip per candidate.
+    /// (arxiv_id, title, categories, doi, license) — raw row shape from
+    /// the FTS+papers JOIN, reassembled into [`ArxivRecord`] below.
+    type PaperRow = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT p.arxiv_id, p.title, p.categories, p.doi, p.license \
+         FROM titles_fts f \
+         JOIN papers p ON p.arxiv_id = f.arxiv_id \
+         WHERE titles_fts MATCH ?1 \
+         ORDER BY bm25(titles_fts) \
+         LIMIT ?2",
+    )?;
+    let candidates: Vec<PaperRow> = stmt
+        .query_map(params![sanitized, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 2 & 3. Batch-hydrate authors and versions for all candidate
+    //        IDs in one round-trip each, using `IN (?1, ?2, …)`.
+    //        rusqlite needs one `?N` placeholder per element, so we
+    //        build the placeholder list dynamically.
+    let ids: Vec<&str> = candidates.iter().map(|c| c.0.as_str()).collect();
+    let placeholders = (1..=ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let params_dyn: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+
+    // authors grouped by arxiv_id, ordered by position
+    let mut authors_by_id: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    {
+        let sql = format!(
+            "SELECT arxiv_id, name FROM authors WHERE arxiv_id IN ({placeholders}) \
+             ORDER BY arxiv_id, position"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(params_dyn.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, name) = row?;
+            authors_by_id.entry(id).or_default().push(name);
+        }
+    }
+
+    // versions grouped by arxiv_id, ordered by version
+    let mut versions_by_id: std::collections::HashMap<String, Vec<ArxivVersion>> =
+        std::collections::HashMap::new();
+    {
+        let sql = format!(
+            "SELECT arxiv_id, version, submitted FROM versions WHERE arxiv_id IN ({placeholders}) \
+             ORDER BY arxiv_id, version"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(params_dyn.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, version, submitted) = row?;
+            versions_by_id
+                .entry(id)
+                .or_default()
+                .push(ArxivVersion { version, submitted });
+        }
+    }
+
+    // Stitch back into ArxivRecord, preserving FTS rank order.
+    let records = candidates
+        .into_iter()
+        .map(|(id, title, categories, doi, license)| {
+            let authors = authors_by_id.remove(&id).unwrap_or_default();
+            let versions = versions_by_id.remove(&id).unwrap_or_default();
+            ArxivRecord {
+                id,
+                title,
+                authors,
+                categories,
+                doi,
+                license,
+                versions,
+            }
+        })
+        .collect();
+    Ok(records)
+}
+
 /// FTS5 title search. Returns up to `limit` candidate arXiv IDs ranked
 /// by BM25 relevance. The caller applies fuzzy title matching /
 /// author validation on the returned IDs.
+///
+/// Retained as a thin wrapper for callers that only need IDs (e.g.
+/// diagnostic tools); hot-path callers should prefer
+/// [`search_by_title_hydrated`] to avoid a follow-up round-trip.
 pub fn search_by_title(
     conn: &Connection,
     query: &str,
@@ -453,6 +587,118 @@ mod tests {
         }
         let hits = search_by_title(&conn, "Attention Is All You Need", 5).unwrap();
         assert_eq!(hits.first().map(String::as_str), Some("2101.00001"));
+    }
+
+    #[test]
+    fn search_hydrated_returns_full_records_with_authors_and_versions() {
+        // The batched hydrate path: one mutex hold, three SQL round-
+        // trips regardless of how many candidates match. Validate
+        // that each returned record has its authors (ordered) and
+        // versions (ordered) correctly attached.
+        let conn = open_in_memory();
+        upsert_record(
+            &conn,
+            &ArxivRecord {
+                id: "2101.00001".into(),
+                title: "Attention Is All You Need".into(),
+                authors: vec!["A. Vaswani".into(), "N. Shazeer".into(), "N. Parmar".into()],
+                categories: Some("cs.CL".into()),
+                doi: Some("10.x/foo".into()),
+                license: None,
+                versions: vec![
+                    ArxivVersion {
+                        version: 1,
+                        submitted: Some("d1".into()),
+                    },
+                    ArxivVersion {
+                        version: 2,
+                        submitted: Some("d2".into()),
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        upsert_record(
+            &conn,
+            &ArxivRecord {
+                id: "2101.00002".into(),
+                title: "All You Need Is Love".into(),
+                authors: vec!["J. Lennon".into()],
+                categories: None,
+                doi: None,
+                license: None,
+                versions: vec![ArxivVersion {
+                    version: 1,
+                    submitted: None,
+                }],
+            },
+        )
+        .unwrap();
+
+        let hits = search_by_title_hydrated(&conn, "Attention Is All You Need", 5).unwrap();
+        assert!(!hits.is_empty());
+        let top = &hits[0];
+        assert_eq!(top.id, "2101.00001");
+        assert_eq!(top.title, "Attention Is All You Need");
+        assert_eq!(top.authors, vec!["A. Vaswani", "N. Shazeer", "N. Parmar"]);
+        assert_eq!(top.categories.as_deref(), Some("cs.CL"));
+        assert_eq!(top.doi.as_deref(), Some("10.x/foo"));
+        assert_eq!(top.versions.len(), 2);
+        assert_eq!(top.versions[0].version, 1);
+        assert_eq!(top.versions[1].version, 2);
+    }
+
+    #[test]
+    fn search_hydrated_empty_query_returns_empty() {
+        let conn = open_in_memory();
+        upsert_record(
+            &conn,
+            &ArxivRecord {
+                id: "x".into(),
+                title: "T".into(),
+                authors: vec!["A".into()],
+                categories: None,
+                doi: None,
+                license: None,
+                versions: vec![],
+            },
+        )
+        .unwrap();
+        assert!(search_by_title_hydrated(&conn, "", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_hydrated_preserves_bm25_order() {
+        // The batched path must keep the FTS rank order when stitching
+        // authors/versions back in — the HashMaps are used for
+        // *attribute* lookup, not record order.
+        let conn = open_in_memory();
+        for (id, title) in [
+            ("p1", "Exact Match Title Here"),
+            ("p2", "Exact Match Title"),
+            ("p3", "Unrelated Noise"),
+        ] {
+            upsert_record(
+                &conn,
+                &ArxivRecord {
+                    id: id.into(),
+                    title: title.into(),
+                    authors: vec![format!("author-{id}")],
+                    categories: None,
+                    doi: None,
+                    license: None,
+                    versions: vec![],
+                },
+            )
+            .unwrap();
+        }
+        let hits = search_by_title_hydrated(&conn, "Exact Match Title Here", 5).unwrap();
+        // p1 exact matches → should outrank p2 (partial) and p3 (none).
+        assert_eq!(hits.first().map(|r| r.id.as_str()), Some("p1"));
+        // Authors attached correctly for whatever comes back.
+        for h in &hits {
+            assert_eq!(h.authors, vec![format!("author-{}", h.id)]);
+        }
     }
 
     #[test]
