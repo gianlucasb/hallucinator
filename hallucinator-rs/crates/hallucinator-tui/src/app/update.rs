@@ -56,8 +56,12 @@ impl App {
             return false;
         }
 
-        // Export modal intercepts
-        if self.export_state.active {
+        // Export modal intercepts — but not while the file picker
+        // is open on top of it (issue #112 browse flow). Without
+        // this guard, MoveDown/MoveUp would cycle the export modal
+        // cursor instead of moving the file picker cursor, making
+        // the picker appear frozen.
+        if self.export_state.active && self.screen != Screen::FilePicker {
             // If editing path, handle text input
             if self.export_state.editing_path {
                 match action {
