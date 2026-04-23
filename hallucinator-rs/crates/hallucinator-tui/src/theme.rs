@@ -16,6 +16,11 @@ pub struct Theme {
     pub border: Color,
     pub text: Color,
     pub dim: Color,
+    /// Foreground for references in the `Skipped` phase. Deliberately
+    /// lighter than [`Theme::dim`] (and rendered without the `DIM`
+    /// modifier) so skipped rows stay legible on both the default
+    /// background and the cursor-highlight background. Issue #234.
+    pub skipped: Color,
     pub highlight_bg: Color,
     pub active: Color,
     pub queued: Color,
@@ -41,6 +46,9 @@ impl Theme {
             border: Color::DarkGray,
             text: Color::White,
             dim: Color::DarkGray,
+            // Medium gray — readable on both black and the dark-green
+            // highlight bar; still distinct from `text` white.
+            skipped: Color::Rgb(160, 160, 160),
             highlight_bg: Color::Rgb(30, 50, 30),
             active: Color::Cyan,
             queued: Color::DarkGray,
@@ -64,6 +72,9 @@ impl Theme {
             border: Color::Rgb(60, 60, 80),
             text: Color::White,
             dim: Color::Rgb(120, 120, 140),
+            // Soft blue-gray — lifts the dim family off the dark-blue
+            // highlight bar while staying below `text` in visual weight.
+            skipped: Color::Rgb(180, 180, 200),
             highlight_bg: Color::Rgb(30, 40, 80),
             active: Color::Rgb(60, 140, 255),
             queued: Color::Rgb(80, 80, 100),
@@ -87,6 +98,10 @@ impl Theme {
             border: Color::Rgb(100, 0, 0),      // muted red
             text: Color::Rgb(200, 200, 200),    // light gray
             dim: Color::Rgb(140, 60, 60),       // muted reddish gray
+            // Lighter red-gray that reads over the deep-red highlight
+            // bg; intentionally staying in the warm family so skipped
+            // rows still feel "same universe" as the rest of the HUD.
+            skipped: Color::Rgb(210, 150, 150),
             highlight_bg: Color::Rgb(50, 0, 0), // dark red selection
             active: Color::Rgb(255, 0, 0),      // T-800 red
             queued: Color::Rgb(80, 0, 0),
@@ -131,7 +146,14 @@ impl Theme {
                 .fg(self.mismatch)
                 .add_modifier(Modifier::BOLD),
             RefPhase::Done => Style::default().fg(self.text),
-            RefPhase::Skipped(_) => Style::default().fg(self.dim).add_modifier(Modifier::DIM),
+            // Skipped refs: dedicated `skipped` color (readable on
+            // the highlight bar) plus italic for visual distinction.
+            // The previous `self.dim + Modifier::DIM` combination
+            // stacked two forms of darkening and collapsed to near-
+            // invisibility on dark themes. Issue #234.
+            RefPhase::Skipped(_) => Style::default()
+                .fg(self.skipped)
+                .add_modifier(Modifier::ITALIC),
         }
     }
 
