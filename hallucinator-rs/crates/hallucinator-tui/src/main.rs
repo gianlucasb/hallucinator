@@ -95,6 +95,12 @@ struct Cli {
     #[arg(long)]
     fps: Option<u32>,
 
+    /// Number of concurrent reference-validation workers (default: 4).
+    /// Raise for offline-heavy workloads; diminishing returns past
+    /// ~16 because SQLite mutexes on offline DBs become the ceiling.
+    #[arg(long)]
+    num_workers: Option<usize>,
+
     /// Enable SearxNG web search fallback for unverified citations.
     /// Uses SEARXNG_URL env var or defaults to http://localhost:8080
     #[arg(long)]
@@ -246,6 +252,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(fps) = cli.fps {
         config_state.fps = fps.clamp(1, 120);
+    }
+    if let Some(n) = cli.num_workers {
+        config_state.num_workers = n.max(1);
     }
 
     // SearxNG URL: only enabled if --searxng flag is set
