@@ -10,6 +10,31 @@ use crate::tui_event::BackendCommand;
 impl App {
     /// Process a user action and update state. Returns true if the app should quit.
     pub fn update(&mut self, action: Action) -> bool {
+        // Mark-safe propagation modal (#266): Space/Enter confirms the
+        // sweep across the queue; Esc cancels (origin stays marked,
+        // other papers untouched).
+        if self.pending_propagation.is_some() {
+            match action {
+                Action::ToggleSafe | Action::SearchConfirm => {
+                    self.confirm_pending_propagation();
+                }
+                Action::NavigateBack => {
+                    self.cancel_pending_propagation();
+                }
+                Action::Quit => {
+                    self.confirm_quit = true;
+                }
+                Action::Tick => {
+                    self.tick = self.tick.wrapping_add(1);
+                }
+                Action::Resize(_w, h) => {
+                    self.visible_rows = (h as usize).saturating_sub(11);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         // Quit confirmation modal — q confirms, Esc cancels
         if self.confirm_quit {
             match action {
@@ -779,26 +804,14 @@ impl App {
                         let indices = self.paper_ref_indices(idx);
                         if self.paper_cursor < indices.len() {
                             let ref_idx = indices[self.paper_cursor];
-                            cycle_fp_reason_and_adjust_stats(
-                                &mut self.papers,
-                                &mut self.ref_states,
-                                idx,
-                                ref_idx,
-                                self.current_query_cache.as_ref(),
-                            );
+                            self.toggle_fp_and_maybe_propagate(idx, ref_idx);
                         }
                     }
                     Screen::RefDetail(paper_idx, ref_idx) => {
                         // Space on detail: cycle FP reason
                         let paper_idx = *paper_idx;
                         let ref_idx = *ref_idx;
-                        cycle_fp_reason_and_adjust_stats(
-                            &mut self.papers,
-                            &mut self.ref_states,
-                            paper_idx,
-                            ref_idx,
-                            self.current_query_cache.as_ref(),
-                        );
+                        self.toggle_fp_and_maybe_propagate(paper_idx, ref_idx);
                     }
                     Screen::Config => {
                         // Space on config: toggle database or cycle theme
@@ -935,6 +948,82 @@ impl App {
         }
         false
     }
+
+    /// Space handler for mark-safe on a ref: toggles the origin's
+    /// fp_reason + updates origin's stats, then either propagates
+    /// immediately (silent, below threshold) or opens a confirmation
+    /// dialog (at/above threshold) for retroactive queue-wide sweep.
+    fn toggle_fp_and_maybe_propagate(&mut self, paper_idx: usize, ref_idx: usize) {
+        let (origin_identity, new_fp_reason) = cycle_fp_reason_and_adjust_stats(
+            &mut self.papers,
+            &mut self.ref_states,
+            paper_idx,
+            ref_idx,
+            self.current_query_cache.as_ref(),
+        );
+        let Some(identity) = origin_identity else {
+            return; // session-local mark only; nothing to propagate
+        };
+
+        let targets = collect_propagation_targets(
+            &self.ref_states,
+            paper_idx,
+            ref_idx,
+            &identity,
+            new_fp_reason,
+        );
+        if targets.is_empty() {
+            return; // no matching refs anywhere else
+        }
+
+        let other_papers = distinct_other_papers(&targets, paper_idx);
+        if other_papers < super::PROPAGATION_CONFIRM_THRESHOLD {
+            // Fast path: silent sweep — the user probably wants this,
+            // and interrupting on every Space press would be annoying
+            // for the common case of just 1-2 other papers.
+            propagate_fp_override(
+                &mut self.papers,
+                &mut self.ref_states,
+                paper_idx,
+                ref_idx,
+                &identity,
+                new_fp_reason,
+            );
+        } else {
+            // Threshold crossed: defer the sweep behind a dialog.
+            let summary = summarize_targets_by_paper(&targets, &self.papers);
+            self.pending_propagation = Some(super::PendingPropagation {
+                origin_identity: identity,
+                new_fp_reason,
+                origin_paper_idx: paper_idx,
+                origin_ref_idx: ref_idx,
+                affected_summary: summary,
+                total_refs: targets.len(),
+            });
+        }
+    }
+
+    /// User confirmed a pending propagation — apply the sweep and
+    /// clear the dialog state. No-op when there's no pending dialog.
+    pub(crate) fn confirm_pending_propagation(&mut self) {
+        let Some(pending) = self.pending_propagation.take() else {
+            return;
+        };
+        propagate_fp_override(
+            &mut self.papers,
+            &mut self.ref_states,
+            pending.origin_paper_idx,
+            pending.origin_ref_idx,
+            &pending.origin_identity,
+            pending.new_fp_reason,
+        );
+    }
+
+    /// User cancelled a pending propagation — the origin stays marked,
+    /// other papers are left untouched.
+    pub(crate) fn cancel_pending_propagation(&mut self) {
+        self.pending_propagation = None;
+    }
 }
 
 /// Cycle the FP reason on one reference and keep the paper-level
@@ -953,68 +1042,138 @@ impl App {
 /// instead of &mut self so it can be called from both Screen::Paper
 /// and Screen::RefDetail arms without fighting the borrow checker
 /// over the enclosing match.
+/// Cycle the origin ref's fp_reason, persist to cache, and adjust
+/// the origin paper's stats. Returns `(origin_identity, new_fp_reason)`
+/// so the caller can decide whether to propagate the change across
+/// the loaded queue (issue #266) — this function itself does NOT
+/// propagate. The caller typically routes either to
+/// [`propagate_fp_override`] (below threshold, silent) or to a
+/// confirmation popup (at/above threshold).
 fn cycle_fp_reason_and_adjust_stats(
     papers: &mut [crate::model::queue::PaperState],
     ref_states: &mut [Vec<crate::model::paper::RefState>],
     paper_idx: usize,
     ref_idx: usize,
     cache: Option<&std::sync::Arc<hallucinator_core::QueryCache>>,
-) {
-    // Scoped borrow of (papers, ref_states) so we can release the
-    // &mut rs before the propagation sweep needs a fresh top-level
-    // borrow of ref_states.
-    let (origin_identity, new_fp_reason) = {
-        let Some(refs) = ref_states.get_mut(paper_idx) else {
-            return;
-        };
-        let Some(rs) = refs.get_mut(ref_idx) else {
-            return;
-        };
-
-        let was_safe = rs.fp_reason.is_some();
-        rs.fp_reason = FpReason::cycle(rs.fp_reason);
-        let is_safe = rs.fp_reason.is_some();
-
-        // Persist the mark only when the ref has enough identity
-        // information (title + ≥1 extracted author). Empty-author
-        // refs get a session-local mark — in-memory only — because
-        // a title-only key would collide with every other same-
-        // titled ref and could silently mark a fabricated ref as
-        // safe on paper load. See issue #267.
-        let identity = hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors);
-        if let Some(cache) = cache
-            && let Some(ref key) = identity
-        {
-            cache.set_fp_override(key, rs.fp_reason.map(|r| r.as_str()));
-        }
-
-        // Adjust origin paper's stats on a None↔Some transition.
-        // Some(r1)↔Some(r2) keeps the ref marked-safe, so the stats
-        // are already correct.
-        if was_safe != is_safe
-            && let Some(result) = &rs.result
-        {
-            let is_retracted = result
-                .retraction_info
-                .as_ref()
-                .is_some_and(|r| r.is_retracted);
-            let status = result.status.clone();
-            let dir: i32 = if is_safe { 1 } else { -1 };
-            if let Some(paper) = papers.get_mut(paper_idx) {
-                paper.apply_fp_delta(&status, is_retracted, dir);
-            }
-        }
-
-        (identity, rs.fp_reason)
+) -> (Option<String>, Option<FpReason>) {
+    let Some(refs) = ref_states.get_mut(paper_idx) else {
+        return (None, None);
+    };
+    let Some(rs) = refs.get_mut(ref_idx) else {
+        return (None, None);
     };
 
-    // Retroactive propagation (issue #266): apply the new fp_reason
-    // to every other ref in the queue whose identity matches. No-op
-    // when the origin ref has no extracted authors (identity is
-    // None) — there's no safe way to propagate in that case.
-    if let Some(key) = origin_identity {
-        propagate_fp_override(papers, ref_states, paper_idx, ref_idx, &key, new_fp_reason);
+    let was_safe = rs.fp_reason.is_some();
+    rs.fp_reason = FpReason::cycle(rs.fp_reason);
+    let is_safe = rs.fp_reason.is_some();
+
+    // Persist the mark only when the ref has enough identity
+    // information (title + ≥1 extracted author). Empty-author
+    // refs get a session-local mark — in-memory only — because
+    // a title-only key would collide with every other same-
+    // titled ref and could silently mark a fabricated ref as
+    // safe on paper load. See issue #267.
+    let identity = hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors);
+    if let Some(cache) = cache
+        && let Some(ref key) = identity
+    {
+        cache.set_fp_override(key, rs.fp_reason.map(|r| r.as_str()));
     }
+
+    // Adjust origin paper's stats on a None↔Some transition.
+    // Some(r1)↔Some(r2) keeps the ref marked-safe, so the stats
+    // are already correct.
+    if was_safe != is_safe
+        && let Some(result) = &rs.result
+    {
+        let is_retracted = result
+            .retraction_info
+            .as_ref()
+            .is_some_and(|r| r.is_retracted);
+        let status = result.status.clone();
+        let dir: i32 = if is_safe { 1 } else { -1 };
+        if let Some(paper) = papers.get_mut(paper_idx) {
+            paper.apply_fp_delta(&status, is_retracted, dir);
+        }
+    }
+
+    let new_fp = rs.fp_reason;
+    (identity, new_fp)
+}
+
+/// Dry-run counterpart to [`propagate_fp_override`]: walks the queue
+/// and returns the `(paper_idx, ref_idx)` pairs that WOULD be flipped
+/// by a propagation with `origin_identity` and `new_fp_reason`, with
+/// no mutations. Used to decide whether the propagation should fire
+/// silently or pop a confirmation dialog.
+pub(crate) fn collect_propagation_targets(
+    ref_states: &[Vec<crate::model::paper::RefState>],
+    origin_paper_idx: usize,
+    origin_ref_idx: usize,
+    origin_identity: &str,
+    new_fp_reason: Option<FpReason>,
+) -> Vec<(usize, usize)> {
+    let mut targets = Vec::new();
+    for (p_idx, refs) in ref_states.iter().enumerate() {
+        for (r_idx, rs) in refs.iter().enumerate() {
+            if (p_idx, r_idx) == (origin_paper_idx, origin_ref_idx) {
+                continue;
+            }
+            let Some(ident) =
+                hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
+            else {
+                continue;
+            };
+            if ident != origin_identity {
+                continue;
+            }
+            if rs.fp_reason == new_fp_reason {
+                continue;
+            }
+            targets.push((p_idx, r_idx));
+        }
+    }
+    targets
+}
+
+/// Group propagation targets by paper, returning `(paper_filename,
+/// refs_in_this_paper)` pairs sorted by filename for stable display
+/// in the confirmation dialog.
+pub(crate) fn summarize_targets_by_paper(
+    targets: &[(usize, usize)],
+    papers: &[crate::model::queue::PaperState],
+) -> Vec<(String, usize)> {
+    use std::collections::BTreeMap;
+    let mut per_paper: BTreeMap<usize, usize> = BTreeMap::new();
+    for &(p, _) in targets {
+        *per_paper.entry(p).or_insert(0) += 1;
+    }
+    let mut out: Vec<(String, usize)> = per_paper
+        .into_iter()
+        .map(|(p_idx, count)| {
+            let fname = papers
+                .get(p_idx)
+                .map(|p| p.filename.clone())
+                .unwrap_or_default();
+            (fname, count)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Count of distinct papers (excluding the origin paper) in a target
+/// set. Used to decide threshold-crossing for the confirmation popup.
+pub(crate) fn distinct_other_papers(
+    targets: &[(usize, usize)],
+    origin_paper_idx: usize,
+) -> usize {
+    use std::collections::BTreeSet;
+    targets
+        .iter()
+        .filter_map(|&(p, _)| (p != origin_paper_idx).then_some(p))
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 #[cfg(test)]
@@ -1379,6 +1538,85 @@ mod propagation_tests {
         assert_eq!(n, 0, "fake-cite must not inherit the real ref's safe mark");
         assert!(ref_states[1][0].fp_reason.is_none());
         assert_eq!(papers[1].stats.not_found, 1);
+    }
+
+    // ── Dry-run / threshold helpers (confirmation popup, #266) ──
+
+    #[test]
+    fn collect_targets_is_empty_when_no_other_refs_match() {
+        let (_papers, ref_states) =
+            fixture(1, "Lonely Paper", &["A. Author"], Status::NotFound);
+        let key = compute_fp_identity("Lonely Paper", &["A. Author".into()]).unwrap();
+        let targets = super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn collect_targets_finds_all_matching_refs_across_papers() {
+        let (_papers, ref_states) =
+            fixture(4, "Shared", &["A. Author"], Status::NotFound);
+        let key = compute_fp_identity("Shared", &["A. Author".into()]).unwrap();
+        let targets = super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
+        // 4 papers with 1 matching ref each; origin skipped → 3 matches.
+        assert_eq!(targets.len(), 3);
+        assert!(!targets.contains(&(0, 0)));
+        assert!(targets.contains(&(1, 0)));
+        assert!(targets.contains(&(2, 0)));
+        assert!(targets.contains(&(3, 0)));
+    }
+
+    #[test]
+    fn collect_targets_skips_refs_already_at_target_state() {
+        let (_papers, mut ref_states) =
+            fixture(3, "Shared", &["A. Author"], Status::NotFound);
+        // Pre-mark paper 1 with the target reason — propagation should
+        // skip it (no net change).
+        ref_states[1][0].fp_reason = Some(FpReason::KnownGood);
+        let key = compute_fp_identity("Shared", &["A. Author".into()]).unwrap();
+        let targets = super::collect_propagation_targets(&ref_states, 0, 0, &key, Some(FpReason::KnownGood));
+        assert_eq!(targets.len(), 1); // only paper 2 still needs flipping
+        assert_eq!(targets[0], (2, 0));
+    }
+
+    #[test]
+    fn summarize_groups_by_paper_and_sorts_by_filename() {
+        let mut papers: Vec<PaperState> = vec![
+            PaperState::new("c.pdf".into()),
+            PaperState::new("a.pdf".into()),
+            PaperState::new("b.pdf".into()),
+        ];
+        for p in &mut papers {
+            p.init_results(2);
+        }
+        // 3 targets across 3 papers: 1, 2, 1 refs each.
+        let targets = vec![(0, 0), (1, 0), (1, 1), (2, 0)];
+        let summary = super::summarize_targets_by_paper(&targets, &papers);
+        // Sorted by filename ascending.
+        assert_eq!(summary, vec![
+            ("a.pdf".into(), 2),
+            ("b.pdf".into(), 1),
+            ("c.pdf".into(), 1),
+        ]);
+    }
+
+    #[test]
+    fn distinct_other_papers_excludes_origin() {
+        // 5 targets across 3 papers, origin is paper 0 — distinct-
+        // OTHER-papers count should be 2 (paper 1 and paper 2), even
+        // if paper 0 also has same-paper siblings listed.
+        let targets = vec![(0, 1), (0, 2), (1, 0), (1, 1), (2, 0)];
+        let n = super::distinct_other_papers(&targets, 0);
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn distinct_other_papers_returns_zero_when_only_same_paper() {
+        // Same-paper siblings (origin = paper 0, targets also in
+        // paper 0) should not trip the threshold — it's the same
+        // paper the user is already looking at.
+        let targets = vec![(0, 1), (0, 2), (0, 3)];
+        let n = super::distinct_other_papers(&targets, 0);
+        assert_eq!(n, 0);
     }
 
     #[test]
