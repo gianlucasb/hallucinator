@@ -157,6 +157,31 @@ impl App {
                 Action::MoveUp => {
                     self.export_state.cursor = self.export_state.cursor.saturating_sub(1);
                 }
+                Action::BrowsePath => {
+                    // Issue #112: when the user is on the path field,
+                    // `.` opens the file picker in directory-select
+                    // mode. The file picker, on confirm, rebuilds the
+                    // output_path as `<picked_dir>/<filename_stem>`
+                    // and restores this screen. Inline-edit (Enter on
+                    // cursor=3) is still available for users who
+                    // prefer typing the path directly.
+                    if self.export_state.cursor == 3 {
+                        // Extract just the filename part of the
+                        // current output_path so we preserve the
+                        // user's chosen stem across the browse
+                        // round-trip.
+                        let stem = std::path::Path::new(&self.export_state.output_path)
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| self.export_state.output_path.clone());
+                        self.pre_file_picker_screen = Some(self.screen.clone());
+                        self.file_picker_context =
+                            FilePickerContext::SelectExportDirectory {
+                                filename_stem: stem,
+                            };
+                        self.screen = Screen::FilePicker;
+                    }
+                }
                 Action::DrillIn => match self.export_state.cursor {
                     0 => {
                         let formats = crate::view::export::ExportFormat::all();
@@ -944,6 +969,9 @@ impl App {
             Action::Resize(_w, h) => {
                 self.visible_rows = (h as usize).saturating_sub(11);
             }
+            // No-op outside the export modal — handled above when
+            // `export_state.active` is true.
+            Action::BrowsePath => {}
             Action::None => {}
         }
         false

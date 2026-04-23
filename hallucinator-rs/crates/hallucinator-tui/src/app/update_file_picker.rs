@@ -29,6 +29,17 @@ impl App {
                         self.file_picker_context = FilePickerContext::AddFiles;
                         self.screen = Screen::Config;
                     }
+                    FilePickerContext::SelectExportDirectory { .. } => {
+                        // Cancel: restore the screen we came from,
+                        // don't touch output_path. The export modal
+                        // is still active and rerenders on the
+                        // restored screen.
+                        self.file_picker_context = FilePickerContext::AddFiles;
+                        self.screen = self
+                            .pre_file_picker_screen
+                            .take()
+                            .unwrap_or(Screen::Queue);
+                    }
                     FilePickerContext::AddFiles => {
                         // Normal mode: add any selected files, go back to queue
                         if !self.file_picker.selected.is_empty() {
@@ -77,6 +88,25 @@ impl App {
                             self.file_picker.selected.push(entry.path.clone());
                         }
                     }
+                } else if let FilePickerContext::SelectExportDirectory { filename_stem } =
+                    &self.file_picker_context
+                {
+                    // Space in export-directory mode confirms the
+                    // CURRENT directory (the one being browsed) as
+                    // the destination — not the entry at the cursor.
+                    // Rebuild output_path as <current_dir>/<stem>.
+                    let stem = filename_stem.clone();
+                    let canonical = super::clean_canonicalize(&self.file_picker.current_dir);
+                    let full = std::path::Path::new(&canonical)
+                        .join(&stem)
+                        .to_string_lossy()
+                        .to_string();
+                    self.export_state.output_path = full;
+                    self.file_picker_context = FilePickerContext::AddFiles;
+                    self.screen = self
+                        .pre_file_picker_screen
+                        .take()
+                        .unwrap_or(Screen::Queue);
                 } else {
                     // Normal mode: toggle selection of current entry
                     self.file_picker.toggle_selected();

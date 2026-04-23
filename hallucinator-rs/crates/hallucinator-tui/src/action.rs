@@ -41,6 +41,9 @@ pub enum Action {
     CursorEnd,
     DeleteForward,
     CycleConfigSection,
+    /// Open file picker in directory-select mode from the export
+    /// modal's path field. (Issue #112.)
+    BrowsePath,
     Tick,
     Resize(u16, u16),
     None,

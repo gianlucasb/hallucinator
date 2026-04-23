@@ -173,6 +173,8 @@ pub fn render(f: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     let hint = if export.editing_path {
         "  Type filename, Enter:confirm, Esc:cancel"
+    } else if export.cursor == 3 {
+        "  Enter:edit filename   .:browse directory   Esc:cancel"
     } else {
         "  j/k:navigate  Enter:select/cycle  Esc:cancel"
     };
