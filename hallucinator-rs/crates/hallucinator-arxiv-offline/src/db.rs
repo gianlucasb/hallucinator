@@ -461,9 +461,18 @@ fn strip_version_suffix(arxiv_id: &str) -> &str {
 /// support quoted phrases or column filters — but safe for
 /// library-caller input.
 fn sanitize_fts_query(q: &str) -> String {
+    // Every char outside [a-zA-Z0-9 _] becomes a space. Hyphens in
+    // particular must NOT survive: FTS5 parses `fine-tuned` as the
+    // NOT/column-filter operator (`tuned` is mis-read as a column
+    // reference, yielding "no such column: tuned") — and even when
+    // FTS5 is lenient, indexed titles tokenise `-` as a separator,
+    // so a query containing `fine-tuned` will never match a stored
+    // "Fine-tuned" that was already split into `fine` + `tuned`.
+    // Converting `-` to space unifies both sides: `fine tuned` →
+    // implicit AND, matches the same two tokens in the index.
     q.chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+            if c.is_ascii_alphanumeric() || c == ' ' || c == '_' {
                 c
             } else {
                 ' '

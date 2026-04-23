@@ -286,8 +286,19 @@ pub fn fix_hyphenation_with_dict<D: Dictionary + ?Sized>(text: &str, dict: &D) -
 
     // Pass 2: Fix "word-word" patterns (no space) using dictionary lookup.
     // This handles cases where the PDF removed the space (e.g., "Chal-lenges").
-    // If the merged word is in the dictionary, it's a real word split by a
-    // line break. If not, it's likely an intentional compound (e.g., "co-located").
+    //
+    // Rule: merge only when the merged form is a real word AND at least one
+    // of the halves is NOT a standalone word on its own. The "both halves
+    // are real words" case is almost always an author-written compound
+    // (e.g., "fine-tuned", "pre-trained", "open-source") — keep the hyphen
+    // even if the merged form happens to be in the dictionary too. This
+    // matters because the arXiv offline FTS index tokenises on `-`, so
+    // "Pre-trained" stored as `pre`/`trained` fails to match a de-
+    // hyphenated citation that was merged into a single `pretrained`
+    // token. (We learned this the hard way on NDSS 2026 f168 ref 5 and
+    // f2361 ref 2, where `pretrained` and `finetuned` are present as
+    // academic terms and caused the old "merge if merged is in dict"
+    // rule to silently strip the author's hyphen.)
     static RE_NO_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([a-zA-Z]+)-([a-zA-Z]+)").unwrap());
 
     RE_NO_SPACE
@@ -300,12 +311,21 @@ pub fn fix_hyphenation_with_dict<D: Dictionary + ?Sized>(text: &str, dict: &D) -
                 return format!("{}-{}", before, after);
             }
 
-            // Check if merged word is in dictionary
             let merged = format!("{}{}", before, after);
-            if dict.contains(&merged.to_lowercase()) {
-                merged
-            } else {
+            if !dict.contains(&merged.to_lowercase()) {
+                // Merged form isn't a word — must be a compound.
+                return format!("{}-{}", before, after);
+            }
+
+            // Merged form IS a word. Only merge when the halves by
+            // themselves don't both look like real words — otherwise
+            // treat it as an author-written compound.
+            let before_is_word = dict.contains(&before.to_lowercase());
+            let after_is_word = dict.contains(&after.to_lowercase());
+            if before_is_word && after_is_word {
                 format!("{}-{}", before, after)
+            } else {
+                merged
             }
         })
         .into_owned()
@@ -527,6 +547,62 @@ mod tests {
         fn contains(&self, word: &str) -> bool {
             self.words.contains(&word.to_lowercase())
         }
+    }
+
+    #[test]
+    fn test_dict_keeps_compound_when_both_halves_are_words() {
+        // Regression for NDSS 2026 f168 ref 5 / f2361 ref 2: the
+        // scowl academic-terms list contains `finetuned` and
+        // `pretrained` as single words, and the old rule "merge if
+        // the merged form is in the dict" silently stripped the
+        // hyphen the author actually wrote. That broke arXiv-offline
+        // FTS matching (the index tokenises on `-`, storing `pre`
+        // and `trained` separately; a de-hyphenated `pretrained`
+        // query is a different token). Keep the hyphen whenever
+        // both halves are valid standalone words — treat those as
+        // author-written compounds.
+        let dict = MockDict::new(&[
+            "fine",
+            "tuned",
+            "finetuned",
+            "pre",
+            "trained",
+            "pretrained",
+            "open",
+            "source",
+            "opensource",
+        ]);
+        assert_eq!(
+            fix_hyphenation_with_dict("fine-tuned models", &dict),
+            "fine-tuned models",
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("pre-trained transformer", &dict),
+            "pre-trained transformer",
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("open-source project", &dict),
+            "open-source project",
+        );
+        // Line-break artifact — whitespace-separated form — still merges.
+        assert_eq!(fix_hyphenation_with_dict("fine- tuned", &dict), "finetuned",);
+    }
+
+    #[test]
+    fn test_dict_still_merges_word_fragment_artifacts() {
+        // The other side of the coin: when one half isn't a word,
+        // the hyphen is almost certainly a PDF line-break. Keep the
+        // old merging behaviour for those.
+        let dict = MockDict::new(&["bidirectional", "challenges", "privacy"]);
+        assert_eq!(
+            fix_hyphenation_with_dict("bidirec-tional", &dict),
+            "bidirectional",
+        );
+        assert_eq!(
+            fix_hyphenation_with_dict("Chal-lenges", &dict),
+            "Challenges",
+        );
+        assert_eq!(fix_hyphenation_with_dict("pri-vacy", &dict), "privacy",);
     }
 
     #[test]
