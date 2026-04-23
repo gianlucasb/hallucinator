@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Pre-commit hook: make sure rustfmt is satisfied before letting
+# a commit land. CI runs the same check; catching it locally saves
+# a push round-trip.
+#
+# Scope:
+# - Only runs when something under hallucinator-rs/ is staged.
+# - Only runs `cargo fmt --all --check` (fast, ~500 ms). Clippy and
+#   the test suite are CI's job — a pre-commit hook that takes
+#   tens of seconds trains people to bypass it with `--no-verify`.
+#
+# Enable once per clone with:
+#   git config core.hooksPath .githooks
+#
+# Bypass for a single commit (e.g. stash / fixup commits) with:
+#   git commit --no-verify
+set -eu
+
+# Skip the hook when no Rust files are staged — trivial repo edits
+# (docs, Python legacy, configs) shouldn't block on rustfmt.
+if ! git diff --cached --name-only --diff-filter=ACMR \
+    | grep -qE '^hallucinator-rs/.*\.rs$'; then
+    exit 0
+fi
+
+cd hallucinator-rs
+if ! cargo fmt --all --check; then
+    cat <<'EOF' >&2
+
+  rustfmt found formatting issues. Run:
+      (cd hallucinator-rs && cargo fmt --all)
+  then `git add -u` the changes and commit again.
+  To bypass (not recommended), use `git commit --no-verify`.
+
+EOF
+    exit 1
+fi
