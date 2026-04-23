@@ -7,6 +7,7 @@ pub mod export;
 pub mod file_picker;
 pub mod help;
 pub mod paper;
+pub mod propagation_confirm;
 pub mod queue;
 pub mod quit_confirm;
 

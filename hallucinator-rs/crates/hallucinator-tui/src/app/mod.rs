@@ -19,11 +19,42 @@ use hallucinator_ingest::archive::ArchiveItem;
 
 use crate::model::activity::ActivityState;
 use crate::model::config::ConfigState;
-use crate::model::paper::{PaperFilter, PaperSortOrder, RefState};
+use crate::model::paper::{FpReason, PaperFilter, PaperSortOrder, RefState};
 use crate::model::queue::{PaperState, QueueFilter, SortOrder, filtered_indices};
 use crate::theme::Theme;
 use crate::tui_event::BackendCommand;
 use crate::view::export::ExportState;
+
+/// Threshold at which a retroactive propagation (issue #266) switches
+/// from silent sweep to a confirmation popup. Defined in terms of
+/// distinct *other* papers affected — ref counts within those papers
+/// don't count, same-paper siblings don't count. Below threshold
+/// the sweep fires immediately (typically "0 or 1 other paper" — no
+/// value in interrupting the user); at or above, we pop a dialog
+/// listing affected papers so the user can veto.
+pub const PROPAGATION_CONFIRM_THRESHOLD: usize = 3;
+
+/// Pending retroactive propagation awaiting user confirmation.
+/// Populated when a mark-safe would flip refs in >= `PROPAGATION_CONFIRM_THRESHOLD`
+/// other papers; cleared by [`App::resolve_pending_propagation`].
+#[derive(Debug, Clone)]
+pub struct PendingPropagation {
+    /// Composite identity key matching the origin ref — used to
+    /// recompute the sweep when the user confirms. The origin itself
+    /// is already updated by the time this struct is created.
+    pub origin_identity: String,
+    /// The fp_reason that would be stamped on matching refs.
+    pub new_fp_reason: Option<FpReason>,
+    /// (paper_idx, ref_idx) of the origin ref — excluded from the sweep.
+    pub origin_paper_idx: usize,
+    pub origin_ref_idx: usize,
+    /// Per-paper summary for the dialog: (paper filename, refs to flip).
+    /// Same-paper-as-origin siblings are listed here too, for symmetry
+    /// with the actual sweep.
+    pub affected_summary: Vec<(String, usize)>,
+    /// Total refs that would be flipped across all affected papers.
+    pub total_refs: usize,
+}
 
 /// Which screen is currently displayed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +342,10 @@ pub struct App {
     pub measured_fps: f32,
     /// Measured process RSS in bytes (updated once per second).
     pub measured_rss_bytes: usize,
+
+    /// Active mark-safe propagation confirmation popup (issue #266).
+    /// `Some` while the dialog is open; `None` otherwise.
+    pub pending_propagation: Option<PendingPropagation>,
 }
 
 impl App {
@@ -376,6 +411,7 @@ impl App {
             last_fps_instant: Instant::now(),
             measured_fps: 0.0,
             measured_rss_bytes: get_rss_bytes().unwrap_or(0),
+            pending_propagation: None,
         }
     }
 
@@ -742,6 +778,10 @@ impl App {
 
         if self.show_help {
             crate::view::help::render(f, &self.theme);
+        }
+
+        if let Some(ref pending) = self.pending_propagation {
+            crate::view::propagation_confirm::render(f, &self.theme, pending);
         }
 
         if self.confirm_quit {

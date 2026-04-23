@@ -62,10 +62,21 @@ impl App {
                         })
                         .collect();
 
-                    // Restore persisted FP overrides from cache
+                    // Restore persisted FP overrides from cache,
+                    // keyed by the ref's composite identity (title +
+                    // author fingerprint). Refs without extracted
+                    // authors can't have been persisted — they were
+                    // session-local only — so the lookup is skipped.
+                    // See issue #267.
                     if let Some(cache) = &self.current_query_cache {
                         for rs in &mut self.ref_states[paper_index] {
-                            if let Some(reason_str) = cache.get_fp_override(&rs.title) {
+                            let Some(key) = hallucinator_core::cache::compute_fp_identity(
+                                &rs.title,
+                                &rs.authors,
+                            ) else {
+                                continue;
+                            };
+                            if let Some(reason_str) = cache.get_fp_override(&key) {
                                 rs.fp_reason = reason_str.parse::<FpReason>().ok();
                             }
                         }
