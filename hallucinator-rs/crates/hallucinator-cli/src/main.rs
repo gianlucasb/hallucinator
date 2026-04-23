@@ -28,9 +28,9 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
-    /// Check a PDF, .bbl, or .bib file for hallucinated references
+    /// Check a PDF, .bbl, .bib, or GROBID TEI XML (.xml) file for hallucinated references
     Check {
-        /// Path to the PDF, .bbl, or .bib file to check
+        /// Path to the PDF, .bbl, .bib, or GROBID .xml file to check
         file_path: PathBuf,
 
         /// Disable colored output

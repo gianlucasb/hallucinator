@@ -161,7 +161,7 @@ impl App {
                 Action::MoveUp => {
                     self.export_state.cursor = self.export_state.cursor.saturating_sub(1);
                 }
-                Action::BrowsePath => {
+                Action::BrowsePath
                     // Issue #112: when the user is on the path field,
                     // `.` opens the file picker in directory-select
                     // mode. The file picker, on confirm, rebuilds the
@@ -169,7 +169,7 @@ impl App {
                     // and restores this screen. Inline-edit (Enter on
                     // cursor=3) is still available for users who
                     // prefer typing the path directly.
-                    if self.export_state.cursor == 3 {
+                    if self.export_state.cursor == 3 => {
                         // Extract just the filename part of the
                         // current output_path so we preserve the
                         // user's chosen stem across the browse
@@ -184,7 +184,6 @@ impl App {
                         };
                         self.screen = Screen::FilePicker;
                     }
-                }
                 Action::DrillIn => match self.export_state.cursor {
                     0 => {
                         let formats = crate::view::export::ExportFormat::all();
@@ -817,15 +816,14 @@ impl App {
             }
             Action::ToggleSafe => {
                 match &self.screen {
-                    Screen::Queue => {
+                    Screen::Queue
                         // Space on queue: cycle paper verdict (None → Safe → Questionable → None)
-                        if self.queue_cursor < self.queue_sorted.len() {
+                        if self.queue_cursor < self.queue_sorted.len() => {
                             let paper_idx = self.queue_sorted[self.queue_cursor];
                             if let Some(paper) = self.papers.get_mut(paper_idx) {
                                 paper.verdict = PaperVerdict::cycle(paper.verdict);
                             }
                         }
-                    }
                     Screen::Paper(idx) => {
                         // Space on paper: cycle FP reason on current reference
                         let idx = *idx;

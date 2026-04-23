@@ -503,12 +503,8 @@ impl App {
         let paper_idx = match &self.screen {
             super::Screen::Paper(idx) => *idx,
             super::Screen::RefDetail(idx, _) => *idx,
-            super::Screen::Queue => {
-                if self.queue_cursor < self.queue_sorted.len() {
-                    self.queue_sorted[self.queue_cursor]
-                } else {
-                    return;
-                }
+            super::Screen::Queue if self.queue_cursor < self.queue_sorted.len() => {
+                self.queue_sorted[self.queue_cursor]
             }
             _ => return,
         };

@@ -256,7 +256,7 @@ fn usenix_dict_hyphen_check() {
             broken_with_dict.len()
         );
         let mut sorted: Vec<_> = broken_with_dict.iter().collect();
-        sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        sorted.sort_by_key(|a| std::cmp::Reverse(a.1.len()));
 
         for (pattern, papers) in sorted.iter().take(20) {
             println!("  \"{}\" (x{})", pattern, papers.len());

@@ -202,6 +202,11 @@ async fn fetch_arxiv_id_entries(
 /// returned paper. Title-matching is deliberately left to the caller —
 /// a single response may carry multiple versions of the same paper, and
 /// which version we consider "the match" depends on caller intent.
+// clippy 1.95+ flags the inner `if local=="link" && in_entry { ... }` as
+// collapsible into an `Event::Empty(_) if ... =>` guard; the guard form
+// pushes predicate logic up out of the event-handling body and hurts
+// readability without buying anything.
+#[allow(clippy::collapsible_match)]
 fn parse_arxiv_id_entries(xml: &str) -> Result<Vec<ArxivEntry>, DbQueryError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -330,6 +335,7 @@ fn parse_arxiv_id_entries(xml: &str) -> Result<Vec<ArxivEntry>, DbQueryError> {
 }
 
 /// Parse arXiv Atom XML response and find matching entries.
+#[allow(clippy::collapsible_match)] // same rationale as parse_arxiv_id_entries
 fn parse_arxiv_response(xml: &str, title: &str) -> Result<DbQueryResult, DbQueryError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
