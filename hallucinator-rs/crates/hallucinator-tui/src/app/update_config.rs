@@ -17,10 +17,8 @@ impl App {
             if y >= table_area.y + row_offset {
                 let clicked_row = (y - table_area.y - row_offset) as usize;
                 match &self.screen {
-                    Screen::Queue => {
-                        if clicked_row < self.queue_sorted.len() {
-                            self.queue_cursor = clicked_row;
-                        }
+                    Screen::Queue if clicked_row < self.queue_sorted.len() => {
+                        self.queue_cursor = clicked_row;
                     }
                     Screen::Paper(idx) => {
                         let indices = self.paper_ref_indices(*idx);
@@ -138,21 +136,19 @@ impl App {
     /// Handle Space on Config screen (toggle database or cycle theme).
     pub(super) fn handle_config_space(&mut self) {
         match self.config_state.section {
-            ConfigSection::Databases => {
+            ConfigSection::Databases
                 // Items 7+ are DB toggles (0-2: offline paths, 3: cache path, 4: clear cache, 5: clear not-found, 6: searxng url)
-                if self.config_state.item_cursor >= 7 {
+                if self.config_state.item_cursor >= 7 => {
                     let toggle_idx = self.config_state.item_cursor - 7;
                     if let Some((_, enabled)) = self.config_state.disabled_dbs.get_mut(toggle_idx) {
                         *enabled = !*enabled;
                         self.config_state.dirty = true;
                     }
                 }
-            }
-            ConfigSection::Display => {
-                if self.config_state.item_cursor == 0 {
+            ConfigSection::Display
+                if self.config_state.item_cursor == 0 => {
                     self.cycle_theme();
                 }
-            }
             _ => {}
         }
     }

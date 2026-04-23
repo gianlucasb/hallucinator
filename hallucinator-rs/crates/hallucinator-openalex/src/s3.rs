@@ -140,6 +140,11 @@ mod urlencoding {
 
 // ── XML Parsing ──────────────────────────────────────────────────────────
 
+// clippy 1.95+ flags the `if in_prefix { ... }` / `if in_next_token { ... }`
+// bodies as collapsible into match guards, but the guard form would
+// fall through to subsequent arms on mismatch, silently skipping the
+// `in_prefix = false` cleanup. Keep the nested form.
+#[allow(clippy::collapsible_match)]
 fn parse_partition_list_xml(
     xml: &str,
 ) -> Result<(Vec<DatePartition>, Option<String>), OpenAlexError> {
@@ -209,6 +214,7 @@ fn parse_partition_list_xml(
     Ok((partitions, next_token))
 }
 
+#[allow(clippy::collapsible_match)] // same rationale as parse_partition_list_xml above
 fn parse_file_list_xml(xml: &str) -> Result<(Vec<PartitionFile>, Option<String>), OpenAlexError> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();

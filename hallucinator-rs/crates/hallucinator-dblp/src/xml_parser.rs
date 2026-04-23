@@ -59,6 +59,12 @@ impl Field {
 /// inproceedings, etc.) contain `<title>`, `<author>`/`<editor>`, and `<ee>`
 /// child elements. Title elements may contain inline formatting sub-elements
 /// (`<i>`, `<sub>`, `<sup>`, `<tt>`) whose text content is accumulated.
+// clippy 1.95+ suggests collapsing several `if` guards into outer
+// match arms. Two of the three occurrences here would break
+// exhaustiveness on `Option<Field>` (guards don't count for
+// exhaustiveness), and the third is clearer as-is. Suppress the
+// lint rather than rewriting to a less readable form.
+#[allow(clippy::collapsible_match)]
 pub fn parse_xml<R: BufRead>(reader: R, mut on_pub: impl FnMut(Publication)) {
     let mut xml = Reader::from_reader(reader);
     xml.config_mut().trim_text(false);
