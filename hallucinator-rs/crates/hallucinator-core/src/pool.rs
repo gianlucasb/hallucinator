@@ -68,7 +68,19 @@ impl ValidationPool {
         // shows activity as soon as its extraction is done.
         let capacity = num_workers.max(1).saturating_mul(4);
         let (job_tx, job_rx) = async_channel::bounded::<RefJob>(capacity);
+        // Identify ourselves. reqwest's default UA ("reqwest/X.Y.Z") is
+        // blacklisted by anti-bot filters on some servers (notably NXP's
+        // product pages: curl gets 200, reqwest gets 404), causing URL
+        // liveness checks to report live pages as dead. A polite,
+        // identifiable UA is also standard etiquette for academic API
+        // consumers. Per-request UAs (CrossRef, retraction checks) still
+        // override this client-level default.
         let client = reqwest::Client::builder()
+            .user_agent(concat!(
+                "hallucinator/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/gianlucasb/hallucinator)"
+            ))
             .pool_max_idle_per_host(2)
             .pool_idle_timeout(Duration::from_secs(30))
             .build()
