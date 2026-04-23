@@ -73,9 +73,16 @@ pub fn extract_urls(text: &str) -> Vec<String> {
             url = url.replace('\\', "");
         }
 
-        // Clean trailing punctuation (common in citations)
+        // Clean trailing punctuation (common in citations). Includes the
+        // typographic closing/opening quotes (U+201C–201D, U+2018–2019)
+        // so that web citations like `...microsoft/SEAL.\u{201D}` don't
+        // URL-encode the quote into the path and 404 the URL Check
+        // (NDSS 2026 f182 refs 56–61).
         url = url
-            .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"', '\''])
+            .trim_end_matches([
+                '.', ',', ';', ':', ')', ']', '}', '"', '\'', '\u{201C}', '\u{201D}', '\u{2018}',
+                '\u{2019}',
+            ])
             .to_string();
 
         // Skip academic URLs (handled by dedicated backends)
@@ -133,6 +140,23 @@ fn fix_spaced_url_punctuation(text: &str) -> String {
 /// Fix spacing within a single URL region.
 fn fix_url_spacing(url_region: &str) -> String {
     let mut result = url_region.to_string();
+
+    // Rejoin host-internal whitespace: `https://multim edia.3m.com` →
+    // `https://multimedia.3m.com`. Real hostnames never contain a
+    // space, so when PDF extraction splits a hostname mid-token
+    // (NDSS 2026 f1059 ref 28 raw is `https://multim\nedia.3m.com/...`
+    // because the domain straddled a line break), the whitespace is
+    // always an artifact. Fires only when the left fragment is a
+    // single dotless word-token and the right fragment looks like a
+    // normal domain ending (`word.tld`). If the left already contained
+    // a dot, the regex engine stops `[\w\-]+` at the dot and `\s+`
+    // fails — so complete-domain + narrative shapes like
+    // `https://example.com See more at foo.bar` don't match. Must run
+    // before `SPACED_DOT`, which would otherwise consume the `.tld`
+    // dot and lose the anchor we rely on.
+    static HOST_SPACE_FIX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)(https?://[\w\-]+)\s+([\w\-]+\.[\w\-.]+)").unwrap());
+    result = HOST_SPACE_FIX.replace_all(&result, "$1$2").to_string();
 
     // Remove spaces around dots inside a URL region: " . " → "."
     //
@@ -798,6 +822,64 @@ mod tests {
     fn test_extract_urls_none() {
         let urls = extract_urls("No URLs in this text.");
         assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_strips_trailing_curly_quotes() {
+        // NDSS 2026 f182 refs 56–61 pattern: the reference ends with a
+        // URL followed by a closing curly quote (`.\u{201D}`). Without
+        // stripping, that byte sequence URL-encodes into the path
+        // (`...%E2%80%9D`) and URL Check 404s the legitimate repo.
+        let text = "M. Smith, \u{201C}Title\u{201D}, https://github.com/microsoft/SEAL.\u{201D}";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://github.com/microsoft/SEAL".to_string()]);
+
+        // Leading stray open-quote (U+201C) at the head would be part
+        // of narrative, not a URL, so only the trailing case matters —
+        // but the strip list must cover both marks plus the single
+        // curly-quote pair for robustness.
+        let text2 = "See https://example.org/page\u{2019}";
+        let urls2 = extract_urls(text2);
+        assert_eq!(urls2, vec!["https://example.org/page".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_urls_rejoins_host_internal_space() {
+        // NDSS 2026 f1059 ref 28: PDF extraction split the hostname
+        // mid-token across a line break (`multim\nedia.3m.com`). The
+        // host-space fix should rejoin before URL_RE truncates at the
+        // whitespace.
+        let text = "B. Honan, Visual Data Security White Paper, July 2012, https://multim edia.3m.com/mws/media/950026O/secure-white-paper.pdf";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 1, "got {:?}", urls);
+        assert!(
+            urls[0].starts_with("https://multimedia.3m.com/"),
+            "expected rejoined hostname, got {:?}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_host_space_fix_leaves_narrative_alone() {
+        // A complete hostname (`example.com`) followed by narrative
+        // must NOT be joined into the next word — `[\w\-]+` stops at
+        // the `.`, `\s+` then fails because the next char is `.`, not
+        // whitespace, so the regex can't anchor. Protects against
+        // collapsing `example.com See more at github.com` into one
+        // mangled URL.
+        let text = "See https://example.com Read more at https://github.com/user";
+        let urls = extract_urls(text);
+        // Both URLs extracted independently, neither mangled.
+        assert!(
+            urls.contains(&"https://example.com".to_string()),
+            "got {:?}",
+            urls
+        );
+        assert!(
+            urls.contains(&"https://github.com/user".to_string()),
+            "got {:?}",
+            urls
+        );
     }
 
     #[test]
