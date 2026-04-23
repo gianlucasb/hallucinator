@@ -94,10 +94,10 @@ impl Theme {
             retracted: Color::Rgb(255, 0, 255), // magenta danger
 
             header_fg: Color::White,
-            header_bg: Color::Rgb(140, 0, 0),   // deep red
-            border: Color::Rgb(100, 0, 0),      // muted red
-            text: Color::Rgb(200, 200, 200),    // light gray
-            dim: Color::Rgb(140, 60, 60),       // muted reddish gray
+            header_bg: Color::Rgb(140, 0, 0), // deep red
+            border: Color::Rgb(100, 0, 0),    // muted red
+            text: Color::Rgb(200, 200, 200),  // light gray
+            dim: Color::Rgb(140, 60, 60),     // muted reddish gray
             // Lighter red-gray that reads over the deep-red highlight
             // bg; intentionally staying in the warm family so skipped
             // rows still feel "same universe" as the rest of the HUD.
