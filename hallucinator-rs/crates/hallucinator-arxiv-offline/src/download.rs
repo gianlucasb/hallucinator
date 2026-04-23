@@ -58,8 +58,8 @@ pub fn load_credentials() -> Result<(String, String), ArxivError> {
     {
         return Ok((u, k));
     }
-    let home = dirs::home_dir()
-        .ok_or_else(|| ArxivError::Harvest("HOME directory not found".into()))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| ArxivError::Harvest("HOME directory not found".into()))?;
     let path = home.join(".kaggle").join("kaggle.json");
     let file = File::open(&path).map_err(|e| {
         ArxivError::Harvest(format!(
@@ -69,9 +69,8 @@ pub fn load_credentials() -> Result<(String, String), ArxivError> {
             path.display()
         ))
     })?;
-    let creds: KaggleCredentials = serde_json::from_reader(file).map_err(|e| {
-        ArxivError::Harvest(format!("parsing {}: {e}", path.display()))
-    })?;
+    let creds: KaggleCredentials = serde_json::from_reader(file)
+        .map_err(|e| ArxivError::Harvest(format!("parsing {}: {e}", path.display())))?;
     if creds.username.is_empty() || creds.key.is_empty() {
         return Err(ArxivError::Harvest(format!(
             "{} contains an empty username or key",
@@ -84,10 +83,7 @@ pub fn load_credentials() -> Result<(String, String), ArxivError> {
 /// Download the Kaggle dataset zip to `dest_path`, streaming to disk.
 /// Returns the number of bytes written. `reqwest` follows the
 /// Kaggle → S3 pre-signed-URL redirect automatically.
-pub async fn download_kaggle_zip<P>(
-    dest_path: &Path,
-    mut progress: P,
-) -> Result<u64, ArxivError>
+pub async fn download_kaggle_zip<P>(dest_path: &Path, mut progress: P) -> Result<u64, ArxivError>
 where
     P: FnMut(DownloadProgress),
 {
@@ -201,8 +197,7 @@ mod tests {
         // We can't easily hide the real ~/.kaggle/kaggle.json, but the
         // error message contract is still exercised when it's absent.
         // Skip if the dev machine happens to have one.
-        let path = dirs::home_dir()
-            .map(|h| h.join(".kaggle").join("kaggle.json"));
+        let path = dirs::home_dir().map(|h| h.join(".kaggle").join("kaggle.json"));
         if path.as_ref().is_some_and(|p| p.exists()) {
             return;
         }

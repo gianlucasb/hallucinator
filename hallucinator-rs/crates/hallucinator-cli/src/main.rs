@@ -1883,10 +1883,7 @@ async fn update_arxiv(
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("arxiv-kaggle.zip");
-            println!(
-                "Downloading Kaggle arxiv snapshot to: {}",
-                dest.display()
-            );
+            println!("Downloading Kaggle arxiv snapshot to: {}", dest.display());
             println!(
                 "(If this is your first run, open https://www.kaggle.com/datasets/Cornell-University/arxiv\n\
                  once in a browser and accept the dataset license.)"
@@ -1963,14 +1960,13 @@ async fn update_arxiv(
         db.upsert_bulk(&rec)
             .map_err(|e| hallucinator_arxiv_offline::ArxivError::Harvest(e.to_string()))?;
         inserted += 1;
-        if inserted % 1_000 == 0 {
+        if inserted.is_multiple_of(1_000) {
             bar_for_sink.set_position(inserted);
         }
-        if inserted % COMMIT_EVERY == 0 {
-            db.commit_and_continue()
-                .map_err(|e| hallucinator_arxiv_offline::ArxivError::Harvest(
-                    format!("mid-ingest commit: {e}"),
-                ))?;
+        if inserted.is_multiple_of(COMMIT_EVERY) {
+            db.commit_and_continue().map_err(|e| {
+                hallucinator_arxiv_offline::ArxivError::Harvest(format!("mid-ingest commit: {e}"))
+            })?;
         }
         Ok(())
     };
@@ -2004,8 +2000,7 @@ async fn update_arxiv(
             // otherwise look like the CLI hung.
             let fts_bar = ProgressBar::new_spinner();
             fts_bar.set_style(
-                ProgressStyle::with_template("{spinner:.cyan} {msg} [{elapsed_precise}]")
-                    .unwrap(),
+                ProgressStyle::with_template("{spinner:.cyan} {msg} [{elapsed_precise}]").unwrap(),
             );
             fts_bar.enable_steady_tick(Duration::from_millis(100));
             fts_bar.set_message("rebuilding FTS title index …");
@@ -2036,13 +2031,14 @@ async fn update_arxiv(
 
     // 4. Clean up the downloaded zip — unless --keep-download was
     // passed or the user supplied their own file (which we don't own).
-    if downloaded_fresh && !keep_download {
-        if let Err(e) = std::fs::remove_file(&dump_path) {
-            eprintln!(
-                "warning: could not remove downloaded zip {}: {e}",
-                dump_path.display()
-            );
-        }
+    if downloaded_fresh
+        && !keep_download
+        && let Err(e) = std::fs::remove_file(&dump_path)
+    {
+        eprintln!(
+            "warning: could not remove downloaded zip {}: {e}",
+            dump_path.display()
+        );
     }
 
     let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
@@ -2074,7 +2070,9 @@ fn ingest_dump<F, P>(
     progress: P,
 ) -> Result<u64, hallucinator_arxiv_offline::ArxivError>
 where
-    F: FnMut(hallucinator_arxiv_offline::ArxivRecord) -> Result<(), hallucinator_arxiv_offline::ArxivError>,
+    F: FnMut(
+        hallucinator_arxiv_offline::ArxivRecord,
+    ) -> Result<(), hallucinator_arxiv_offline::ArxivError>,
     P: FnMut(hallucinator_arxiv_offline::ingest::IngestProgress),
 {
     use hallucinator_arxiv_offline::ArxivError;

@@ -35,7 +35,11 @@ pub fn render(f: &mut Frame, theme: &Theme, pending: &PendingPropagation) {
         format!(
             "  Mark safe across {} other paper{}?",
             distinct_papers(pending),
-            if distinct_papers(pending) == 1 { "" } else { "s" }
+            if distinct_papers(pending) == 1 {
+                ""
+            } else {
+                "s"
+            }
         ),
         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
     ));

@@ -106,9 +106,7 @@ impl ArxivDatabase {
             |row| row.get(0),
         )?;
         if !exists {
-            return Err(ArxivError::Database(
-                rusqlite::Error::QueryReturnedNoRows,
-            ));
+            return Err(ArxivError::Database(rusqlite::Error::QueryReturnedNoRows));
         }
         // Pragmas for read-heavy workload (matches dblp/acl setup).
         conn.execute_batch(
@@ -220,8 +218,7 @@ impl ArxivDatabase {
     /// (begin_bulk weakens it to OFF for throughput).
     pub fn commit_bulk(&self) -> Result<(), ArxivError> {
         self.conn.execute_batch("COMMIT")?;
-        self.conn
-            .execute_batch("PRAGMA synchronous = NORMAL;")?;
+        self.conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
         Ok(())
     }
 

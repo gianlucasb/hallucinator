@@ -35,10 +35,7 @@ impl App {
                         // is still active and rerenders on the
                         // restored screen.
                         self.file_picker_context = FilePickerContext::AddFiles;
-                        self.screen = self
-                            .pre_file_picker_screen
-                            .take()
-                            .unwrap_or(Screen::Queue);
+                        self.screen = self.pre_file_picker_screen.take().unwrap_or(Screen::Queue);
                     }
                     FilePickerContext::AddFiles => {
                         // Normal mode: add any selected files, go back to queue
@@ -103,10 +100,7 @@ impl App {
                         .to_string();
                     self.export_state.output_path = full;
                     self.file_picker_context = FilePickerContext::AddFiles;
-                    self.screen = self
-                        .pre_file_picker_screen
-                        .take()
-                        .unwrap_or(Screen::Queue);
+                    self.screen = self.pre_file_picker_screen.take().unwrap_or(Screen::Queue);
                 } else {
                     // Normal mode: toggle selection of current entry
                     self.file_picker.toggle_selected();

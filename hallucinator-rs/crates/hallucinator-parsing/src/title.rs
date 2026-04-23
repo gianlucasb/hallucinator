@@ -2068,7 +2068,8 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
     static AUTHOR_AFTER: Lazy<Vec<Regex>> = Lazy::new(|| {
         let sc = r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}\u{2018}\u{2019}]"; // surname chars (incl. curly quotes)
         // Surname particles that can start a multi-word last name
-        let particle = r"(?:van|von|de|del|della|di|da|le|la|den|der|ten|ter|dos|das|du|op|het|el|al|ben|ibn)";
+        let particle =
+            r"(?:van|von|de|del|della|di|da|le|la|den|der|ten|ter|dos|das|du|op|het|el|al|ben|ibn)";
         // Uppercase character class including Latin Extended (for names like Łukasz, Øystein, Ñoño)
         // - ASCII: A-Z
         // - Latin-1 Supplement uppercase: À-Ö (U+00C0-U+00D6), Ø-Þ (U+00D8-U+00DE)
@@ -2143,11 +2144,7 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // Surname particle + surname + period: "Le Dantec." (end of author list)
             Regex::new(&format!(r"(?i)^{}\s+[A-Z]{}+\.\s+[A-Z]", particle, sc)).unwrap(),
             // Name suffix after surname: "Sullivan Jr.," or "Smith Sr."
-            Regex::new(&format!(
-                r"^([A-Z]{}+)\s+(?:Jr|Sr|III|II|IV|V)\.\s*,?",
-                sc
-            ))
-            .unwrap(),
+            Regex::new(&format!(r"^([A-Z]{}+)\s+(?:Jr|Sr|III|II|IV|V)\.\s*,?", sc)).unwrap(),
             // Surname + "et al." pattern: "Smith et al."
             Regex::new(&format!(r"^([A-Z]{}+)\s+et\s+al\.", sc)).unwrap(),
             // Surname, Firstname I. (inverted format with middle initial, followed by next name)
@@ -2585,10 +2582,7 @@ mod tests {
                 "cjson read fuzzer.c.: [Online]. Available: https://github.com/DaveGamble/cJSON",
                 "cjson read fuzzer.c",
             ),
-            (
-                "Some page.: [Available]. see link",
-                "Some page",
-            ),
+            ("Some page.: [Available]. see link", "Some page"),
         ];
         for (input, expected) in cases {
             let cleaned = clean_title(input, true);

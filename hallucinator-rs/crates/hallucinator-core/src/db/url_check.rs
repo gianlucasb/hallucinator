@@ -218,8 +218,7 @@ mod tests {
     fn expand_variants_url_with_underscore_yields_three() {
         // Original + `_` → `-` + `_` → ``. Original comes first so the
         // common case (legitimate underscore in path) hits on first try.
-        let got =
-            expand_url_variants(&["https://example.com/my_page".into()]);
+        let got = expand_url_variants(&["https://example.com/my_page".into()]);
         assert_eq!(
             got,
             vec![
@@ -275,14 +274,14 @@ mod tests {
         // returns 403 via DataDome to our HTTP client. The URL is real; the
         // server just declines to serve bots. Accept 401/403 as "exists".
         assert!(status_counts_as_live(StatusCode::UNAUTHORIZED)); // 401
-        assert!(status_counts_as_live(StatusCode::FORBIDDEN));   // 403
+        assert!(status_counts_as_live(StatusCode::FORBIDDEN)); // 403
     }
 
     #[test]
     fn status_not_live_on_definitive_absence() {
         // 404 / 410 definitively mean "not here" — do NOT treat as live.
-        assert!(!status_counts_as_live(StatusCode::NOT_FOUND));           // 404
-        assert!(!status_counts_as_live(StatusCode::GONE));                // 410
+        assert!(!status_counts_as_live(StatusCode::NOT_FOUND)); // 404
+        assert!(!status_counts_as_live(StatusCode::GONE)); // 410
     }
 
     #[test]

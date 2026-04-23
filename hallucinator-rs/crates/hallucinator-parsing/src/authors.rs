@@ -114,7 +114,9 @@ pub(crate) fn extract_authors_from_reference_with_config(
     let authors = if ALL_CAPS_CHECK.is_match(author_section) {
         parse_all_caps_authors_with_max(author_section, config.max_authors)
     } else if author_section.contains("; ")
-        && Regex::new(r"[A-Z][A-Za-z]+,\s+[A-Z]\.").unwrap().is_match(author_section)
+        && Regex::new(r"[A-Z][A-Za-z]+,\s+[A-Z]\.")
+            .unwrap()
+            .is_match(author_section)
     // AAAI format (semicolon-separated): Surname, I.; Surname, I.
     // Also handles ALL CAPS variant: SURNAME, I.; SURNAME, I.
     {
@@ -141,8 +143,7 @@ pub(crate) fn extract_authors_from_reference_with_config(
 ///
 /// Applied iteratively to catch cascaded breaks such as `Man-galve-dhe`.
 pub(crate) fn repair_line_break_hyphen(name: &str) -> String {
-    static BROKEN: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"([A-Za-z])-([a-z])").unwrap());
+    static BROKEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"([A-Za-z])-([a-z])").unwrap());
 
     let mut out = name.to_string();
     loop {
@@ -280,9 +281,11 @@ fn parse_general_authors_with_max(section: &str, max_authors: usize) -> Vec<Stri
 
         // Skip if it looks like a sentence/title (lowercase words that aren't prepositions)
         static NAME_PREPOSITIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-            ["and", "de", "van", "von", "la", "del", "di", "le", "jr", "sr"]
-                .into_iter()
-                .collect()
+            [
+                "and", "de", "van", "von", "la", "del", "di", "le", "jr", "sr",
+            ]
+            .into_iter()
+            .collect()
         });
 
         let lowercase_words: Vec<&&str> = words

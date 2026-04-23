@@ -1791,9 +1791,7 @@ mod tests {
     fn compute_fp_identity_rejects_empty_authors() {
         assert!(compute_fp_identity("Some Paper", &[]).is_none());
         // Whitespace-only strings are also treated as empty.
-        assert!(
-            compute_fp_identity("Some Paper", &["".into(), "   ".into()]).is_none()
-        );
+        assert!(compute_fp_identity("Some Paper", &["".into(), "   ".into()]).is_none());
     }
 
     #[test]
@@ -1807,23 +1805,16 @@ mod tests {
 
     #[test]
     fn compute_fp_identity_is_order_independent() {
-        let ab = compute_fp_identity(
-            "A Paper",
-            &["Alice Aardvark".into(), "Bob Badger".into()],
-        )
-        .unwrap();
-        let ba = compute_fp_identity(
-            "A Paper",
-            &["Bob Badger".into(), "Alice Aardvark".into()],
-        )
-        .unwrap();
+        let ab = compute_fp_identity("A Paper", &["Alice Aardvark".into(), "Bob Badger".into()])
+            .unwrap();
+        let ba = compute_fp_identity("A Paper", &["Bob Badger".into(), "Alice Aardvark".into()])
+            .unwrap();
         assert_eq!(ab, ba);
     }
 
     #[test]
     fn compute_fp_identity_strips_diacritics() {
-        let with_accent =
-            compute_fp_identity("A Paper", &["C. Balázs".into()]).unwrap();
+        let with_accent = compute_fp_identity("A Paper", &["C. Balázs".into()]).unwrap();
         let plain = compute_fp_identity("A Paper", &["C. Balazs".into()]).unwrap();
         assert_eq!(with_accent, plain);
     }
@@ -1854,13 +1845,9 @@ mod tests {
         // Defensive: if the extractor emits the same author twice
         // (happens on some malformed citations), identity should
         // still be deterministic and not double-count.
-        let once =
-            compute_fp_identity("A Paper", &["John Smith".into()]).unwrap();
-        let twice = compute_fp_identity(
-            "A Paper",
-            &["John Smith".into(), "J. Smith".into()],
-        )
-        .unwrap();
+        let once = compute_fp_identity("A Paper", &["John Smith".into()]).unwrap();
+        let twice =
+            compute_fp_identity("A Paper", &["John Smith".into(), "J. Smith".into()]).unwrap();
         assert_eq!(once, twice);
     }
 

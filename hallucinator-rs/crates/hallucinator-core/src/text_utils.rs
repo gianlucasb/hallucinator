@@ -152,8 +152,7 @@ fn fix_url_spacing(url_region: &str) -> String {
     // lowercase-or-digit after the dot lets `cs. cmu.edu` (lowercase `c`)
     // still collapse while leaving sentence-ending `downloader. GitHub`
     // (uppercase `G`) alone.
-    static SPACED_DOT: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(\w)\s*\.\s*([a-z0-9])").unwrap());
+    static SPACED_DOT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*\.\s*([a-z0-9])").unwrap());
     result = SPACED_DOT.replace_all(&result, "$1.$2").to_string();
 
     // Remove spaces around slashes when between URL parts: " / " or "/ " → "/"
@@ -210,9 +209,8 @@ fn fix_url_spacing(url_region: &str) -> String {
     // (first pass rewrites `/foo_bar/`; the second pass catches
     // `/baz_qux/`). Typical URL has <10 passes; terminates fast.
     static INTERNAL_WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
-    static MIDDLE_SPACED_SEGMENT: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+)/").unwrap()
-    });
+    static MIDDLE_SPACED_SEGMENT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+)/").unwrap());
     loop {
         let next = MIDDLE_SPACED_SEGMENT
             .replace_all(&result, |caps: &regex::Captures| {
@@ -1034,7 +1032,11 @@ mod tests {
         // Critical post-condition: "file.pdf" must NOT have been pulled
         // into the URL as "file_pdf" or similar; the new rule stays off.
         assert!(!url.contains("_pdf"), "unexpected mangle: {}", url);
-        assert!(!url.contains("file.pdf"), "trailing narrative pulled in: {}", url);
+        assert!(
+            !url.contains("file.pdf"),
+            "trailing narrative pulled in: {}",
+            url
+        );
     }
 
     #[test]
@@ -1069,8 +1071,7 @@ mod tests {
         // of the current URL. URL_RE previously excluded only `]`, so it
         // kept eating through `[N`, producing URLs like "url/page[42".
         // Excluding `[` as well stops at the right place.
-        let text =
-            "See https://www.cve.org/about/Metrics[2] (2025) MITRE ATT&CK Framework";
+        let text = "See https://www.cve.org/about/Metrics[2] (2025) MITRE ATT&CK Framework";
         let urls = extract_urls(text);
         assert_eq!(urls, vec!["https://www.cve.org/about/Metrics"]);
     }
@@ -1081,8 +1082,7 @@ mod tests {
         // corpus, e.g. f700 ref [6]: "Yore-Wednesday.pdf.[6"). After `[`
         // is excluded, URL_RE stops at `[` and the existing trailing-punct
         // trim strips the `.`.
-        let text =
-            "Blah. https://i.blackhat.com/BH-US-24/Presentations/US24-Sialveras-Bugs-Of-Yore-Wednesday.pdf.[6] next ref";
+        let text = "Blah. https://i.blackhat.com/BH-US-24/Presentations/US24-Sialveras-Bugs-Of-Yore-Wednesday.pdf.[6] next ref";
         let urls = extract_urls(text);
         assert_eq!(
             urls,
@@ -1135,7 +1135,8 @@ mod tests {
         // `chi2010 tabbedbrowsing.pdf` with a trailing `, 2010` citation
         // year (which is what forced the companion change to
         // FILENAME_LOST_UNDERSCORES' anchor).
-        let text = "P. Dubroy, https://www.dgp.toronto.edu/∼ravin/papers/chi2010 tabbedbrowsing.pdf, 2010";
+        let text =
+            "P. Dubroy, https://www.dgp.toronto.edu/∼ravin/papers/chi2010 tabbedbrowsing.pdf, 2010";
         let urls = extract_urls(text);
         assert_eq!(
             urls,

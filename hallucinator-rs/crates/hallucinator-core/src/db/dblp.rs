@@ -86,7 +86,11 @@ impl DatabaseBackend for DblpOffline {
                         .into_iter()
                         .map(|a| strip_dblp_suffix(&a))
                         .collect();
-                    Ok(DbQueryResult::found(qr.record.title, authors, qr.record.url))
+                    Ok(DbQueryResult::found(
+                        qr.record.title,
+                        authors,
+                        qr.record.url,
+                    ))
                 }
                 None => Ok(DbQueryResult::not_found()),
             }

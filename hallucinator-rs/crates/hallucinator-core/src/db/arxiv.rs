@@ -477,7 +477,10 @@ mod tests {
         );
         let entries = parse_arxiv_id_entries(&xml).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].title, "LoRATK: LoRA Once, Backdoor Everywhere in the Share-and-Play Ecosystem");
+        assert_eq!(
+            entries[0].title,
+            "LoRATK: LoRA Once, Backdoor Everywhere in the Share-and-Play Ecosystem"
+        );
         assert_eq!(entries[0].authors, vec!["Hongyi Liu", "Shaochen Zhong"]);
         assert_eq!(entries[0].version, Some(2));
         assert_eq!(
@@ -491,8 +494,7 @@ mod tests {
         // When we issue `id_list=X v1, X v2, X v3`, the response is a
         // multi-entry feed. The parser must return all entries in order
         // so the caller can scan for a title match across versions.
-        let xml = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
     <id>http://arxiv.org/abs/2403.00108v1</id>
@@ -506,9 +508,8 @@ mod tests {
     <author><name>Hongyi Liu</name></author>
     <link href="http://arxiv.org/abs/2403.00108v2" rel="alternate"/>
   </entry>
-</feed>"#
-        );
-        let entries = parse_arxiv_id_entries(&xml).unwrap();
+</feed>"#;
+        let entries = parse_arxiv_id_entries(xml).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries[0].title.starts_with("Lora-as-an-attack"));
         assert_eq!(entries[0].version, Some(1));

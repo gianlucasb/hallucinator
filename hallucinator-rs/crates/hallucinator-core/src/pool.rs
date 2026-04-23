@@ -494,6 +494,7 @@ async fn report_result(
 ///
 /// The retraction field is *not* touched here (it's threaded through
 /// separately from the cached CrossRef response).
+#[allow(clippy::too_many_arguments)] // fallback surface area is what it is
 async fn apply_fallbacks(
     status: Status,
     source: Option<String>,
@@ -574,8 +575,7 @@ async fn apply_fallbacks(
     if status == Status::NotFound && !candidate_urls.is_empty() {
         let timeout = Duration::from_secs(config.db_timeout_secs);
         let start = std::time::Instant::now();
-        let wayback_result =
-            wayback::check_first_snapshot(&candidate_urls, client, timeout).await;
+        let wayback_result = wayback::check_first_snapshot(&candidate_urls, client, timeout).await;
         let elapsed = start.elapsed();
 
         if let Some(result) = wayback_result {

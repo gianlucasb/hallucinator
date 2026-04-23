@@ -227,7 +227,8 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
 /// tokens, both begin with an uppercase letter, and neither is an initial or
 /// carries a period (i.e. we cannot tell Given-Family from Family-Given).
 fn is_ambiguous_two_token(name: &str) -> bool {
-    let parts: Vec<&str> = name.trim().split_whitespace().collect();
+    // split_whitespace already handles leading/trailing whitespace.
+    let parts: Vec<&str> = name.split_whitespace().collect();
     if parts.len() != 2 {
         return false;
     }
@@ -246,7 +247,7 @@ fn is_ambiguous_two_token(name: &str) -> bool {
 /// Lowercase first whitespace-separated token (with trailing punctuation
 /// trimmed). Used only by the LNF fallback above.
 fn first_token_lower(name: &str) -> Option<String> {
-    let first = name.trim().split_whitespace().next()?;
+    let first = name.split_whitespace().next()?;
     let first = first.trim_end_matches(|c: char| !c.is_alphanumeric());
     if first.is_empty() {
         None

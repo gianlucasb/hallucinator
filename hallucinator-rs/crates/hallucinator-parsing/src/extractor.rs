@@ -684,7 +684,10 @@ mod tests {
                 );
             }
             ParsedRef::Skip(reason, _, _) => {
-                panic!("URL-bearing ref should not be skipped (skipped due to {:?})", reason);
+                panic!(
+                    "URL-bearing ref should not be skipped (skipped due to {:?})",
+                    reason
+                );
             }
         }
     }
@@ -710,7 +713,10 @@ mod tests {
                 }
             }
             ParsedRef::Skip(reason, _, _) => {
-                panic!("URL-bearing ref should not be skipped (skipped due to {:?})", reason);
+                panic!(
+                    "URL-bearing ref should not be skipped (skipped due to {:?})",
+                    reason
+                );
             }
         }
     }

@@ -83,9 +83,9 @@ where
     let mut emitted_start = false;
     let every = progress_every.max(1);
 
-    let mut line_no: u64 = 0;
-    for line in reader.lines() {
-        line_no += 1;
+    for (line_idx, line) in reader.lines().enumerate() {
+        // Line numbers are 1-based in error messages for human readability.
+        let line_no = line_idx as u64 + 1;
         let line = line.map_err(|e| ArxivError::Harvest(format!("read line {line_no}: {e}")))?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -100,7 +100,7 @@ where
             emitted_start = true;
             progress(IngestProgress::Started);
         }
-        if count % every == 0 {
+        if count.is_multiple_of(every) {
             progress(IngestProgress::Progress {
                 records_parsed: count,
             });
@@ -121,8 +121,11 @@ impl KaggleRecord {
             .into_iter()
             .filter_map(format_author)
             .collect();
-        let mut versions: Vec<ArxivVersion> =
-            self.versions.into_iter().filter_map(parse_version).collect();
+        let mut versions: Vec<ArxivVersion> = self
+            .versions
+            .into_iter()
+            .filter_map(parse_version)
+            .collect();
         // v1 fallback when the dump omits version history (rare, seen
         // on very old records). Keeps downstream code from having to
         // handle an empty versions list.
