@@ -298,7 +298,12 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
             .retraction_info
             .as_ref()
             .is_some_and(|r| r.is_retracted);
-        paper.record_status(loaded_ref.index, result.status.clone(), is_retracted);
+        paper.record_status(
+            loaded_ref.index,
+            result.status.clone(),
+            result.url_check_skipped,
+            is_retracted,
+        );
         // If this ref was persisted with an fp_reason, carry the
         // mark-safe adjustment into the paper stats so the queue table
         // and totals line reflect the prior user decision on load.

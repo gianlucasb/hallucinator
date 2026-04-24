@@ -267,7 +267,12 @@ impl App {
                     if paper.phase == PaperPhase::Retrying {
                         paper.retry_done += 1;
                     }
-                    paper.record_status(index, result.status.clone(), is_retracted);
+                    paper.record_status(
+                        index,
+                        result.status.clone(),
+                        result.url_check_skipped,
+                        is_retracted,
+                    );
                     if fp_preexisting {
                         paper.apply_fp_delta(&result.status, is_retracted, 1);
                     }

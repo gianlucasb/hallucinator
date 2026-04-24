@@ -82,7 +82,13 @@ impl RefState {
         let Some(result) = &self.result else {
             return false;
         };
-        let status_problem = matches!(result.status, Status::NotFound)
+        // A `url_check_skipped` NotFound is intentionally not an
+        // unresolved problem — the user opted not to URL-verify that
+        // ref, so it's bucketed under "skipped" and must not inflate
+        // the paper-level problem count.
+        let is_real_not_found =
+            matches!(result.status, Status::NotFound) && !result.url_check_skipped;
+        let status_problem = is_real_not_found
             || matches!(result.status, Status::Mismatch(kind) if kind.contains(MismatchKind::AUTHOR));
         let retracted = result
             .retraction_info
@@ -118,6 +124,13 @@ impl RefState {
                     } else {
                         "\u{2713} Verified".to_string()
                     }
+                }
+                // URL-gated NotFound renders as "skipped (URL check
+                // disabled)" so the ref visually sits alongside the
+                // parse-time skips and doesn't look like a
+                // hallucination candidate.
+                Status::NotFound if r.url_check_skipped => {
+                    "(skipped: URL check disabled)".to_string()
                 }
                 Status::NotFound => "\u{2717} Not Found".to_string(),
                 Status::Mismatch(_) => "\u{26A0} Mismatch".to_string(),

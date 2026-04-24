@@ -8,6 +8,13 @@ pub use hallucinator_reporting::PaperVerdict;
 pub struct ResultSummary {
     pub status: Status,
     pub is_retracted: bool,
+    /// Mirrors `ValidationResult.url_check_skipped`: when true, the ref
+    /// finished `Status::NotFound` but its URL would only have been
+    /// verified by URL Check / Wayback, which were disabled via the
+    /// `--url-match` gate. Paper-level stats treat these as "skipped"
+    /// rather than "not_found"; the display layer renders them the
+    /// same way.
+    pub url_check_skipped: bool,
 }
 
 /// Processing phase of a paper in the queue.
@@ -81,17 +88,31 @@ impl PaperState {
     /// If the slot already contains a result (retry pass), the old status
     /// counters are decremented before the new ones are incremented, preventing
     /// double-counting.
-    pub fn record_status(&mut self, index: usize, status: Status, is_retracted: bool) {
+    pub fn record_status(
+        &mut self,
+        index: usize,
+        status: Status,
+        url_check_skipped: bool,
+        is_retracted: bool,
+    ) {
         // Grow if needed (shouldn't happen after init_results, but be safe)
         if index >= self.results.len() {
             self.results.resize(index + 1, None);
         }
 
-        // Decrement old counters if replacing
+        // Decrement old counters if replacing. A URL-gated NotFound was
+        // counted under `skipped`, not `not_found`, so its decrement has
+        // to match the bucket it was incremented into.
         if let Some(old) = &self.results[index] {
             match &old.status {
                 Status::Verified => self.stats.verified = self.stats.verified.saturating_sub(1),
-                Status::NotFound => self.stats.not_found = self.stats.not_found.saturating_sub(1),
+                Status::NotFound => {
+                    if old.url_check_skipped {
+                        self.stats.skipped = self.stats.skipped.saturating_sub(1);
+                    } else {
+                        self.stats.not_found = self.stats.not_found.saturating_sub(1);
+                    }
+                }
                 Status::Mismatch(kind) => {
                     self.stats.mismatch = self.stats.mismatch.saturating_sub(1);
                     if kind.contains(MismatchKind::AUTHOR) {
@@ -110,10 +131,19 @@ impl PaperState {
             }
         }
 
-        // Increment new counters
+        // Increment new counters. A URL-gated NotFound goes into
+        // `skipped` so the paper-level problematic count stays aligned
+        // with the CLI summary and JSON export (which already exclude
+        // `url_check_skipped` refs from the hallucination bucket).
         match &status {
             Status::Verified => self.stats.verified += 1,
-            Status::NotFound => self.stats.not_found += 1,
+            Status::NotFound => {
+                if url_check_skipped {
+                    self.stats.skipped += 1;
+                } else {
+                    self.stats.not_found += 1;
+                }
+            }
             Status::Mismatch(kind) => {
                 self.stats.mismatch += 1;
                 if kind.contains(MismatchKind::AUTHOR) {
@@ -134,6 +164,7 @@ impl PaperState {
         self.results[index] = Some(ResultSummary {
             status,
             is_retracted,
+            url_check_skipped,
         });
     }
 
@@ -338,7 +369,10 @@ mod tests {
         let mut p = PaperState::new("t".into());
         p.init_results(statuses.len());
         for (i, (status, is_retracted)) in statuses.iter().enumerate() {
-            p.record_status(i, status.clone(), *is_retracted);
+            // Test helper leaves url_check_skipped=false because the
+            // existing cases exercise the pre-flag NotFound path. URL-
+            // gated cases have their own dedicated test below.
+            p.record_status(i, status.clone(), false, *is_retracted);
         }
         p.stats.total = statuses.len();
         p.total_refs = statuses.len();
@@ -405,6 +439,41 @@ mod tests {
         assert_eq!(p.stats.verified, before.verified);
         assert_eq!(p.stats.not_found, before.not_found);
         assert_eq!(p.stats.mismatch, before.mismatch);
+    }
+
+    #[test]
+    fn record_status_url_gated_not_found_goes_to_skipped_bucket() {
+        // Regression guard for the TUI `--url-match` gap (NDSS 2026
+        // f605 regression: TUI surfaced 15 not-found while the CLI
+        // showed 2, because `record_status` counted every NotFound
+        // into `stats.not_found` regardless of `url_check_skipped`).
+        // With the flag threaded through, a URL-gated NotFound must
+        // bump `stats.skipped` and leave `stats.not_found` at zero.
+        let mut p = PaperState::new("t".into());
+        p.init_results(2);
+        // Real NotFound (no URL in the ref) — the hallucination bucket.
+        p.record_status(0, Status::NotFound, false, false);
+        // URL-gated NotFound — was URL-bearing, `--url-match` was off.
+        p.record_status(1, Status::NotFound, true, false);
+        assert_eq!(p.stats.not_found, 1, "got {:?}", p.stats);
+        assert_eq!(p.stats.skipped, 1, "got {:?}", p.stats);
+    }
+
+    #[test]
+    fn record_status_replacement_preserves_bucket_symmetry() {
+        // The decrement path has to mirror the increment path: a URL-
+        // gated NotFound that's later replaced by a regular NotFound
+        // (e.g. after a retry with `--url-match` on) must drop the
+        // `skipped` count and add to `not_found`.
+        let mut p = PaperState::new("t".into());
+        p.init_results(1);
+        p.record_status(0, Status::NotFound, true, false);
+        assert_eq!(p.stats.skipped, 1);
+        assert_eq!(p.stats.not_found, 0);
+        // Retry: URL check now ran, still NotFound (dead link).
+        p.record_status(0, Status::NotFound, false, false);
+        assert_eq!(p.stats.skipped, 0, "got {:?}", p.stats);
+        assert_eq!(p.stats.not_found, 1, "got {:?}", p.stats);
     }
 
     #[test]

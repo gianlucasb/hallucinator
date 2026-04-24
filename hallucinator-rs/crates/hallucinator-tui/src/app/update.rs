@@ -1345,7 +1345,7 @@ mod propagation_tests {
         for i in 0..n_papers {
             let mut p = PaperState::new(format!("paper{i}.pdf"));
             p.init_results(1);
-            p.record_status(0, status.clone(), false);
+            p.record_status(0, status.clone(), false, false);
             papers.push(p);
             ref_states.push(vec![refs(title, authors, Some(status.clone()), None)]);
         }
@@ -1390,9 +1390,9 @@ mod propagation_tests {
             PaperState::new("b.pdf".into()),
         ];
         papers[0].init_results(1);
-        papers[0].record_status(0, Status::NotFound, false);
+        papers[0].record_status(0, Status::NotFound, false, false);
         papers[1].init_results(1);
-        papers[1].record_status(0, Status::NotFound, false);
+        papers[1].record_status(0, Status::NotFound, false, false);
         let mut ref_states = vec![
             vec![refs(
                 "Some Paper",
@@ -1443,8 +1443,8 @@ mod propagation_tests {
     fn propagate_handles_same_paper_siblings() {
         let mut paper = PaperState::new("p.pdf".into());
         paper.init_results(2);
-        paper.record_status(0, Status::NotFound, false);
-        paper.record_status(1, Status::NotFound, false);
+        paper.record_status(0, Status::NotFound, false, false);
+        paper.record_status(1, Status::NotFound, false, false);
         assert_eq!(paper.stats.not_found, 2);
 
         let mut papers = vec![paper];
@@ -1502,7 +1502,7 @@ mod propagation_tests {
         let p0 = {
             let mut p = PaperState::new("a.pdf".into());
             p.init_results(1);
-            p.record_status(0, Status::NotFound, false);
+            p.record_status(0, Status::NotFound, false, false);
             p
         };
         let p1 = PaperState::new("b.pdf".into()); // no results recorded
@@ -1539,13 +1539,13 @@ mod propagation_tests {
             {
                 let mut p = PaperState::new("real.pdf".into());
                 p.init_results(1);
-                p.record_status(0, Status::NotFound, false);
+                p.record_status(0, Status::NotFound, false, false);
                 p
             },
             {
                 let mut p = PaperState::new("fake.pdf".into());
                 p.init_results(1);
-                p.record_status(0, Status::NotFound, false);
+                p.record_status(0, Status::NotFound, false, false);
                 p
             },
         ];
@@ -1673,13 +1673,13 @@ mod propagation_tests {
             {
                 let mut p = PaperState::new("a.pdf".into());
                 p.init_results(1);
-                p.record_status(0, Status::NotFound, false);
+                p.record_status(0, Status::NotFound, false, false);
                 p
             },
             {
                 let mut p = PaperState::new("b.pdf".into());
                 p.init_results(1);
-                p.record_status(0, Status::NotFound, false);
+                p.record_status(0, Status::NotFound, false, false);
                 p
             },
         ];
