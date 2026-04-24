@@ -174,6 +174,12 @@ impl App {
                 ))
             },
             arxiv_offline_db: None, // Populated from main.rs
+            // IACR ePrint has no TUI config field yet — main.rs
+            // populates the path from the config file / env and
+            // opens the DB handle there. Mirrors how the TUI treats
+            // the other offline paths that don't yet have UI toggles.
+            iacr_eprint_offline_path: None,
+            iacr_eprint_offline_db: None,
             openalex_offline_path: if self.config_state.openalex_offline_path.is_empty() {
                 None
             } else {

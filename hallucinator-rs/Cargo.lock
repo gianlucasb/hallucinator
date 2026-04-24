@@ -1278,6 +1278,7 @@ dependencies = [
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
+ "hallucinator-iacr-eprint",
  "hallucinator-ingest",
  "hallucinator-openalex",
  "hallucinator-parsing",
@@ -1306,6 +1307,7 @@ dependencies = [
  "hallucinator-acl",
  "hallucinator-arxiv-offline",
  "hallucinator-dblp",
+ "hallucinator-iacr-eprint",
  "hallucinator-openalex",
  "http",
  "once_cell",
@@ -1352,6 +1354,20 @@ dependencies = [
  "hallucinator-core",
  "quick-xml",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hallucinator-iacr-eprint"
+version = "0.1.2"
+dependencies = [
+ "once_cell",
+ "quick-xml",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

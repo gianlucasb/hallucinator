@@ -636,6 +636,17 @@ pub(crate) fn build_database_list(
     if should_include("PubMed") {
         databases.push(Box::new(pubmed::PubMed));
     }
+    // IACR Cryptology ePrint Archive (offline only — no online
+    // search API exists). Only registers when the user has built
+    // a local index and passed `--iacr-eprint-offline` or set the
+    // path in the config file.
+    if should_include("IACR ePrint") {
+        if let Some(ref db) = config.iacr_eprint_offline_db {
+            databases.push(Box::new(iacr_eprint::IacrEprintOffline::new(
+                std::sync::Arc::clone(db),
+            )));
+        }
+    }
     if should_include("DOI") {
         databases.push(Box::new(doi_resolver::DoiResolver));
     }

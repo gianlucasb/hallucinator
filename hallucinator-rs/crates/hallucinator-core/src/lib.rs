@@ -290,6 +290,8 @@ pub struct Config {
     pub acl_offline_db: Option<Arc<Mutex<hallucinator_acl::AclDatabase>>>,
     pub arxiv_offline_path: Option<PathBuf>,
     pub arxiv_offline_db: Option<Arc<Mutex<hallucinator_arxiv_offline::ArxivDatabase>>>,
+    pub iacr_eprint_offline_path: Option<PathBuf>,
+    pub iacr_eprint_offline_db: Option<Arc<Mutex<hallucinator_iacr_eprint::IacrDatabase>>>,
     pub openalex_offline_path: Option<PathBuf>,
     pub openalex_offline_db: Option<Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>>,
     pub num_workers: usize,
@@ -347,6 +349,11 @@ impl std::fmt::Debug for Config {
                 "arxiv_offline_db",
                 &self.arxiv_offline_db.as_ref().map(|_| "<open>"),
             )
+            .field("iacr_eprint_offline_path", &self.iacr_eprint_offline_path)
+            .field(
+                "iacr_eprint_offline_db",
+                &self.iacr_eprint_offline_db.as_ref().map(|_| "<open>"),
+            )
             .field("acl_offline_path", &self.acl_offline_path)
             .field(
                 "acl_offline_db",
@@ -393,6 +400,8 @@ impl Default for Config {
             acl_offline_db: None,
             arxiv_offline_path: None,
             arxiv_offline_db: None,
+            iacr_eprint_offline_path: None,
+            iacr_eprint_offline_db: None,
             openalex_offline_path: None,
             openalex_offline_db: None,
             num_workers: 4,
