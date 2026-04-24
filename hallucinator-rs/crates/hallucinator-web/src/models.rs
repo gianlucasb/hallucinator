@@ -21,6 +21,12 @@ pub struct ResultJson {
     pub arxiv_info: Option<ArxivInfoJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retraction_info: Option<RetractionInfoJson>,
+    /// True iff the ref finished NotFound with a non-academic URL but
+    /// `--url-match` was off. The `status` field is already demoted to
+    /// "skipped" in that case; this boolean lets web consumers tell the
+    /// URL-gated skip apart from a parse-time skip.
+    #[serde(default)]
+    pub url_check_skipped: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,16 +56,29 @@ pub struct RetractionInfoJson {
 
 impl From<&ValidationResult> for ResultJson {
     fn from(r: &ValidationResult) -> Self {
-        let status_str = match &r.status {
-            Status::Verified => "verified",
-            Status::NotFound => "not_found",
-            Status::Mismatch(_) => "mismatch",
+        // Demote URL-bearing NotFound refs to "skipped" when
+        // `--url-match` was off, so the web consumer's status bucket
+        // matches the CLI/JSON export behavior. `error_type` is
+        // cleared too — no hallucination banner should fire for a
+        // citation the user chose not to URL-verify.
+        let status_str = if r.url_check_skipped {
+            "skipped"
+        } else {
+            match &r.status {
+                Status::Verified => "verified",
+                Status::NotFound => "not_found",
+                Status::Mismatch(_) => "mismatch",
+            }
         };
 
-        let error_type = match &r.status {
-            Status::NotFound => Some("not_found".to_string()),
-            Status::Mismatch(kind) => Some(format!("mismatch_{}", kind.description())),
-            Status::Verified => None,
+        let error_type = if r.url_check_skipped {
+            None
+        } else {
+            match &r.status {
+                Status::NotFound => Some("not_found".to_string()),
+                Status::Mismatch(kind) => Some(format!("mismatch_{}", kind.description())),
+                Status::Verified => None,
+            }
         };
 
         let doi_info = r.doi_info.as_ref().map(|d| DoiInfoJson {
@@ -93,6 +112,7 @@ impl From<&ValidationResult> for ResultJson {
             doi_info,
             arxiv_info,
             retraction_info,
+            url_check_skipped: r.url_check_skipped,
         }
     }
 }
@@ -118,11 +138,15 @@ impl SummaryJson {
             .iter()
             .filter(|r| r.status == Status::Verified)
             .count();
+        // Exclude `url_check_skipped` refs from the not_found bucket —
+        // they're counted under `skipped` below, matching the CLI
+        // CheckStats treatment.
         let not_found = results
             .iter()
-            .filter(|r| r.status == Status::NotFound)
+            .filter(|r| r.status == Status::NotFound && !r.url_check_skipped)
             .count();
         let mismatched = results.iter().filter(|r| r.status.is_mismatch()).count();
+        let skipped_url_match_gate = results.iter().filter(|r| r.url_check_skipped).count();
 
         SummaryJson {
             total_raw: skip_stats.total_raw,
@@ -130,7 +154,9 @@ impl SummaryJson {
             verified,
             not_found,
             mismatched,
-            skipped: skip_stats.url_only + skip_stats.short_title,
+            skipped: skip_stats.url_only
+                + skip_stats.short_title
+                + skipped_url_match_gate,
             skipped_url: skip_stats.url_only,
             skipped_short_title: skip_stats.short_title,
             title_only: skip_stats.no_authors,

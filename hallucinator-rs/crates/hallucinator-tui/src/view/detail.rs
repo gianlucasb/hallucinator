@@ -118,6 +118,11 @@ pub fn render_in(
             .is_some_and(|ri| ri.is_retracted)
         {
             ("\u{2620} RETRACTED".to_string(), theme.retracted)
+        } else if result.url_check_skipped {
+            // URL-gated NotFound: render with the skipped palette so
+            // the detail view doesn't contradict the row-level
+            // "(skipped: URL check disabled)" verdict in the table.
+            ("Skipped (URL check disabled)".to_string(), theme.skipped)
         } else {
             match &result.status {
                 Status::Verified => ("\u{2713} Verified".to_string(), theme.verified),
@@ -595,6 +600,7 @@ mod tests {
             doi_info: None,
             arxiv_info: None,
             retraction_info: None,
+            url_check_skipped: false,
         }
     }
 

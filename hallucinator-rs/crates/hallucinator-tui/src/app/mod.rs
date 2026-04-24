@@ -501,10 +501,15 @@ impl App {
         let mut indices: Vec<usize> = (0..refs.len()).collect();
 
         if self.paper_filter == PaperFilter::ProblemsOnly {
+            // A URL-gated NotFound (`url_check_skipped`) is not a
+            // problem — it was demoted to skipped because the user
+            // opted out of URL Check. Keep the rest of the filter
+            // (non-verified statuses + retractions) intact.
             indices.retain(|&i| {
                 refs[i].result.as_ref().is_some_and(|r| {
-                    r.status != hallucinator_core::Status::Verified
-                        || r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted)
+                    let has_real_problem =
+                        r.status != hallucinator_core::Status::Verified && !r.url_check_skipped;
+                    has_real_problem || r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted)
                 })
             });
         }

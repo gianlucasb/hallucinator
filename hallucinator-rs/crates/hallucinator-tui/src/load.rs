@@ -56,6 +56,12 @@ struct LoadedRef {
     marked_safe: Option<bool>,
     /// Skip reason (e.g. "url_only", "short_title") — present when status is "skipped".
     skip_reason: Option<String>,
+    /// True iff the ref was rendered as "skipped" because the run had
+    /// `--url-match` disabled and the ref was a NotFound with a
+    /// non-academic URL still on hand. Present in exports from
+    /// sessions where URL matching was opt-in.
+    #[serde(default)]
+    url_check_skipped: bool,
 }
 
 #[derive(Deserialize)]
@@ -285,13 +291,19 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
             doi_info: doi_info.clone(),
             arxiv_info: arxiv_info.clone(),
             retraction_info,
+            url_check_skipped: loaded_ref.url_check_skipped,
         };
 
         let is_retracted = result
             .retraction_info
             .as_ref()
             .is_some_and(|r| r.is_retracted);
-        paper.record_status(loaded_ref.index, result.status.clone(), is_retracted);
+        paper.record_status(
+            loaded_ref.index,
+            result.status.clone(),
+            result.url_check_skipped,
+            is_retracted,
+        );
         // If this ref was persisted with an fp_reason, carry the
         // mark-safe adjustment into the paper stats so the queue table
         // and totals line reflect the prior user decision on load.
@@ -332,6 +344,17 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
         paper.stats.total = ref_count;
         paper.total_refs = ref_count;
     }
+
+    // `parse_skipped` is only the parse-time subset of skipped refs —
+    // those that were marked "skipped" AND did NOT carry the URL-gate
+    // marker. Needed by the gauge denominator; must NOT include URL-
+    // gated refs because those would have entered validation on a
+    // live run and contribute to `done`.
+    paper.parse_skipped = loaded
+        .references
+        .iter()
+        .filter(|r| r.status == "skipped" && !r.url_check_skipped)
+        .count();
 
     (paper, ref_states)
 }

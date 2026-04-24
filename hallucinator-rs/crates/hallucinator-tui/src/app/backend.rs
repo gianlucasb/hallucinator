@@ -33,6 +33,13 @@ impl App {
                         .count();
                     paper.stats.total = references.len();
                     paper.stats.skipped = skipped;
+                    // `parse_skipped` is the count of refs that never
+                    // entered validation (empty/short title + no strong
+                    // signal). The gauge uses this — NOT stats.skipped
+                    // — as the denominator adjustment, because
+                    // stats.skipped later grows with URL-gated refs
+                    // that DID enter validation.
+                    paper.parse_skipped = skipped;
                     // Allocate result slots for ALL refs (including skipped) so
                     // that remapped indices from the backend fit.
                     paper.init_results(references.len());
@@ -267,7 +274,12 @@ impl App {
                     if paper.phase == PaperPhase::Retrying {
                         paper.retry_done += 1;
                     }
-                    paper.record_status(index, result.status.clone(), is_retracted);
+                    paper.record_status(
+                        index,
+                        result.status.clone(),
+                        result.url_check_skipped,
+                        is_retracted,
+                    );
                     if fp_preexisting {
                         paper.apply_fp_delta(&result.status, is_retracted, 1);
                     }

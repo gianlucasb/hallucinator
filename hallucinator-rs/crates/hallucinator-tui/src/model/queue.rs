@@ -8,6 +8,13 @@ pub use hallucinator_reporting::PaperVerdict;
 pub struct ResultSummary {
     pub status: Status,
     pub is_retracted: bool,
+    /// Mirrors `ValidationResult.url_check_skipped`: when true, the ref
+    /// finished `Status::NotFound` but its URL would only have been
+    /// verified by URL Check / Wayback, which were disabled via the
+    /// `--url-match` gate. Paper-level stats treat these as "skipped"
+    /// rather than "not_found"; the display layer renders them the
+    /// same way.
+    pub url_check_skipped: bool,
 }
 
 /// Processing phase of a paper in the queue.
@@ -54,6 +61,15 @@ pub struct PaperState {
     pub retry_done: usize,
     /// User-assigned verdict for the entire paper.
     pub verdict: Option<PaperVerdict>,
+    /// Count of refs that the parser skipped before validation ever
+    /// ran (empty title with no strong signal). These never enter the
+    /// pool, so the gauge denominator must exclude them. Kept
+    /// separate from `stats.skipped` because `stats.skipped` is the
+    /// combined display bucket (parse-time + URL-gated) that mirrors
+    /// the CLI summary and JSON export; mixing the two would inflate
+    /// the "already accounted for" part of the progress formula and
+    /// push the gauge ratio above 1 (ratatui panics on that).
+    pub parse_skipped: usize,
 }
 
 impl PaperState {
@@ -68,6 +84,7 @@ impl PaperState {
             retry_total: 0,
             retry_done: 0,
             verdict: None,
+            parse_skipped: 0,
         }
     }
 
@@ -81,17 +98,31 @@ impl PaperState {
     /// If the slot already contains a result (retry pass), the old status
     /// counters are decremented before the new ones are incremented, preventing
     /// double-counting.
-    pub fn record_status(&mut self, index: usize, status: Status, is_retracted: bool) {
+    pub fn record_status(
+        &mut self,
+        index: usize,
+        status: Status,
+        url_check_skipped: bool,
+        is_retracted: bool,
+    ) {
         // Grow if needed (shouldn't happen after init_results, but be safe)
         if index >= self.results.len() {
             self.results.resize(index + 1, None);
         }
 
-        // Decrement old counters if replacing
+        // Decrement old counters if replacing. A URL-gated NotFound was
+        // counted under `skipped`, not `not_found`, so its decrement has
+        // to match the bucket it was incremented into.
         if let Some(old) = &self.results[index] {
             match &old.status {
                 Status::Verified => self.stats.verified = self.stats.verified.saturating_sub(1),
-                Status::NotFound => self.stats.not_found = self.stats.not_found.saturating_sub(1),
+                Status::NotFound => {
+                    if old.url_check_skipped {
+                        self.stats.skipped = self.stats.skipped.saturating_sub(1);
+                    } else {
+                        self.stats.not_found = self.stats.not_found.saturating_sub(1);
+                    }
+                }
                 Status::Mismatch(kind) => {
                     self.stats.mismatch = self.stats.mismatch.saturating_sub(1);
                     if kind.contains(MismatchKind::AUTHOR) {
@@ -110,10 +141,19 @@ impl PaperState {
             }
         }
 
-        // Increment new counters
+        // Increment new counters. A URL-gated NotFound goes into
+        // `skipped` so the paper-level problematic count stays aligned
+        // with the CLI summary and JSON export (which already exclude
+        // `url_check_skipped` refs from the hallucination bucket).
         match &status {
             Status::Verified => self.stats.verified += 1,
-            Status::NotFound => self.stats.not_found += 1,
+            Status::NotFound => {
+                if url_check_skipped {
+                    self.stats.skipped += 1;
+                } else {
+                    self.stats.not_found += 1;
+                }
+            }
             Status::Mismatch(kind) => {
                 self.stats.mismatch += 1;
                 if kind.contains(MismatchKind::AUTHOR) {
@@ -134,6 +174,7 @@ impl PaperState {
         self.results[index] = Some(ResultSummary {
             status,
             is_retracted,
+            url_check_skipped,
         });
     }
 
@@ -203,8 +244,12 @@ impl PaperState {
 
     /// Percentage of references that are problematic (0.0 - 100.0).
     ///
-    /// Uses checkable refs (total minus skipped) as the denominator so the
-    /// percentage reflects only refs that actually entered the validation pipeline.
+    /// Mirrors `hallucinator_reporting::export::problematic_pct`:
+    /// denominator is `total - stats.skipped` (the combined skipped
+    /// bucket — parse-time + URL-gated), numerator is `problems()`
+    /// which already excludes URL-gated refs. This keeps the TUI's
+    /// sort-by-problematic column aligned with the number JSON and
+    /// CLI reports emit.
     pub fn problematic_pct(&self) -> f64 {
         let checkable = self.total_refs.saturating_sub(self.stats.skipped);
         if checkable == 0 {
@@ -338,7 +383,10 @@ mod tests {
         let mut p = PaperState::new("t".into());
         p.init_results(statuses.len());
         for (i, (status, is_retracted)) in statuses.iter().enumerate() {
-            p.record_status(i, status.clone(), *is_retracted);
+            // Test helper leaves url_check_skipped=false because the
+            // existing cases exercise the pre-flag NotFound path. URL-
+            // gated cases have their own dedicated test below.
+            p.record_status(i, status.clone(), false, *is_retracted);
         }
         p.stats.total = statuses.len();
         p.total_refs = statuses.len();
@@ -405,6 +453,84 @@ mod tests {
         assert_eq!(p.stats.verified, before.verified);
         assert_eq!(p.stats.not_found, before.not_found);
         assert_eq!(p.stats.mismatch, before.mismatch);
+    }
+
+    #[test]
+    fn record_status_url_gated_not_found_goes_to_skipped_bucket() {
+        // Regression guard for the TUI `--url-match` gap (NDSS 2026
+        // f605 regression: TUI surfaced 15 not-found while the CLI
+        // showed 2, because `record_status` counted every NotFound
+        // into `stats.not_found` regardless of `url_check_skipped`).
+        // With the flag threaded through, a URL-gated NotFound must
+        // bump `stats.skipped` and leave `stats.not_found` at zero.
+        let mut p = PaperState::new("t".into());
+        p.init_results(2);
+        // Real NotFound (no URL in the ref) — the hallucination bucket.
+        p.record_status(0, Status::NotFound, false, false);
+        // URL-gated NotFound — was URL-bearing, `--url-match` was off.
+        p.record_status(1, Status::NotFound, true, false);
+        assert_eq!(p.stats.not_found, 1, "got {:?}", p.stats);
+        assert_eq!(p.stats.skipped, 1, "got {:?}", p.stats);
+    }
+
+    #[test]
+    fn gauge_ratio_invariant_holds_with_url_gated_refs() {
+        // Regression guard for the ratatui gauge panic (NDSS 2026 f605:
+        // `Ratio should be between 0 and 1 inclusively` at
+        // `ratatui/src/widgets/gauge.rs:95`). The gauge uses
+        // `completed / (total - parse_skipped)` so URL-gated refs
+        // (which DO go through the pool and show up in `completed`)
+        // must not be subtracted from the denominator. If the
+        // formula accidentally used `stats.skipped` the ratio would
+        // go above 1 as soon as any URL-gated ref landed.
+        let mut p = PaperState::new("t".into());
+        p.total_refs = 53;
+        p.parse_skipped = 1;
+        // In the live flow, backend.rs sets stats.skipped = parse_skipped
+        // at ExtractionComplete, BEFORE any record_status calls.
+        // Mirror that seeding here so the combined count ends at 12.
+        p.stats.skipped = 1;
+        p.init_results(53);
+        // Simulate validation for the 52 non-parse-skipped refs:
+        // 40 verified, 11 URL-gated skips, 1 real not_found.
+        for i in 0..40 {
+            p.record_status(i, Status::Verified, false, false);
+        }
+        for i in 40..51 {
+            p.record_status(i, Status::NotFound, /*url_gated=*/ true, false);
+        }
+        p.record_status(51, Status::NotFound, false, false);
+        // `stats.skipped` reflects combined (parse + URL-gated) = 12,
+        // but `parse_skipped` stays at 1 so `checkable` stays at 52.
+        assert_eq!(p.stats.skipped, 12);
+        assert_eq!(p.parse_skipped, 1);
+        let completed = p.completed_count();
+        assert_eq!(completed, 52);
+        let checkable = p.total_refs.saturating_sub(p.parse_skipped);
+        assert_eq!(checkable, 52);
+        assert!(
+            completed <= checkable,
+            "completed ({}) must be <= checkable ({}) so gauge ratio stays in [0,1]",
+            completed,
+            checkable
+        );
+    }
+
+    #[test]
+    fn record_status_replacement_preserves_bucket_symmetry() {
+        // The decrement path has to mirror the increment path: a URL-
+        // gated NotFound that's later replaced by a regular NotFound
+        // (e.g. after a retry with `--url-match` on) must drop the
+        // `skipped` count and add to `not_found`.
+        let mut p = PaperState::new("t".into());
+        p.init_results(1);
+        p.record_status(0, Status::NotFound, true, false);
+        assert_eq!(p.stats.skipped, 1);
+        assert_eq!(p.stats.not_found, 0);
+        // Retry: URL check now ran, still NotFound (dead link).
+        p.record_status(0, Status::NotFound, false, false);
+        assert_eq!(p.stats.skipped, 0, "got {:?}", p.stats);
+        assert_eq!(p.stats.not_found, 1, "got {:?}", p.stats);
     }
 
     #[test]

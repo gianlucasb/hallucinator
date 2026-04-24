@@ -74,9 +74,15 @@ fn render_progress(
     theme: &Theme,
 ) {
     let done = paper.completed_count();
-    let checkable = paper.total_refs.saturating_sub(paper.stats.skipped);
+    // Denominator is the count of refs that ENTERED validation — i.e.
+    // total minus parse-time skips. `stats.skipped` isn't safe here:
+    // it also contains URL-gated refs (demoted by the `--url-match`
+    // gate) which DO go through the pool and contribute to `done`.
+    // Using the combined `stats.skipped` pushed `done > checkable` and
+    // panicked the ratatui gauge.
+    let checkable = paper.total_refs.saturating_sub(paper.parse_skipped);
     let ratio = if checkable > 0 {
-        done as f64 / checkable as f64
+        (done as f64 / checkable as f64).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -151,8 +157,18 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
             let phase_style = theme.ref_phase_style(&rs.phase);
 
             let verdict = rs.verdict_label();
-            let verdict_style = if matches!(rs.phase, RefPhase::Skipped(_)) {
-                phase_style
+            // URL-gated NotFound (`--url-match` was off) renders with
+            // the same `skipped` color as parse-time skips: the user
+            // explicitly opted not to verify these, so they should
+            // visually blend with the other non-problematic skipped
+            // rows instead of glowing red alongside real hallucination
+            // candidates. Phase is still `Done` (they went through
+            // validation) — we dispatch on `result.url_check_skipped`.
+            let is_url_gated_skip = rs.result.as_ref().is_some_and(|r| r.url_check_skipped);
+            let verdict_style = if matches!(rs.phase, RefPhase::Skipped(_)) || is_url_gated_skip {
+                Style::default()
+                    .fg(theme.skipped)
+                    .add_modifier(Modifier::ITALIC)
             } else if rs.is_marked_safe() {
                 Style::default()
                     .fg(theme.verified)

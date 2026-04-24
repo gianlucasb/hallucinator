@@ -39,6 +39,19 @@ fn status_str(s: &Status) -> &'static str {
     }
 }
 
+/// Effective status string used for the per-ref JSON field, taking into
+/// account the `--url-match` gate. A NotFound ref whose only remaining
+/// signal would have come from URL Check / Wayback (marked
+/// `url_check_skipped`) is serialized as `"skipped"` so JSON consumers
+/// and the TUI load path don't treat the run as having a potential
+/// hallucination the user chose not to verify.
+fn effective_status_str(r: &ValidationResult) -> &'static str {
+    if r.url_check_skipped {
+        return "skipped";
+    }
+    status_str(&r.status)
+}
+
 fn verdict_str(v: Option<PaperVerdict>) -> &'static str {
     match v {
         Some(PaperVerdict::Safe) => "safe",
@@ -234,6 +247,11 @@ pub fn export_json(
             let orig_num = sref.ref_num;
             let effective = if sref.fp.is_some() {
                 "\"verified\""
+            } else if r.url_check_skipped {
+                // `--url-match` gate demotes URL-bearing NotFound refs
+                // to "skipped" in the effective view, matching the
+                // "status" field.
+                "\"skipped\""
             } else {
                 match &r.status {
                     Status::Verified => "\"verified\"",
@@ -252,9 +270,16 @@ pub fn export_json(
             ));
             entry.push_str(&format!(
                 "        \"status\": {},\n",
-                json_str(status_str(&r.status))
+                json_str(effective_status_str(r))
             ));
             entry.push_str(&format!("        \"effective_status\": {},\n", effective));
+            // Emit the raw gate signal too so consumers (and round-trip
+            // loaders) can tell a `--url-match`-suppressed ref apart
+            // from a real parse-time skip.
+            entry.push_str(&format!(
+                "        \"url_check_skipped\": {},\n",
+                r.url_check_skipped
+            ));
             entry.push_str(&format!("        \"fp_reason\": {},\n", fp_json));
             entry.push_str(&format!(
                 "        \"source\": {},\n",
@@ -419,10 +444,13 @@ fn export_csv(
             let r = sref.result;
             let retracted = is_retracted(r);
             let fp = sref.fp.map(|fp| fp.as_str()).unwrap_or("");
+            // CSV path mirrors JSON: `--url-match`-suppressed refs
+            // render as "skipped" so CSV consumers see the same
+            // bucketing as the CLI summary.
             let effective = if sref.fp.is_some() {
                 "verified"
             } else {
-                status_str(&r.status)
+                effective_status_str(r)
             };
             let authors = r.ref_authors.join("; ");
             let found = r.found_authors.join("; ");
@@ -1414,6 +1442,7 @@ mod tests {
             doi_info: None,
             arxiv_info: None,
             retraction_info: None,
+            url_check_skipped: false,
         }
     }
 
@@ -1470,6 +1499,71 @@ mod tests {
     }
 
     // ── P1: pure helper functions ───────────────────────────────────
+
+    #[test]
+    fn test_url_match_gate_renders_notfound_as_skipped_in_json() {
+        // Regression guard for the `--url-match` gate: a ValidationResult
+        // that finished as `Status::NotFound` but carried
+        // `url_check_skipped = true` must render as `"status": "skipped"`
+        // in the exported JSON. Without this, URL-bearing refs that the
+        // user opted not to URL-verify would still show up as potential
+        // hallucinations in downstream consumers.
+        let mut r = make_result("Some URL-bearing citation", Status::NotFound);
+        r.url_check_skipped = true;
+        let results = vec![Some(r)];
+        let stats = CheckStats {
+            total: 1,
+            skipped: 1,
+            ..Default::default()
+        };
+        let paper = make_paper("test.pdf", &stats, &results);
+        let ref_states: Vec<&[ReportRef]> = vec![&[]];
+        let json = export_json(&[paper], &ref_states, false);
+        assert!(
+            json.contains("\"status\": \"skipped\""),
+            "expected status=skipped in JSON, got:\n{}",
+            json
+        );
+        // Effective status should follow the same demotion.
+        assert!(
+            json.contains("\"effective_status\": \"skipped\""),
+            "expected effective_status=skipped in JSON, got:\n{}",
+            json
+        );
+        // The raw marker is still emitted for round-trip callers.
+        assert!(
+            json.contains("\"url_check_skipped\": true"),
+            "expected url_check_skipped=true in JSON, got:\n{}",
+            json
+        );
+    }
+
+    #[test]
+    fn test_url_match_gate_notfound_without_url_still_not_found() {
+        // A NotFound ref with `url_check_skipped = false` (the case
+        // where the ref had no non-academic URL, or the flag was on) must
+        // still serialize as `"status": "not_found"`. This protects the
+        // hallucination signal for fake arXiv / DOI identifiers: those
+        // refs carry `urls = []` after `extract_urls` filters academic
+        // domains, so they never set `url_check_skipped` in the pool
+        // even with `--url-match` off.
+        let r = make_result("Fake arXiv ID citation", Status::NotFound);
+        assert!(!r.url_check_skipped);
+        let results = vec![Some(r)];
+        let stats = CheckStats {
+            total: 1,
+            not_found: 1,
+            ..Default::default()
+        };
+        let paper = make_paper("test.pdf", &stats, &results);
+        let ref_states: Vec<&[ReportRef]> = vec![&[]];
+        let json = export_json(&[paper], &ref_states, false);
+        assert!(
+            json.contains("\"status\": \"not_found\""),
+            "expected status=not_found in JSON, got:\n{}",
+            json
+        );
+    }
 
     #[test]
     fn test_json_escape_special_chars() {
