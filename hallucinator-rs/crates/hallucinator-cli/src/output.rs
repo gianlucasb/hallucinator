@@ -115,7 +115,24 @@ pub fn print_progress(
                     }
                 }
                 Status::NotFound => {
-                    if color.enabled() {
+                    // If URL matching was disabled and the ref still
+                    // carried a (non-academic) URL, report it as
+                    // skipped — the red "NOT FOUND" would over-alarm
+                    // the user for a citation they chose not to
+                    // URL-verify.
+                    if result.url_check_skipped {
+                        if color.enabled() {
+                            writeln!(
+                                w,
+                                "[{}/{}] -> {} (URL check disabled)",
+                                idx,
+                                total,
+                                "SKIPPED".yellow()
+                            )?;
+                        } else {
+                            writeln!(w, "[{}/{}] -> SKIPPED (URL check disabled)", idx, total)?;
+                        }
+                    } else if color.enabled() {
                         writeln!(w, "[{}/{}] -> {}", idx, total, "NOT FOUND".red())?;
                     } else {
                         writeln!(w, "[{}/{}] -> NOT FOUND", idx, total)?;
@@ -156,6 +173,15 @@ pub fn print_hallucination_report(
     color: ColorMode,
 ) -> std::io::Result<()> {
     for result in results {
+        // Suppress the full "POTENTIAL HALLUCINATION" block for refs
+        // whose NotFound outcome was demoted to "skipped" by the
+        // `--url-match` gate. The ref is already accounted for in
+        // CheckStats.skipped; the verbose hallucination block would
+        // falsely flag a URL-bearing citation the user explicitly
+        // chose not to verify via URL Check.
+        if result.url_check_skipped {
+            continue;
+        }
         match &result.status {
             Status::NotFound => {
                 print_not_found_block(w, result, searched_openalex, color)?;

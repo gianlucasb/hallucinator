@@ -1308,6 +1308,7 @@ mod propagation_tests {
             doi_info: None,
             arxiv_info: None,
             retraction_info: None,
+            url_check_skipped: false,
         }
     }
 

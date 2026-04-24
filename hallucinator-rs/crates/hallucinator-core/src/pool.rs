@@ -534,12 +534,18 @@ async fn apply_fallbacks(
     client: &reqwest::Client,
     progress: &(dyn Fn(ProgressEvent) + Send + Sync),
     ref_index: usize,
+    // The trailing `bool` is `url_check_skipped`: true iff the ref finishes
+    // NotFound with a non-academic URL that would have been checked
+    // (URL Check / Wayback) if `config.url_match` were enabled. Propagated
+    // onto `ValidationResult.url_check_skipped` so reporting can render
+    // these as "skipped" instead of "not_found".
 ) -> (
     Status,
     Option<String>,
     Vec<String>,
     Option<String>,
     Vec<DbResult>,
+    bool,
 ) {
     // Expand URL separator variants (see `expand_url_variants` docs).
     // URL Check and Wayback both operate on this expanded list so that
@@ -552,7 +558,10 @@ async fn apply_fallbacks(
     };
 
     // ── URL liveness check ─────────────────────────────────────────────
-    if status == Status::NotFound && !candidate_urls.is_empty() {
+    // Gated on `config.url_match`: when off, the ref will finish with
+    // `url_check_skipped = true` (computed below) and reporting will
+    // treat it as skipped rather than as a potential hallucination.
+    if config.url_match && status == Status::NotFound && !candidate_urls.is_empty() {
         let timeout = Duration::from_secs(config.db_timeout_secs);
         let start = std::time::Instant::now();
         let url_result = UrlChecker::check_first_live(&candidate_urls, client, timeout).await;
@@ -581,6 +590,7 @@ async fn apply_fallbacks(
                 vec![],
                 Some(url),
                 db_results,
+                false,
             );
         }
         progress(ProgressEvent::DatabaseQueryComplete {
@@ -615,7 +625,10 @@ async fn apply_fallbacks(
     // since 404'd (link rot). If the Internet Archive has a valid
     // snapshot, that's strong evidence the citation was real; report the
     // archived URL so the user can read the captured content.
-    if status == Status::NotFound && !candidate_urls.is_empty() {
+    //
+    // Gated on `config.url_match` alongside URL Check — the user's
+    // "URL checking (including wayback machine)" covers both.
+    if config.url_match && status == Status::NotFound && !candidate_urls.is_empty() {
         let timeout = Duration::from_secs(config.db_timeout_secs);
         let start = std::time::Instant::now();
         let wayback_result = wayback::check_first_snapshot(&candidate_urls, client, timeout).await;
@@ -643,6 +656,7 @@ async fn apply_fallbacks(
                 vec![],
                 Some(result.snapshot_url),
                 db_results,
+                false,
             );
         }
         progress(ProgressEvent::DatabaseQueryComplete {
@@ -700,6 +714,7 @@ async fn apply_fallbacks(
                 vec![],
                 url,
                 db_results,
+                false,
             );
         }
         progress(ProgressEvent::DatabaseQueryComplete {
@@ -719,7 +734,24 @@ async fn apply_fallbacks(
         });
     }
 
-    (status, source, found_authors, paper_url, db_results)
+    // Compute the url_check_skipped marker for the return path. True
+    // iff the ref would have been URL-checked / Wayback-checked had
+    // `config.url_match` been on — that is: NotFound with non-academic
+    // URLs still on hand. Academic URLs (arxiv.org, doi.org, …) never
+    // reach `candidate_urls` because `text_utils::extract_urls` filters
+    // them at parse time, so fake-arXiv-ID / fake-DOI refs stay
+    // NotFound here regardless of the flag.
+    let url_check_skipped =
+        !config.url_match && status == Status::NotFound && !candidate_urls.is_empty();
+
+    (
+        status,
+        source,
+        found_authors,
+        paper_url,
+        db_results,
+        url_check_skipped,
+    )
 }
 
 /// Build the final result and send it on the oneshot channel.
@@ -771,20 +803,21 @@ async fn finalize_collector(collector: &RefCollector) {
     };
 
     // URL liveness + SearxNG fallbacks (shared helper)
-    let (status, source, found_authors, paper_url, remote_db_results) = apply_fallbacks(
-        status,
-        source,
-        found_authors,
-        paper_url,
-        remote_db_results,
-        &collector.reference.urls,
-        &collector.title,
-        &collector.config,
-        &collector.client,
-        collector.progress.as_ref(),
-        collector.ref_index,
-    )
-    .await;
+    let (status, source, found_authors, paper_url, remote_db_results, url_check_skipped) =
+        apply_fallbacks(
+            status,
+            source,
+            found_authors,
+            paper_url,
+            remote_db_results,
+            &collector.reference.urls,
+            &collector.title,
+            &collector.config,
+            &collector.client,
+            collector.progress.as_ref(),
+            collector.ref_index,
+        )
+        .await;
 
     // Merge local + remote results
     let mut all_db_results = collector.local_result.db_results.clone();
@@ -875,6 +908,7 @@ async fn finalize_collector(collector: &RefCollector) {
         doi_info,
         arxiv_info,
         retraction_info,
+        url_check_skipped,
     };
 
     emit_final_events(
@@ -1119,20 +1153,21 @@ async fn coordinator_loop(
             // No remote DBs enabled — URL-check + SearxNG fallbacks only
             // (on NotFound). The helper is a no-op when status is already
             // Verified or Mismatch, so we always pass through it.
-            let (status, source, found_authors, paper_url, db_results) = apply_fallbacks(
-                local_result.status.clone(),
-                local_result.source.clone(),
-                local_result.found_authors.clone(),
-                local_result.paper_url.clone(),
-                local_result.db_results.clone(),
-                &reference.urls,
-                &title,
-                &config,
-                &client,
-                progress.as_ref(),
-                ref_index,
-            )
-            .await;
+            let (status, source, found_authors, paper_url, db_results, url_check_skipped) =
+                apply_fallbacks(
+                    local_result.status.clone(),
+                    local_result.source.clone(),
+                    local_result.found_authors.clone(),
+                    local_result.paper_url.clone(),
+                    local_result.db_results.clone(),
+                    &reference.urls,
+                    &title,
+                    &config,
+                    &client,
+                    progress.as_ref(),
+                    ref_index,
+                )
+                .await;
             let result = ValidationResult {
                 title: title.clone(),
                 raw_citation: reference.raw_citation.clone(),
@@ -1146,6 +1181,7 @@ async fn coordinator_loop(
                 doi_info: None,
                 arxiv_info: None,
                 retraction_info: None,
+                url_check_skipped,
             };
             emit_final_events(progress.as_ref(), &result, ref_index, total, &title);
             let _ = result_tx.send(result);
@@ -1247,6 +1283,9 @@ async fn coordinator_loop(
                 doi_info,
                 arxiv_info: None, // TODO(#124): implement arXiv ID validation
                 retraction_info,
+                // Verified from cache → never reaches apply_fallbacks,
+                // so the URL-check-skipped marker is vacuously false.
+                url_check_skipped: false,
             };
 
             emit_final_events(progress.as_ref(), &result, ref_index, total, &title);
@@ -1286,20 +1325,21 @@ async fn coordinator_loop(
             // every DB was a cache hit — this is the path where a
             // reference that was previously URL-verified would otherwise
             // regress to NotFound on the second run.
-            let (status, source, found_authors, paper_url, all_db_results) = apply_fallbacks(
-                status,
-                source,
-                found_authors,
-                paper_url,
-                all_db_results,
-                &reference.urls,
-                &title,
-                &config,
-                &client,
-                progress.as_ref(),
-                ref_index,
-            )
-            .await;
+            let (status, source, found_authors, paper_url, all_db_results, url_check_skipped) =
+                apply_fallbacks(
+                    status,
+                    source,
+                    found_authors,
+                    paper_url,
+                    all_db_results,
+                    &reference.urls,
+                    &title,
+                    &config,
+                    &client,
+                    progress.as_ref(),
+                    ref_index,
+                )
+                .await;
 
             let result = ValidationResult {
                 title: title.clone(),
@@ -1318,6 +1358,7 @@ async fn coordinator_loop(
                 }),
                 arxiv_info: None, // TODO(#124): implement arXiv ID validation
                 retraction_info: None,
+                url_check_skipped,
             };
 
             emit_final_events(progress.as_ref(), &result, ref_index, total, &title);
@@ -1455,5 +1496,8 @@ fn build_validation_result(
         doi_info: None,
         arxiv_info: None, // TODO(#124): implement arXiv ID validation
         retraction_info,
+        // Callers that reach this helper feed pre-fallback status,
+        // so they haven't made a URL-check decision yet.
+        url_check_skipped: false,
     }
 }

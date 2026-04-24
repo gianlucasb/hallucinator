@@ -121,6 +121,16 @@ impl PyValidationResult {
             .map(PyRetractionInfo::from)
     }
 
+    /// True iff this ref finished NotFound with a non-academic URL in
+    /// hand, but URL Check / Wayback were not run because
+    /// `--url-match` was off. Python callers can use this to render
+    /// the ref as "skipped" in their own UI rather than counting it
+    /// as a potential hallucination.
+    #[getter]
+    fn url_check_skipped(&self) -> bool {
+        self.inner.url_check_skipped
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ValidationResult(title={:?}, status={:?}, source={:?})",

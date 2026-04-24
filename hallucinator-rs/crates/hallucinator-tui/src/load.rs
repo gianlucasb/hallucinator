@@ -56,6 +56,12 @@ struct LoadedRef {
     marked_safe: Option<bool>,
     /// Skip reason (e.g. "url_only", "short_title") — present when status is "skipped".
     skip_reason: Option<String>,
+    /// True iff the ref was rendered as "skipped" because the run had
+    /// `--url-match` disabled and the ref was a NotFound with a
+    /// non-academic URL still on hand. Present in exports from
+    /// sessions where URL matching was opt-in.
+    #[serde(default)]
+    url_check_skipped: bool,
 }
 
 #[derive(Deserialize)]
@@ -285,6 +291,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
             doi_info: doi_info.clone(),
             arxiv_info: arxiv_info.clone(),
             retraction_info,
+            url_check_skipped: loaded_ref.url_check_skipped,
         };
 
         let is_retracted = result

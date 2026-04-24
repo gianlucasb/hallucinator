@@ -98,6 +98,18 @@ enum Command {
         #[arg(long)]
         searxng: bool,
 
+        /// Cross-check references that fail all DB lookups against their
+        /// raw URL via URL Check (live HTTP) and the Wayback Machine.
+        /// Without this flag, a NotFound ref that still carries a
+        /// non-academic URL is reported as "skipped" rather than
+        /// "not_found" — URL liveness is the only extra signal we'd
+        /// have had, and the URL-check/Wayback layer is noisy (bot
+        /// walls, 404s, slow hosts). Refs with fake arXiv/DOI
+        /// identifiers remain NotFound because `extract_urls` filters
+        /// academic domains, leaving their url list empty.
+        #[arg(long)]
+        url_match: bool,
+
         /// Path to persistent query cache database (SQLite)
         #[arg(long)]
         cache_path: Option<PathBuf>,
@@ -244,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
             max_rate_limit_retries,
             dry_run,
             searxng,
+            url_match,
             cache_path,
             clear_cache,
             clear_not_found,
@@ -315,6 +328,7 @@ async fn main() -> anyhow::Result<()> {
                     num_workers,
                     max_rate_limit_retries,
                     searxng,
+                    url_match,
                     cache_path,
                     file_config,
                     config_source,
@@ -385,6 +399,15 @@ fn build_report_data(
         ..Default::default()
     };
     for result in results_vec.iter().flatten() {
+        // A NotFound ref with `url_check_skipped = true` was URL-bearing
+        // but `--url-match` was off, so reporting classifies it as
+        // skipped rather than not_found. Without this branch the count
+        // would double-bucket into "potential hallucination" despite
+        // the flag.
+        if result.url_check_skipped {
+            stats.skipped += 1;
+            continue;
+        }
         match &result.status {
             hallucinator_core::Status::Verified => stats.verified += 1,
             hallucinator_core::Status::NotFound => stats.not_found += 1,
@@ -431,6 +454,7 @@ async fn check(
     num_workers: Option<usize>,
     max_rate_limit_retries: Option<u32>,
     searxng: bool,
+    url_match: bool,
     cache_path: Option<PathBuf>,
     file_config: hallucinator_core::config_file::ConfigFile,
     config_source: Option<PathBuf>,
@@ -823,6 +847,7 @@ async fn check(
         cache_path,
         cache_positive_ttl_secs: positive_ttl,
         cache_negative_ttl_secs: negative_ttl,
+        url_match,
     };
 
     // Handle archives: extract each file and run check on each independently

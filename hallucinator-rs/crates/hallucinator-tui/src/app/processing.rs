@@ -206,6 +206,10 @@ impl App {
             cache_positive_ttl_secs: hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
             cache_negative_ttl_secs: hallucinator_core::DEFAULT_NEGATIVE_TTL.as_secs(),
             query_cache: Some(self.get_or_build_query_cache()),
+            // TUI doesn't expose --url-match yet; default to off so the
+            // NotFound-with-URL refs surface as "skipped" in the same
+            // way as the CLI default.
+            url_match: false,
         }
     }
 

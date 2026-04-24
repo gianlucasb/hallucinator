@@ -200,6 +200,14 @@ pub struct ValidationResult {
     pub doi_info: Option<DoiInfo>,
     pub arxiv_info: Option<ArxivInfo>,
     pub retraction_info: Option<RetractionInfo>,
+    /// True iff this ref finished as `Status::NotFound` with a non-academic
+    /// URL still in hand, but URL Check / Wayback were not run because
+    /// `Config::url_match` was disabled. Reporting layers treat this as
+    /// "skipped" (incrementing `CheckStats.skipped`, emitting
+    /// `"status": "skipped"` in JSON, suppressing the hallucination
+    /// banner) so the absence of URL matching doesn't inflate the
+    /// not-found / potential-hallucination count.
+    pub url_check_skipped: bool,
 }
 
 /// Progress events emitted during validation.
@@ -304,6 +312,19 @@ pub struct Config {
     pub cache_positive_ttl_secs: u64,
     /// TTL in seconds for negative (not-found) cache entries. Default: 24 hours.
     pub cache_negative_ttl_secs: u64,
+    /// Cross-check references that fail all DB lookups against their raw
+    /// URL via URL Check (live HTTP) and the Wayback Machine. When false
+    /// (the default), neither check runs and a NotFound ref that still
+    /// carries a non-academic URL is reported as "skipped" rather than
+    /// "not_found" — the URL's liveness is the only signal we'd have had,
+    /// and without it we can't justify flagging the ref as a potential
+    /// hallucination. Refs whose only URL is an academic domain
+    /// (arxiv.org, doi.org, …) are unaffected because
+    /// `text_utils::extract_urls` filters those out at parse time, so
+    /// they carry `urls = []` and stay `NotFound` regardless of this
+    /// flag — preserving the fake-arXiv-ID / fake-DOI hallucination
+    /// signal.
+    pub url_match: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -354,6 +375,7 @@ impl std::fmt::Debug for Config {
             .field("cache_path", &self.cache_path)
             .field("cache_positive_ttl_secs", &self.cache_positive_ttl_secs)
             .field("cache_negative_ttl_secs", &self.cache_negative_ttl_secs)
+            .field("url_match", &self.url_match)
             .finish()
     }
 }
@@ -386,6 +408,7 @@ impl Default for Config {
             cache_path: None,
             cache_positive_ttl_secs: DEFAULT_POSITIVE_TTL.as_secs(),
             cache_negative_ttl_secs: DEFAULT_NEGATIVE_TTL.as_secs(),
+            url_match: false,
         }
     }
 }
