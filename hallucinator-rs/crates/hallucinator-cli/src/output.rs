@@ -519,10 +519,16 @@ pub fn print_summary(
         .iter()
         .filter(|r| r.status == Status::Verified)
         .count();
+    // A NotFound ref with `url_check_skipped` is bucketed under
+    // "skipped (URL check disabled)" below and MUST NOT also count
+    // toward the hallucination total — otherwise the summary would
+    // double-count URL-bearing misses against the user who explicitly
+    // chose not to URL-verify them.
     let not_found = results
         .iter()
-        .filter(|r| r.status == Status::NotFound)
+        .filter(|r| r.status == Status::NotFound && !r.url_check_skipped)
         .count();
+    let skipped_url_match_gate = results.iter().filter(|r| r.url_check_skipped).count();
     let mismatched = results.iter().filter(|r| r.status.is_mismatch()).count();
     // Count specific mismatch types
     let author_mismatches = results
@@ -574,6 +580,17 @@ pub fn print_summary(
             "Skipped: {} (URLs: {}, short titles: {})",
             total_skipped, skip_stats.url_only, skip_stats.short_title
         );
+        if color.enabled() {
+            writeln!(w, "  {}", msg.dimmed())?;
+        } else {
+            writeln!(w, "  {}", msg)?;
+        }
+    }
+    // Separate bucket so the user can tell a URL-gate skip from a
+    // parse-time skip. Shown only when `--url-match` was off and at
+    // least one ref got demoted — otherwise the line is noise.
+    if skipped_url_match_gate > 0 {
+        let msg = format!("Skipped (URL check disabled): {}", skipped_url_match_gate);
         if color.enabled() {
             writeln!(w, "  {}", msg.dimmed())?;
         } else {
