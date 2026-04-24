@@ -356,7 +356,7 @@ pub(super) fn format_bytes(bytes: u64) -> String {
 
 pub(super) fn verdict_sort_key(rs: &RefState) -> u8 {
     if matches!(rs.phase, RefPhase::Skipped(_)) {
-        return 5; // sort skipped refs last
+        return 6; // parse-time skipped: sort last
     }
     match &rs.result {
         Some(r) => {
@@ -364,13 +364,21 @@ pub(super) fn verdict_sort_key(rs: &RefState) -> u8 {
                 0
             } else {
                 match &r.status {
+                    // URL-gated NotFound (`--url-match` was off) slots
+                    // between verified refs and parse-time-skipped
+                    // refs so the paper's verdict sort reads
+                    // "problems → verified → URL-skipped → skipped".
+                    // Same visual bucket as parse-time skips, but kept
+                    // as a distinct sort tier so the reader can still
+                    // tell them apart.
+                    hallucinator_core::Status::NotFound if r.url_check_skipped => 4,
                     hallucinator_core::Status::NotFound => 1,
                     hallucinator_core::Status::Mismatch(_) => 2,
                     hallucinator_core::Status::Verified => 3,
                 }
             }
         }
-        None => 4,
+        None => 5,
     }
 }
 
@@ -486,5 +494,77 @@ pub(super) fn get_rss_bytes() -> Option<usize> {
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::paper::FpReason;
+    use hallucinator_core::{MismatchKind, Status, ValidationResult};
+
+    fn result_with(status: Status, url_check_skipped: bool) -> ValidationResult {
+        ValidationResult {
+            title: String::new(),
+            raw_citation: String::new(),
+            ref_authors: Vec::new(),
+            status,
+            source: None,
+            found_authors: Vec::new(),
+            paper_url: None,
+            failed_dbs: Vec::new(),
+            db_results: Vec::new(),
+            doi_info: None,
+            arxiv_info: None,
+            retraction_info: None,
+            url_check_skipped,
+        }
+    }
+
+    fn rs_with(phase: RefPhase, result: Option<ValidationResult>) -> RefState {
+        RefState {
+            index: 0,
+            title: String::new(),
+            phase,
+            result,
+            fp_reason: Option::<FpReason>::None,
+            raw_citation: String::new(),
+            authors: Vec::new(),
+            doi: None,
+            arxiv_id: None,
+            urls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn verdict_sort_places_url_gated_between_verified_and_skipped() {
+        // Verdict sort ordering the user asked for:
+        //   problems (retracted → not_found → mismatch) → verified
+        //   → URL-gated skip → parse-time skip.
+        // Concrete sort keys must preserve that partial order; the
+        // absolute values don't matter as long as the bucketing holds.
+        let retracted = {
+            let mut r = result_with(Status::Verified, false);
+            r.retraction_info = Some(hallucinator_core::RetractionInfo {
+                is_retracted: true,
+                retraction_doi: None,
+                retraction_source: None,
+            });
+            rs_with(RefPhase::Done, Some(r))
+        };
+        let not_found = rs_with(RefPhase::Done, Some(result_with(Status::NotFound, false)));
+        let mismatch = rs_with(
+            RefPhase::Done,
+            Some(result_with(Status::Mismatch(MismatchKind::AUTHOR), false)),
+        );
+        let verified = rs_with(RefPhase::Done, Some(result_with(Status::Verified, false)));
+        let url_gated = rs_with(RefPhase::Done, Some(result_with(Status::NotFound, true)));
+        let parse_skip = rs_with(RefPhase::Skipped("short_title".into()), None);
+
+        assert!(verdict_sort_key(&retracted) < verdict_sort_key(&not_found));
+        assert!(verdict_sort_key(&not_found) < verdict_sort_key(&mismatch));
+        assert!(verdict_sort_key(&mismatch) < verdict_sort_key(&verified));
+        assert!(verdict_sort_key(&verified) < verdict_sort_key(&url_gated));
+        assert!(verdict_sort_key(&url_gated) < verdict_sort_key(&parse_skip));
     }
 }

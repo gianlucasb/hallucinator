@@ -300,6 +300,39 @@ mod tests {
     }
 
     #[test]
+    fn url_gated_notfound_is_not_an_unresolved_problem() {
+        // `--url-match` demotes URL-bearing NotFound refs: the user
+        // opted not to URL-verify them, so they must drop out of the
+        // paper-level problematic count.
+        let mut result = empty_val_result(Status::NotFound);
+        result.url_check_skipped = true;
+        let rs = ref_state(RefPhase::Done, Some(result), None);
+        assert!(!rs.is_unresolved_problem());
+    }
+
+    #[test]
+    fn url_gated_notfound_verdict_label_reads_as_skipped() {
+        // Paper table row's verdict cell: URL-gated refs must read as
+        // skipped (same visual bucket as parse-time skips), not as
+        // the red "✗ Not Found" glyph that flags a real
+        // hallucination candidate.
+        let mut result = empty_val_result(Status::NotFound);
+        result.url_check_skipped = true;
+        let rs = ref_state(RefPhase::Done, Some(result), None);
+        let label = rs.verdict_label();
+        assert!(
+            label.contains("skipped"),
+            "expected 'skipped' in verdict label, got {:?}",
+            label
+        );
+        assert!(
+            !label.contains("Not Found"),
+            "URL-gated ref must not render as Not Found: {:?}",
+            label
+        );
+    }
+
+    #[test]
     fn unresolved_problem_retracted_counts_even_if_verified() {
         let mut result = empty_val_result(Status::Verified);
         result.retraction_info = Some(RetractionInfo {

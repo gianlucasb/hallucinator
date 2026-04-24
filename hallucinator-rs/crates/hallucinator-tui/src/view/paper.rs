@@ -157,8 +157,18 @@ fn render_ref_table(f: &mut Frame, area: Rect, app: &App, paper_index: usize) {
             let phase_style = theme.ref_phase_style(&rs.phase);
 
             let verdict = rs.verdict_label();
-            let verdict_style = if matches!(rs.phase, RefPhase::Skipped(_)) {
-                phase_style
+            // URL-gated NotFound (`--url-match` was off) renders with
+            // the same `skipped` color as parse-time skips: the user
+            // explicitly opted not to verify these, so they should
+            // visually blend with the other non-problematic skipped
+            // rows instead of glowing red alongside real hallucination
+            // candidates. Phase is still `Done` (they went through
+            // validation) — we dispatch on `result.url_check_skipped`.
+            let is_url_gated_skip = rs.result.as_ref().is_some_and(|r| r.url_check_skipped);
+            let verdict_style = if matches!(rs.phase, RefPhase::Skipped(_)) || is_url_gated_skip {
+                Style::default()
+                    .fg(theme.skipped)
+                    .add_modifier(Modifier::ITALIC)
             } else if rs.is_marked_safe() {
                 Style::default()
                     .fg(theme.verified)
