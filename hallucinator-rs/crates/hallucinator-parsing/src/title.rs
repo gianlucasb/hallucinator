@@ -116,6 +116,17 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
+    // === Format 3c': Unquoted web citation: "[Author,] Title, Month Year, URL" ===
+    // Run BEFORE try_acm_year because the f93 shape `ORG. Title., May.
+    // 2025. [Online]. Available: URL` looks like ACM (`.`-separated
+    // year-period-title) and try_acm_year latches onto `[Online].
+    // Available: ...` as the title before we get here. The web-citation
+    // anchor (Month + Year + URL, in that order) is a strong enough
+    // signal to take priority.
+    if let Some(result) = try_web_citation(ref_text) {
+        return result;
+    }
+
     // === Format 3c: ACM - "Authors. Year. Title. In Venue" ===
     if let Some(result) = try_acm_year(ref_text) {
         return result;
@@ -163,11 +174,6 @@ pub(crate) fn extract_title_from_reference_with_config(
 
     // === Format 10: Thesis/Technical report: "Author, Title. PhD thesis, ..." ===
     if let Some(result) = try_thesis_citation(ref_text) {
-        return result;
-    }
-
-    // === Format 11: Unquoted web citation: "[Author,] Title, Month Year, URL" ===
-    if let Some(result) = try_web_citation(ref_text) {
         return result;
     }
 
@@ -1980,42 +1986,75 @@ fn try_thesis_citation(ref_text: &str) -> Option<(String, bool)> {
 ///
 /// Captures a citation shape common in NDSS/USENIX-style bibliographies
 /// when the entry is a web resource rather than a journal/conference
-/// paper. The title isn't quoted; the delimiters are `,\s+Month\s+Year`
-/// and `,\s+https?://`. Two concrete NDSS 2026 f1059 examples:
+/// paper. The title isn't quoted; the delimiters around the title are
+/// a `Month Year` metadata segment AND a URL, in that order.
 ///
-///   * ref 2: `Keystroke Acoustic Recognition System, April 2025,
-///     https://github.com/...` — no author prefix.
-///   * ref 28: `B. Honan, Visual Data Security White Paper, July 2012,
-///     https://multim[\n]edia.3m.com/...` — author prefix.
+/// Four concrete NDSS 2026 shapes:
+///
+///   * f1059 ref 2:  `Keystroke Acoustic Recognition System, April
+///                    2025, https://...` — no author, comma separators.
+///   * f1059 ref 28: `B. Honan, Visual Data Security White Paper, July
+///                    2012, https://...` — author prefix.
+///   * f93 ref 7:    `Bluealloy. Rust implementation of the ethereum
+///                    virtual machine., May. 2025. [Online]. Available:
+///                    https://...` — period separators, `[Online]` marker.
+///   * f93 ref 21:   `Ethereum. Proposer builder separation (pbs)
+///                    ethereum, May. 2024. [Online]. Available: https://`
+///                    — mixed separators.
 ///
 /// All quoted-title and structured-format extractors fail on these
 /// shapes because the title isn't delimited by quotes and there's no
 /// venue marker. The fallback-sentence extractor then latched onto
-/// the first segment split on `.` — for ref 2 that's the full title
-/// (accidentally OK) but for refs where the title contains a `.` it
-/// truncates; and for refs where the authors segment looks title-like
-/// it returns the wrong slice.
+/// either `[Online]` (f93) or the author fragment (f1059), leaving
+/// the real title empty.
 ///
 /// The extractor is deliberately narrow: it requires a month-year
-/// metadata segment AND a URL, in that order, after the title. Either
+/// metadata segment AND a URL in that order after the title. Either
 /// alone is too weak a signal. The title itself is everything between
-/// the optional author prefix and the first `, Month Year,` boundary.
+/// the optional author prefix and the first `[.,] Month Year` boundary.
 fn try_web_citation(ref_text: &str) -> Option<(String, bool)> {
-    // Shape: `<maybe-author-prefix>TITLE, MONTH YEAR, https?://...`
+    // Shape, with the following delimiters tolerated:
     //
-    // `MONTH` is one of the three canonical spellings PDFs use:
-    //   * full  (January, February, ...)
-    //   * short (Jan., Feb., ...) — period included, required
-    //   * short (Jan, Feb, ...)   — no period
+    //   prefix  — start, `,`+space, or `.`+space (the latter absorbs
+    //             `ORG.` single-token author prefixes from f93-style
+    //             refs where the author is an organization rendered
+    //             as a period-terminated token).
+    //   title   — `[A-Z][^,.]{5,200}?` — starts uppercase, no commas
+    //             or periods inside (they'd be delimiters; the lazy
+    //             quantifier stops as soon as the tail matches).
+    //   tail    — `[.,]+\s+<Month>\.?\s+<Year>[.,]?\s+<annotations>?
+    //             https?://` — period or comma plus whitespace, month
+    //             name (optional trailing `.`), year, optional `[.,]`
+    //             separator, optional `[Online]. Available:`-style
+    //             annotation, URL.
     //
-    // The capture group 1 is the title. The pattern anchors on the
-    // month and year to bound where the title ends, and on the URL
-    // prefix to confirm this is a web citation (not a journal paper
-    // with a coincidental month-year in the title body).
+    // `[^,.]` in the title means titles that contain a real period
+    // (abbreviations, acronyms with dots) can't be fully captured —
+    // but those are much rarer than the reward case, and the lazy
+    // quantifier is necessary to stop the match from running past a
+    // later `[.,] Month` boundary into neighbouring text.
+    // Note on the month alternation: the `\.?` sits OUTSIDE the
+    // alternation group so every month variant transparently accepts
+    // an optional trailing `.`. If the period were folded into each
+    // short-name arm (`Jan\.?|Feb\.?|...`) and `May` was listed bare,
+    // `May` would match the input `May.` greedily without consuming
+    // the dot — and the next `\s+` token would then fail against the
+    // dot. Listing full names *before* short names lets the engine
+    // pick `February` over `Feb` when both are possible.
     static WEB_CITATION: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)(?:^|,\s*)([A-Z][^,]{5,200}?),\s+(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan\.?|Feb\.?|Mar\.?|Apr\.?|May|Jun\.?|Jul\.?|Aug\.?|Sep\.?|Sept\.?|Oct\.?|Nov\.?|Dec\.?)\s+\d{4},\s+https?://"
-        ).unwrap()
+            r"(?ix)
+              (?:^|,\s*|\.\s+)
+              ([A-Z][^,.]{5,200}?)
+              [.,]+\s+
+              (?: January|February|March|April|May|June|July|August
+                | September|October|November|December
+                | Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec)
+              \.?\s+\d{4}[.,]?\s+
+              (?:\[(?:Online|Available|Accessed)\]\.?\s*(?:Available:\s*)?)*
+              https?://",
+        )
+        .unwrap()
     });
 
     let caps = WEB_CITATION.captures(ref_text)?;
@@ -2033,6 +2072,26 @@ fn try_web_citation(ref_text: &str) -> Option<(String, bool)> {
     static TITLE_LOOKS_LIKE_IDENTIFIER: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^(?:doi:|https?://|arXiv:)").unwrap());
     if TITLE_LOOKS_LIKE_IDENTIFIER.is_match(title) {
+        return None;
+    }
+
+    // Reject if the captured title starts with a venue-marker keyword.
+    // Shape we're avoiding — `Author. Real Title. In Venue, Month Year.
+    // URL` — has two candidate matches: (a) `Real Title` (at the `.` +
+    // space after "Author.") which dies on the month-year anchor
+    // because the month is further away, and (b) `In Venue` (at `.` +
+    // space after "Title.") which matches. Without this guard the
+    // extractor picks (b). Real regression surfaced by the existing
+    // edge-case test 13 (`Garfinkel and Leclerc. Randomness concerns
+    // ... . In WPES '20, September 2020. https://doi.org/...` would
+    // capture "In WPES '20").
+    static TITLE_LOOKS_LIKE_VENUE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)^(?:In|Proc(?:eedings|\.)?|Workshop|Conference|Symposium|IEEE|ACM|USENIX|AAAI|NDSS|CCS|ICML|NeurIPS|ICLR|CVPR|EMNLP|NAACL|Journal\s+of|Transactions|Advances\s+in|Communications\s+of)\b",
+        )
+        .unwrap()
+    });
+    if TITLE_LOOKS_LIKE_VENUE.is_match(title) {
         return None;
     }
 
@@ -4002,6 +4061,71 @@ mod tests {
         assert!(
             title.contains("Some Reference Document Title"),
             "got {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_org_prefix_period_separators() {
+        // NDSS 2026 f93 pattern: `ORG. Title., Month. Year. [Online].
+        // Available: URL`. 27 refs in a single paper use this shape
+        // — period separator after the org prefix, period-comma after
+        // the title, period after month and year, `[Online]` marker
+        // before the URL.
+        let ref_text = "Bluealloy. Rust implementation of the ethereum virtual machine., May. 2025. [Online]. Available: https://github.com/bluealloy/revm";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "Rust implementation of the ethereum virtual machine");
+    }
+
+    #[test]
+    fn test_web_citation_org_prefix_comma_separators() {
+        // NDSS 2026 f93 ref 21 pattern: `ORG. Title, Month. Year.
+        // [Online]. Available: URL` — period after org but comma (not
+        // period-comma) after title.
+        let ref_text = "Ethereum. Proposer builder separation (pbs) ethereum, May. 2024. [Online]. Available: https://ethereum.org/en/roadmap/pbs/";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Proposer builder separation"),
+            "got {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_mixed_punctuation_with_online_marker() {
+        // NDSS 2026 f93 ref 28: `ORG. Flashbot apis to simulate mev
+        // bundles, May. 2025. [Online]. Available: https://...` —
+        // covers the `[Online]` + `Available:` annotation between the
+        // date and the URL.
+        let ref_text = "Flashbot. Flashbot apis to simulate mev bundles, May. 2025. [Online]. Available: https://docs.flashbots.net/flashbots-auction/advanced/rpc-endpoint";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Flashbot apis to simulate mev bundles"),
+            "got {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_rejects_venue_marker_as_title() {
+        // Regression from the broadened try_web_citation: the shape
+        // `Author. Real Title. In Venue, Month Year. URL` creates two
+        // candidate matches. The author-period-title-period anchor
+        // leads to "Real Title" (killed further downstream because
+        // the month-year is out of reach). The title-period-In-Venue
+        // anchor leads to "In Venue" (WPES '20, etc.), which the
+        // venue-keyword guard rejects so try_venue_marker/try_acm_year
+        // can handle the ref correctly.
+        let ref_text = "Simson L. Garfinkel and Philip Leclerc. Randomness concerns when deploying differential privacy. In WPES '20, September 2020. https://doi.org/10.1145/3411497.3420211";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Randomness concerns"),
+            "expected real title, got {:?}",
+            title
+        );
+        assert!(
+            !title.starts_with("In "),
+            "should not capture venue marker as title: {:?}",
             title
         );
     }

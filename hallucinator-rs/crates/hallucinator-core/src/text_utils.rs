@@ -179,9 +179,33 @@ fn fix_url_spacing(url_region: &str) -> String {
     static SPACED_DOT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*\.\s*([a-z0-9])").unwrap());
     result = SPACED_DOT.replace_all(&result, "$1.$2").to_string();
 
+    // Strip whitespace immediately before a `/` inside a URL region.
+    // PDFs frequently render every path separator as `word / word`;
+    // after this rule fires, every `/` is glued to the preceding
+    // token and the only remaining slash-adjacent whitespace is on
+    // the right side, handled by SLASH_SPACE below. Real example —
+    // NDSS 2026 f106 ref 23:
+    //
+    //   `https://www.dennemeyer.com/ fileadmin / a / media - library
+    //    / reports / cybersecurity in mobility 2024 - 05.pdf`
+    //
+    // A previous attempt relied on `SPACED_SLASH` (`(\w)\s*/\s*(\w)`),
+    // but `replace_all` consumed the trailing `\w` of each match, so
+    // alternating boundaries like `.../a /` stayed unfixed on every
+    // pass (looping didn't help either — each iteration consumed the
+    // same boundary and missed the same neighbor). Splitting the
+    // job into two non-overlapping rules — "strip before" (here) and
+    // "strip after" (SLASH_SPACE) — sidesteps the consumption issue
+    // because neither rule needs the `\w` of the other side.
+    static SPACE_BEFORE_SLASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s+/").unwrap());
+    result = SPACE_BEFORE_SLASH.replace_all(&result, "$1/").to_string();
+
     // Remove spaces around slashes when between URL parts: " / " or "/ " → "/"
     // Only fix when the slash is between alphanumeric/URL-like characters
     // This avoids joining "url/ (visited" → "url/(visited"
+    // Kept as a belt-and-braces follow-up to SPACE_BEFORE_SLASH: the
+    // combination of SPACE_BEFORE_SLASH → SPACED_SLASH → SLASH_SPACE
+    // now normalises every shape we've seen in PDF extraction.
     static SPACED_SLASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*/\s*(\w)").unwrap());
     result = SPACED_SLASH.replace_all(&result, "$1/$2").to_string();
 
@@ -282,8 +306,17 @@ fn fix_url_spacing(url_region: &str) -> String {
     // The preceding whitespace still has to be the only separator between
     // tokens (not another `-`), so existing hyphenated tails that already
     // parse correctly stay untouched.
+    // Trailer accepts `.` too, not just `,;)`. PDF bibliographies often
+    // terminate a URL with a narrative period — `...cybersecurity in
+    // mobility 2024-05.pdf.` (NDSS 2026 f106 ref 23). Without `.` in
+    // the trailer, the rule couldn't fire on those shapes because the
+    // filename's own extension would anchor `.pdf` and the following
+    // narrative `.` wouldn't satisfy the trailer. `.` is safe here
+    // because filenames WITHOUT internal spaces can never reach this
+    // rule — the `(?:\s+[A-Za-z0-9\-]+)+` segment requires at least
+    // one internal space, so `/file.pdf.Next-sentence` won't match.
     static FILENAME_LOST_UNDERSCORES: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[,;)]))")
+        Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[.,;)]))")
             .unwrap()
     });
     result = FILENAME_LOST_UNDERSCORES
@@ -855,6 +888,48 @@ mod tests {
         assert!(
             urls[0].starts_with("https://multimedia.3m.com/"),
             "expected rejoined hostname, got {:?}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_multi_slash_path_fully_collapsed() {
+        // NDSS 2026 f106 ref 23: raw PDF renders every path separator
+        // as `word / word`. A single `SPACED_SLASH.replace_all` pass
+        // consumes the trailing word of each match, so alternating
+        // boundaries (`/a /`) stay unfixed and URL_RE truncates at
+        // the first unfixed space. The fixed-point loop must keep
+        // iterating until every slash boundary is tight.
+        let text = "Source, Title, 2024, https://www.dennemeyer.com/ fileadmin / a / media - library / reports / cybersecurity in mobility 2024 - 05.pdf.";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 1, "got {:?}", urls);
+        assert!(
+            urls[0].contains("/fileadmin/a/media-library/reports/"),
+            "path should be fully joined, got {:?}",
+            urls[0]
+        );
+        // Filename-space recovery with trailing narrative period also
+        // kicks in: the internal-space filename becomes underscored.
+        assert!(
+            urls[0].ends_with("cybersecurity_in_mobility_2024-05.pdf"),
+            "filename underscores should be restored, got {:?}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_filename_trailing_narrative_period() {
+        // A multi-word filename URL that ends with a narrative period
+        // (as in `.pdf.` at end of a sentence) must still trigger the
+        // filename-underscore-recovery rule. Previously the trailer
+        // only accepted `,`, `;`, `)`, or end-of-string, so a trailing
+        // `.` blocked the match.
+        let text = "See https://example.org/path/my report final.pdf. End of citation.";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 1, "got {:?}", urls);
+        assert!(
+            urls[0].ends_with("my_report_final.pdf"),
+            "got {:?}",
             urls[0]
         );
     }
