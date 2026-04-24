@@ -73,9 +73,16 @@ pub fn extract_urls(text: &str) -> Vec<String> {
             url = url.replace('\\', "");
         }
 
-        // Clean trailing punctuation (common in citations)
+        // Clean trailing punctuation (common in citations). Includes the
+        // typographic closing/opening quotes (U+201C–201D, U+2018–2019)
+        // so that web citations like `...microsoft/SEAL.\u{201D}` don't
+        // URL-encode the quote into the path and 404 the URL Check
+        // (NDSS 2026 f182 refs 56–61).
         url = url
-            .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"', '\''])
+            .trim_end_matches([
+                '.', ',', ';', ':', ')', ']', '}', '"', '\'', '\u{201C}', '\u{201D}', '\u{2018}',
+                '\u{2019}',
+            ])
             .to_string();
 
         // Skip academic URLs (handled by dedicated backends)
@@ -134,6 +141,23 @@ fn fix_spaced_url_punctuation(text: &str) -> String {
 fn fix_url_spacing(url_region: &str) -> String {
     let mut result = url_region.to_string();
 
+    // Rejoin host-internal whitespace: `https://multim edia.3m.com` →
+    // `https://multimedia.3m.com`. Real hostnames never contain a
+    // space, so when PDF extraction splits a hostname mid-token
+    // (NDSS 2026 f1059 ref 28 raw is `https://multim\nedia.3m.com/...`
+    // because the domain straddled a line break), the whitespace is
+    // always an artifact. Fires only when the left fragment is a
+    // single dotless word-token and the right fragment looks like a
+    // normal domain ending (`word.tld`). If the left already contained
+    // a dot, the regex engine stops `[\w\-]+` at the dot and `\s+`
+    // fails — so complete-domain + narrative shapes like
+    // `https://example.com See more at foo.bar` don't match. Must run
+    // before `SPACED_DOT`, which would otherwise consume the `.tld`
+    // dot and lose the anchor we rely on.
+    static HOST_SPACE_FIX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)(https?://[\w\-]+)\s+([\w\-]+\.[\w\-.]+)").unwrap());
+    result = HOST_SPACE_FIX.replace_all(&result, "$1$2").to_string();
+
     // Remove spaces around dots inside a URL region: " . " → "."
     //
     // Only fires when the character after the dot is lowercase (or a
@@ -155,9 +179,33 @@ fn fix_url_spacing(url_region: &str) -> String {
     static SPACED_DOT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*\.\s*([a-z0-9])").unwrap());
     result = SPACED_DOT.replace_all(&result, "$1.$2").to_string();
 
+    // Strip whitespace immediately before a `/` inside a URL region.
+    // PDFs frequently render every path separator as `word / word`;
+    // after this rule fires, every `/` is glued to the preceding
+    // token and the only remaining slash-adjacent whitespace is on
+    // the right side, handled by SLASH_SPACE below. Real example —
+    // NDSS 2026 f106 ref 23:
+    //
+    //   `https://www.dennemeyer.com/ fileadmin / a / media - library
+    //    / reports / cybersecurity in mobility 2024 - 05.pdf`
+    //
+    // A previous attempt relied on `SPACED_SLASH` (`(\w)\s*/\s*(\w)`),
+    // but `replace_all` consumed the trailing `\w` of each match, so
+    // alternating boundaries like `.../a /` stayed unfixed on every
+    // pass (looping didn't help either — each iteration consumed the
+    // same boundary and missed the same neighbor). Splitting the
+    // job into two non-overlapping rules — "strip before" (here) and
+    // "strip after" (SLASH_SPACE) — sidesteps the consumption issue
+    // because neither rule needs the `\w` of the other side.
+    static SPACE_BEFORE_SLASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s+/").unwrap());
+    result = SPACE_BEFORE_SLASH.replace_all(&result, "$1/").to_string();
+
     // Remove spaces around slashes when between URL parts: " / " or "/ " → "/"
     // Only fix when the slash is between alphanumeric/URL-like characters
     // This avoids joining "url/ (visited" → "url/(visited"
+    // Kept as a belt-and-braces follow-up to SPACE_BEFORE_SLASH: the
+    // combination of SPACE_BEFORE_SLASH → SPACED_SLASH → SLASH_SPACE
+    // now normalises every shape we've seen in PDF extraction.
     static SPACED_SLASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w)\s*/\s*(\w)").unwrap());
     result = SPACED_SLASH.replace_all(&result, "$1/$2").to_string();
 
@@ -258,8 +306,17 @@ fn fix_url_spacing(url_region: &str) -> String {
     // The preceding whitespace still has to be the only separator between
     // tokens (not another `-`), so existing hyphenated tails that already
     // parse correctly stay untouched.
+    // Trailer accepts `.` too, not just `,;)`. PDF bibliographies often
+    // terminate a URL with a narrative period — `...cybersecurity in
+    // mobility 2024-05.pdf.` (NDSS 2026 f106 ref 23). Without `.` in
+    // the trailer, the rule couldn't fire on those shapes because the
+    // filename's own extension would anchor `.pdf` and the following
+    // narrative `.` wouldn't satisfy the trailer. `.` is safe here
+    // because filenames WITHOUT internal spaces can never reach this
+    // rule — the `(?:\s+[A-Za-z0-9\-]+)+` segment requires at least
+    // one internal space, so `/file.pdf.Next-sentence` won't match.
     static FILENAME_LOST_UNDERSCORES: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[,;)]))")
+        Regex::new(r"/([A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+)+\.[A-Za-z0-9]{1,6})(\s*(?:$|[.,;)]))")
             .unwrap()
     });
     result = FILENAME_LOST_UNDERSCORES
@@ -798,6 +855,106 @@ mod tests {
     fn test_extract_urls_none() {
         let urls = extract_urls("No URLs in this text.");
         assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_strips_trailing_curly_quotes() {
+        // NDSS 2026 f182 refs 56–61 pattern: the reference ends with a
+        // URL followed by a closing curly quote (`.\u{201D}`). Without
+        // stripping, that byte sequence URL-encodes into the path
+        // (`...%E2%80%9D`) and URL Check 404s the legitimate repo.
+        let text = "M. Smith, \u{201C}Title\u{201D}, https://github.com/microsoft/SEAL.\u{201D}";
+        let urls = extract_urls(text);
+        assert_eq!(urls, vec!["https://github.com/microsoft/SEAL".to_string()]);
+
+        // Leading stray open-quote (U+201C) at the head would be part
+        // of narrative, not a URL, so only the trailing case matters —
+        // but the strip list must cover both marks plus the single
+        // curly-quote pair for robustness.
+        let text2 = "See https://example.org/page\u{2019}";
+        let urls2 = extract_urls(text2);
+        assert_eq!(urls2, vec!["https://example.org/page".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_urls_rejoins_host_internal_space() {
+        // NDSS 2026 f1059 ref 28: PDF extraction split the hostname
+        // mid-token across a line break (`multim\nedia.3m.com`). The
+        // host-space fix should rejoin before URL_RE truncates at the
+        // whitespace.
+        let text = "B. Honan, Visual Data Security White Paper, July 2012, https://multim edia.3m.com/mws/media/950026O/secure-white-paper.pdf";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 1, "got {:?}", urls);
+        assert!(
+            urls[0].starts_with("https://multimedia.3m.com/"),
+            "expected rejoined hostname, got {:?}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_multi_slash_path_fully_collapsed() {
+        // NDSS 2026 f106 ref 23: raw PDF renders every path separator
+        // as `word / word`. A single `SPACED_SLASH.replace_all` pass
+        // consumes the trailing word of each match, so alternating
+        // boundaries (`/a /`) stay unfixed and URL_RE truncates at
+        // the first unfixed space. The fixed-point loop must keep
+        // iterating until every slash boundary is tight.
+        let text = "Source, Title, 2024, https://www.dennemeyer.com/ fileadmin / a / media - library / reports / cybersecurity in mobility 2024 - 05.pdf.";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 1, "got {:?}", urls);
+        assert!(
+            urls[0].contains("/fileadmin/a/media-library/reports/"),
+            "path should be fully joined, got {:?}",
+            urls[0]
+        );
+        // Filename-space recovery with trailing narrative period also
+        // kicks in: the internal-space filename becomes underscored.
+        assert!(
+            urls[0].ends_with("cybersecurity_in_mobility_2024-05.pdf"),
+            "filename underscores should be restored, got {:?}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_filename_trailing_narrative_period() {
+        // A multi-word filename URL that ends with a narrative period
+        // (as in `.pdf.` at end of a sentence) must still trigger the
+        // filename-underscore-recovery rule. Previously the trailer
+        // only accepted `,`, `;`, `)`, or end-of-string, so a trailing
+        // `.` blocked the match.
+        let text = "See https://example.org/path/my report final.pdf. End of citation.";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 1, "got {:?}", urls);
+        assert!(
+            urls[0].ends_with("my_report_final.pdf"),
+            "got {:?}",
+            urls[0]
+        );
+    }
+
+    #[test]
+    fn test_extract_urls_host_space_fix_leaves_narrative_alone() {
+        // A complete hostname (`example.com`) followed by narrative
+        // must NOT be joined into the next word — `[\w\-]+` stops at
+        // the `.`, `\s+` then fails because the next char is `.`, not
+        // whitespace, so the regex can't anchor. Protects against
+        // collapsing `example.com See more at github.com` into one
+        // mangled URL.
+        let text = "See https://example.com Read more at https://github.com/user";
+        let urls = extract_urls(text);
+        // Both URLs extracted independently, neither mangled.
+        assert!(
+            urls.contains(&"https://example.com".to_string()),
+            "got {:?}",
+            urls
+        );
+        assert!(
+            urls.contains(&"https://github.com/user".to_string()),
+            "got {:?}",
+            urls
+        );
     }
 
     #[test]

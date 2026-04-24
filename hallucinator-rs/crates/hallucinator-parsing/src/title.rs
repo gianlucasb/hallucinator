@@ -116,6 +116,17 @@ pub(crate) fn extract_title_from_reference_with_config(
         return result;
     }
 
+    // === Format 3c': Unquoted web citation: "[Author,] Title, Month Year, URL" ===
+    // Run BEFORE try_acm_year because the f93 shape `ORG. Title., May.
+    // 2025. [Online]. Available: URL` looks like ACM (`.`-separated
+    // year-period-title) and try_acm_year latches onto `[Online].
+    // Available: ...` as the title before we get here. The web-citation
+    // anchor (Month + Year + URL, in that order) is a strong enough
+    // signal to take priority.
+    if let Some(result) = try_web_citation(ref_text) {
+        return result;
+    }
+
     // === Format 3c: ACM - "Authors. Year. Title. In Venue" ===
     if let Some(result) = try_acm_year(ref_text) {
         return result;
@@ -505,6 +516,21 @@ pub(crate) fn clean_title_with_config(
         return String::new();
     }
 
+    // FIX 4g: Reject IEEE `[Online]` / `[Available]` / `[Accessed]`
+    // web-citation annotation markers picked up as titles. When the
+    // real title is a 1-word quoted fragment that got filtered out by
+    // the `>= 2 words` quoted-title gate (e.g. `"Zcash," 2022.
+    // [Online]. Available: https://z.cash/`), the fallback-sentence
+    // extractor would latch onto `[Online]` as the second sentence and
+    // emit it as the title — wasting every DB lookup. Clearing the
+    // title here lets the empty-title + URL strong-signal path through
+    // the pipeline, so URL Check validates the real citation.
+    static IEEE_ANNOTATION_MARKER: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\[(?:Online|Available|Accessed)\]\.?\s*$").unwrap());
+    if IEEE_ANNOTATION_MARKER.is_match(&title) {
+        return String::new();
+    }
+
     // FIX 5 (NeurIPS): Reject titles exceeding maximum reasonable length
     const MAX_TITLE_LENGTH: usize = 300;
     if title.len() > MAX_TITLE_LENGTH {
@@ -589,6 +615,22 @@ fn try_quoted_title_with_config(ref_text: &str, config: &ParsingConfig) -> Optio
         }
     }
 
+    // Curly-quote analog of GREEDY_IEEE_RE. Needed for references whose
+    // title contains an inner curly-quoted phrase (NDSS 2026 f468 ref 36:
+    // `"The big ... on the "grey" market,"`), where the non-greedy
+    // class-based pattern below stops at the inner opening quote. Also
+    // rescues refs where `has_title_text_before_quote` would false-
+    // positive on author text with "the European" / "of the United" and
+    // skip the otherwise-correct match (f468 refs 3, 18).
+    static GREEDY_IEEE_CURLY_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\u{201c}(.+),\u{201d}\s").unwrap());
+    if let Some(caps) = GREEDY_IEEE_CURLY_RE.captures(ref_text) {
+        let title = caps.get(1).unwrap().as_str().trim();
+        if title.split_whitespace().count() >= 2 {
+            return Some((format!("{},", title), true));
+        }
+    }
+
     static DEFAULT_QUOTE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
             // Smart quotes (any combo of \u201c, \u201d, \u201c)
@@ -618,10 +660,19 @@ fn try_quoted_title_with_config(ref_text: &str, config: &ParsingConfig) -> Optio
                 continue;
             }
 
-            // IEEE: comma inside quotes means title is complete
-            // Accept 2+ words for quoted titles (quotes are a strong indicator)
+            // IEEE: comma inside quotes means title is complete.
+            // Accept 1+ words here — a curly-quote pair terminated by
+            // `,` is a very strong IEEE title signal, and single-word
+            // application/tool citations (`"Zcash,"`, `"Pytorch,"`,
+            // `"Hashcat,"`, NDSS 2026 f2008 refs 14/53/54; f1059 ref 23)
+            // are common in systems-security bibliographies. Without
+            // this, those refs fall through to the fallback-sentence
+            // extractor which typically latches onto the `[Online]`
+            // annotation as the title. Inner-quote shapes like
+            // `... "X" ...` can't reach this branch because they don't
+            // carry the trailing `,` inside the inner quote.
             if quoted_part.ends_with(',') {
-                if quoted_part.split_whitespace().count() >= 2 {
+                if !quoted_part.is_empty() && quoted_part.split_whitespace().count() >= 1 {
                     return Some((quoted_part.to_string(), true));
                 }
                 continue;
@@ -1931,6 +1982,122 @@ fn try_thesis_citation(ref_text: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Unquoted web citation: `[Author(s),] Title, Month Year, URL`.
+///
+/// Captures a citation shape common in NDSS/USENIX-style bibliographies
+/// when the entry is a web resource rather than a journal/conference
+/// paper. The title isn't quoted; the delimiters around the title are
+/// a `Month Year` metadata segment AND a URL, in that order.
+///
+/// Four concrete NDSS 2026 shapes:
+///
+///   * f1059 ref 2:  `Keystroke Acoustic Recognition System, April
+///                    2025, https://...` — no author, comma separators.
+///   * f1059 ref 28: `B. Honan, Visual Data Security White Paper, July
+///                    2012, https://...` — author prefix.
+///   * f93 ref 7:    `Bluealloy. Rust implementation of the ethereum
+///                    virtual machine., May. 2025. [Online]. Available:
+///                    https://...` — period separators, `[Online]` marker.
+///   * f93 ref 21:   `Ethereum. Proposer builder separation (pbs)
+///                    ethereum, May. 2024. [Online]. Available: https://`
+///                    — mixed separators.
+///
+/// All quoted-title and structured-format extractors fail on these
+/// shapes because the title isn't delimited by quotes and there's no
+/// venue marker. The fallback-sentence extractor then latched onto
+/// either `[Online]` (f93) or the author fragment (f1059), leaving
+/// the real title empty.
+///
+/// The extractor is deliberately narrow: it requires a month-year
+/// metadata segment AND a URL in that order after the title. Either
+/// alone is too weak a signal. The title itself is everything between
+/// the optional author prefix and the first `[.,] Month Year` boundary.
+fn try_web_citation(ref_text: &str) -> Option<(String, bool)> {
+    // Shape, with the following delimiters tolerated:
+    //
+    //   prefix  — start, `,`+space, or `.`+space (the latter absorbs
+    //             `ORG.` single-token author prefixes from f93-style
+    //             refs where the author is an organization rendered
+    //             as a period-terminated token).
+    //   title   — `[A-Z][^,.]{5,200}?` — starts uppercase, no commas
+    //             or periods inside (they'd be delimiters; the lazy
+    //             quantifier stops as soon as the tail matches).
+    //   tail    — `[.,]+\s+<Month>\.?\s+<Year>[.,]?\s+<annotations>?
+    //             https?://` — period or comma plus whitespace, month
+    //             name (optional trailing `.`), year, optional `[.,]`
+    //             separator, optional `[Online]. Available:`-style
+    //             annotation, URL.
+    //
+    // `[^,.]` in the title means titles that contain a real period
+    // (abbreviations, acronyms with dots) can't be fully captured —
+    // but those are much rarer than the reward case, and the lazy
+    // quantifier is necessary to stop the match from running past a
+    // later `[.,] Month` boundary into neighbouring text.
+    // Note on the month alternation: the `\.?` sits OUTSIDE the
+    // alternation group so every month variant transparently accepts
+    // an optional trailing `.`. If the period were folded into each
+    // short-name arm (`Jan\.?|Feb\.?|...`) and `May` was listed bare,
+    // `May` would match the input `May.` greedily without consuming
+    // the dot — and the next `\s+` token would then fail against the
+    // dot. Listing full names *before* short names lets the engine
+    // pick `February` over `Feb` when both are possible.
+    static WEB_CITATION: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?ix)
+              (?:^|,\s*|\.\s+)
+              ([A-Z][^,.]{5,200}?)
+              [.,]+\s+
+              (?: January|February|March|April|May|June|July|August
+                | September|October|November|December
+                | Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec)
+              \.?\s+\d{4}[.,]?\s+
+              (?:\[(?:Online|Available|Accessed)\]\.?\s*(?:Available:\s*)?)*
+              https?://",
+        )
+        .unwrap()
+    });
+
+    let caps = WEB_CITATION.captures(ref_text)?;
+    let title = caps.get(1).unwrap().as_str().trim();
+
+    // Accept 2+ words — the title is unquoted, so the signal is weaker
+    // than the comma-terminated quote path and short matches are more
+    // likely to be accidental fragments of surrounding text.
+    if title.split_whitespace().count() < 2 {
+        return None;
+    }
+
+    // Reject if the captured title itself starts with a URL-ish
+    // identifier (a failed anchor).
+    static TITLE_LOOKS_LIKE_IDENTIFIER: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^(?:doi:|https?://|arXiv:)").unwrap());
+    if TITLE_LOOKS_LIKE_IDENTIFIER.is_match(title) {
+        return None;
+    }
+
+    // Reject if the captured title starts with a venue-marker keyword.
+    // Shape we're avoiding — `Author. Real Title. In Venue, Month Year.
+    // URL` — has two candidate matches: (a) `Real Title` (at the `.` +
+    // space after "Author.") which dies on the month-year anchor
+    // because the month is further away, and (b) `In Venue` (at `.` +
+    // space after "Title.") which matches. Without this guard the
+    // extractor picks (b). Real regression surfaced by the existing
+    // edge-case test 13 (`Garfinkel and Leclerc. Randomness concerns
+    // ... . In WPES '20, September 2020. https://doi.org/...` would
+    // capture "In WPES '20").
+    static TITLE_LOOKS_LIKE_VENUE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)^(?:In|Proc(?:eedings|\.)?|Workshop|Conference|Symposium|IEEE|ACM|USENIX|AAAI|NDSS|CCS|ICML|NeurIPS|ICLR|CVPR|EMNLP|NAACL|Journal\s+of|Transactions|Advances\s+in|Communications\s+of)\b",
+        )
+        .unwrap()
+    });
+    if TITLE_LOOKS_LIKE_VENUE.is_match(title) {
+        return None;
+    }
+
+    Some((title.to_string(), false))
+}
+
 /// Strip leading "Surname," pattern from potential title.
 ///
 /// Handles cases where author initial was split from surname during sentence splitting,
@@ -2492,7 +2659,13 @@ pub(crate) static DEFAULT_CUTOFF_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"\s+arXiv\s+preprint.*$").unwrap(),
         Regex::new(r"\s+arXiv:\d+.*$").unwrap(),
         Regex::new(r"\s+CoRR\s+abs/.*$").unwrap(),
-        Regex::new(r"(?i),?\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}.*$").unwrap(),
+        // Strip trailing month-year metadata like ", October 2022" or
+        // ". August 2015". Require punctuation (`.`/`,`) before the
+        // month so the pattern doesn't clip through titles that contain
+        // a legitimate month-year in running prose, e.g. NDSS 2026 f468
+        // ref 3: `Regulation (EU) 2022/2065 ... of 19 October 2022 on a
+        // Single Market ...`.
+        Regex::new(r"(?i)[,.]\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}.*$").unwrap(),
         Regex::new(r"(?i)[.,]\s*[Aa]ccessed\s+.*$").unwrap(),
         Regex::new(r"\s*\(\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
         Regex::new(r"\s*\(pp\.?\s*\d+[\u{2013}\-]\d*\)\s*$").unwrap(),
@@ -3765,6 +3938,217 @@ mod tests {
             cleaned2.contains("gender pay gap"),
             "Title content should be preserved: {}",
             cleaned2
+        );
+    }
+
+    // =========================================================================
+    // Tests for NDSS 2026 URL-citation failures (2026-04-23)
+    // =========================================================================
+
+    #[test]
+    fn test_online_marker_rejected_as_title() {
+        // NDSS 2026 f2008 refs 14/53/54 pattern: a single-word quoted
+        // app name followed by `[Online]. Available: URL`. The fallback
+        // extractor used to latch onto `[Online]` as the title; the
+        // IEEE_ANNOTATION_MARKER rejection plus the relaxed single-
+        // word IEEE-comma gate together recover the real title.
+        for (name, raw, expected_prefix) in [
+            (
+                "zcash",
+                "\u{201C}Zcash,\u{201D} 2022. [Online]. Available: https://z.cash/",
+                "Zcash",
+            ),
+            (
+                "pytorch",
+                "\u{201C}Pytorch,\u{201D} 2025. [Online]. Available: https://pytorch.org/",
+                "Pytorch",
+            ),
+            (
+                "ezkl",
+                "\u{201C}Ezkl,\u{201D} 2022. [Online]. Available: https://github.com/zkonduit/ezkl",
+                "Ezkl",
+            ),
+        ] {
+            let (title, _) = extract_title_from_reference(raw);
+            let cleaned = clean_title(&title, true);
+            assert!(
+                cleaned.starts_with(expected_prefix),
+                "[{}] expected title to start with {:?}, got raw={:?} cleaned={:?}",
+                name,
+                expected_prefix,
+                title,
+                cleaned,
+            );
+            assert!(
+                !cleaned.contains("[Online]")
+                    && !cleaned.contains("[Available]")
+                    && !cleaned.contains("[Accessed]"),
+                "[{}] citation annotation marker leaked into title: {:?}",
+                name,
+                cleaned,
+            );
+        }
+    }
+
+    #[test]
+    fn test_online_marker_rejection_via_clean_title_direct() {
+        // Direct cleanup entry point: a literal `[Online]` title
+        // (fall-through from a different upstream path) must also
+        // scrub to empty so the empty-title + URL signal path takes
+        // over downstream.
+        assert_eq!(clean_title("[Online]", false), "");
+        assert_eq!(clean_title("[Online].", false), "");
+        assert_eq!(clean_title("[Available]", false), "");
+        assert_eq!(clean_title("[Accessed]", false), "");
+        // Case-insensitive per IEEE_ANNOTATION_MARKER's `(?i)` flag.
+        assert_eq!(clean_title("[online]", false), "");
+        // A longer title that merely mentions `[Online]` as a fragment
+        // must NOT be cleared — the rejection is anchored to the full
+        // string via `^...$`.
+        let preserved = clean_title("Security analysis of [Online] payment protocols", false);
+        assert!(!preserved.is_empty(), "got {:?}", preserved);
+    }
+
+    #[test]
+    fn test_single_word_quoted_title_accepted() {
+        // NDSS 2026 f1059 ref 23 shape: `Hashcat Project, "Hashcat,"
+        // https://hashcat.net/hashcat/`. Previously rejected by the
+        // `>= 2 words` gate in the quoted-title loop; now the IEEE-
+        // comma branch accepts 1+ words since the `,"` + space shape
+        // is a strong IEEE title marker.
+        let ref_text = "Hashcat Project, \u{201C}Hashcat,\u{201D} https://hashcat.net/hashcat/";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "smart-quote title should be detected");
+        assert!(
+            title.starts_with("Hashcat"),
+            "expected single-word quoted title, got {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_unquoted_title_with_url() {
+        // NDSS 2026 f1059 ref 2: unquoted web citation without author.
+        // No other extractor handles this shape; try_web_citation
+        // anchors on the `, Month Year, URL` tail to bound the title.
+        let ref_text = "Keystroke Acoustic Recognition System, April 2025, https://github.com/s2cr3t/Keystroke_Acoustic_Recognition_System";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(
+            !from_quotes,
+            "unquoted citation — from_quotes should be false"
+        );
+        assert_eq!(title, "Keystroke Acoustic Recognition System");
+    }
+
+    #[test]
+    fn test_web_citation_unquoted_title_with_author_prefix() {
+        // NDSS 2026 f1059 ref 28: same shape but with a leading
+        // `Author,` prefix. The `(?:^|,\s*)` anchor skips past the
+        // author name to capture the title starting at the next
+        // capitalized token.
+        let ref_text = "B. Honan, Visual Data Security White Paper, July 2012, https://multimedia.3m.com/mws/media/950026O/secure-white-paper.pdf";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "Visual Data Security White Paper");
+    }
+
+    #[test]
+    fn test_web_citation_short_month_form() {
+        // PDFs also use short month forms (`Apr.`, `Jul.`, `Oct.`) —
+        // the extractor's alternation covers both `April` and `Apr.`
+        // so both citation styles parse.
+        let ref_text = "Some Tool Project, Some Reference Document Title, Apr. 2024, https://example.org/tool/";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Some Reference Document Title"),
+            "got {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_org_prefix_period_separators() {
+        // NDSS 2026 f93 pattern: `ORG. Title., Month. Year. [Online].
+        // Available: URL`. 27 refs in a single paper use this shape
+        // — period separator after the org prefix, period-comma after
+        // the title, period after month and year, `[Online]` marker
+        // before the URL.
+        let ref_text = "Bluealloy. Rust implementation of the ethereum virtual machine., May. 2025. [Online]. Available: https://github.com/bluealloy/revm";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "Rust implementation of the ethereum virtual machine");
+    }
+
+    #[test]
+    fn test_web_citation_org_prefix_comma_separators() {
+        // NDSS 2026 f93 ref 21 pattern: `ORG. Title, Month. Year.
+        // [Online]. Available: URL` — period after org but comma (not
+        // period-comma) after title.
+        let ref_text = "Ethereum. Proposer builder separation (pbs) ethereum, May. 2024. [Online]. Available: https://ethereum.org/en/roadmap/pbs/";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Proposer builder separation"),
+            "got {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_mixed_punctuation_with_online_marker() {
+        // NDSS 2026 f93 ref 28: `ORG. Flashbot apis to simulate mev
+        // bundles, May. 2025. [Online]. Available: https://...` —
+        // covers the `[Online]` + `Available:` annotation between the
+        // date and the URL.
+        let ref_text = "Flashbot. Flashbot apis to simulate mev bundles, May. 2025. [Online]. Available: https://docs.flashbots.net/flashbots-auction/advanced/rpc-endpoint";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Flashbot apis to simulate mev bundles"),
+            "got {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_rejects_venue_marker_as_title() {
+        // Regression from the broadened try_web_citation: the shape
+        // `Author. Real Title. In Venue, Month Year. URL` creates two
+        // candidate matches. The author-period-title-period anchor
+        // leads to "Real Title" (killed further downstream because
+        // the month-year is out of reach). The title-period-In-Venue
+        // anchor leads to "In Venue" (WPES '20, etc.), which the
+        // venue-keyword guard rejects so try_venue_marker/try_acm_year
+        // can handle the ref correctly.
+        let ref_text = "Simson L. Garfinkel and Philip Leclerc. Randomness concerns when deploying differential privacy. In WPES '20, September 2020. https://doi.org/10.1145/3411497.3420211";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert!(
+            title.contains("Randomness concerns"),
+            "expected real title, got {:?}",
+            title
+        );
+        assert!(
+            !title.starts_with("In "),
+            "should not capture venue marker as title: {:?}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_web_citation_requires_url_anchor() {
+        // A reference with a month-year but no URL must NOT be
+        // captured by try_web_citation — that shape is typically a
+        // journal/paper with a legitimate month-year in the title
+        // body, and some other extractor should handle it. This
+        // guards against over-matching on any `, Month Year` comma
+        // pattern across the bibliography.
+        let ref_text = "Author Name, Some Article Title, April 2020, pp. 10-20.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        // Either another extractor handles it or it falls through —
+        // what matters is try_web_citation doesn't fire incorrectly.
+        // Accept both empty and non-empty so long as the title isn't
+        // the exact web-citation capture (which would indicate the
+        // narrow URL anchor was bypassed).
+        assert!(
+            title != "Some Article Title" || title.is_empty(),
+            "try_web_citation fired without URL anchor: {:?}",
+            title
         );
     }
 

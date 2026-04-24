@@ -28,7 +28,9 @@ use reqwest::StatusCode;
 ///     there.
 ///   - 5xx: transient server errors; we'd rather retry than accept.
 ///   - Other 4xx codes (400, 405, 429, ...): ambiguous; leave as not-live.
-///     (405 is handled separately by the caller, which retries with GET.)
+///     (4xx on HEAD is handled separately by the caller, which retries
+///     with GET — some servers return different statuses for the two
+///     methods, e.g. 404 on HEAD but 200 on GET.)
 pub(crate) fn status_counts_as_live(status: StatusCode) -> bool {
     if status.is_success() || status.is_redirection() {
         return true;
@@ -56,8 +58,10 @@ pub struct UrlChecker;
 impl UrlChecker {
     /// Check if a single URL is live.
     ///
-    /// Uses HEAD request first (cheaper), falls back to GET if the server
-    /// returns 405 Method Not Allowed.
+    /// Uses HEAD request first (cheaper), falls back to GET on any 4xx
+    /// response or on transport error. Some servers' anti-bot filters
+    /// answer HEAD with 404 but serve 200 on GET (NXP product pages are a
+    /// known example), so we can't treat HEAD's 4xx as authoritative.
     pub async fn check_url(
         url: &str,
         client: &reqwest::Client,
@@ -85,12 +89,14 @@ impl UrlChecker {
                     };
                 }
 
-                // If HEAD returns 405 Method Not Allowed, try GET
-                if status.as_u16() == 405 {
+                // Any 4xx on HEAD: retry with GET. Some servers
+                // (including NXP's anti-bot filter) return 404 for HEAD
+                // while serving 200 for GET on the same URL.
+                if status.is_client_error() {
                     return Self::check_url_get(url, client, timeout).await;
                 }
 
-                // Other non-success status (404, 410, 5xx, etc.)
+                // 5xx or other non-success status: leave as not-live.
                 UrlCheckResult {
                     url: url.to_string(),
                     is_live: false,
@@ -354,6 +360,33 @@ mod tests {
         let result = UrlChecker::check_url("http://example.com", &client, timeout).await;
         assert!(result.is_live);
         // final_url may be set if redirect happened
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_nxp_product_page_with_polite_ua() {
+        // NDSS 2026 f106 regression: NXP's anti-bot filter serves 404 to
+        // reqwest's default UA and rejects HEAD outright. With a polite,
+        // identifiable UA plus HEAD→GET fallback on 4xx, these real
+        // product pages must verify as live.
+        let client = reqwest::Client::builder()
+            .user_agent(concat!(
+                "hallucinator/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/gianlucasb/hallucinator)"
+            ))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .unwrap();
+        let timeout = Duration::from_secs(15);
+
+        for url in [
+            "https://www.nxp.com/products/S32G3",
+            "https://www.nxp.com/products/S32K3",
+        ] {
+            let r = UrlChecker::check_url(url, &client, timeout).await;
+            assert!(r.is_live, "{} should verify as live, got {:?}", url, r);
+        }
     }
 
     #[tokio::test]

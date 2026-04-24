@@ -68,7 +68,19 @@ impl ValidationPool {
         // shows activity as soon as its extraction is done.
         let capacity = num_workers.max(1).saturating_mul(4);
         let (job_tx, job_rx) = async_channel::bounded::<RefJob>(capacity);
+        // Identify ourselves. reqwest's default UA ("reqwest/X.Y.Z") is
+        // blacklisted by anti-bot filters on some servers (notably NXP's
+        // product pages: curl gets 200, reqwest gets 404), causing URL
+        // liveness checks to report live pages as dead. A polite,
+        // identifiable UA is also standard etiquette for academic API
+        // consumers. Per-request UAs (CrossRef, retraction checks) still
+        // override this client-level default.
         let client = reqwest::Client::builder()
+            .user_agent(concat!(
+                "hallucinator/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/gianlucasb/hallucinator)"
+            ))
             .pool_max_idle_per_host(2)
             .pool_idle_timeout(Duration::from_secs(30))
             .build()
@@ -578,6 +590,22 @@ async fn apply_fallbacks(
             status: DbStatus::NoMatch,
             elapsed,
         });
+        // Surface the no_match in `db_results` too. The match branch
+        // above pushes a DbResult entry before early-return, so the
+        // no_match branch was the only place the URL Check row was
+        // silently missing from the reported per-reference breakdown.
+        // JSON consumers and the TUI drilldown previously could not
+        // distinguish "URL Check wasn't tried" from "URL Check tried
+        // and didn't verify" for the same ref shape — both showed no
+        // URL Check row.
+        db_results.push(DbResult {
+            db_name: "URL Check".into(),
+            status: DbStatus::NoMatch,
+            elapsed: Some(elapsed),
+            found_authors: vec![],
+            paper_url: None,
+            error_message: None,
+        });
     }
 
     // ── Wayback Machine fallback ───────────────────────────────────────
@@ -624,6 +652,17 @@ async fn apply_fallbacks(
             status: DbStatus::NoMatch,
             elapsed,
         });
+        // Mirror the URL Check fix: surface the attempt in db_results
+        // so JSON consumers can tell a failed lookup apart from one
+        // that was never tried.
+        db_results.push(DbResult {
+            db_name: "Wayback Machine".into(),
+            status: DbStatus::NoMatch,
+            elapsed: Some(elapsed),
+            found_authors: vec![],
+            paper_url: None,
+            error_message: None,
+        });
     }
 
     // ── SearxNG web-search fallback ────────────────────────────────────
@@ -669,6 +708,14 @@ async fn apply_fallbacks(
             db_name: "Web Search".to_string(),
             status: DbStatus::NoMatch,
             elapsed,
+        });
+        db_results.push(DbResult {
+            db_name: "Web Search".into(),
+            status: DbStatus::NoMatch,
+            elapsed: Some(elapsed),
+            found_authors: vec![],
+            paper_url: None,
+            error_message: None,
         });
     }
 
