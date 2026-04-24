@@ -74,9 +74,15 @@ fn render_progress(
     theme: &Theme,
 ) {
     let done = paper.completed_count();
-    let checkable = paper.total_refs.saturating_sub(paper.stats.skipped);
+    // Denominator is the count of refs that ENTERED validation — i.e.
+    // total minus parse-time skips. `stats.skipped` isn't safe here:
+    // it also contains URL-gated refs (demoted by the `--url-match`
+    // gate) which DO go through the pool and contribute to `done`.
+    // Using the combined `stats.skipped` pushed `done > checkable` and
+    // panicked the ratatui gauge.
+    let checkable = paper.total_refs.saturating_sub(paper.parse_skipped);
     let ratio = if checkable > 0 {
-        done as f64 / checkable as f64
+        (done as f64 / checkable as f64).clamp(0.0, 1.0)
     } else {
         0.0
     };

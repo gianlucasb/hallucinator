@@ -345,6 +345,17 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
         paper.total_refs = ref_count;
     }
 
+    // `parse_skipped` is only the parse-time subset of skipped refs —
+    // those that were marked "skipped" AND did NOT carry the URL-gate
+    // marker. Needed by the gauge denominator; must NOT include URL-
+    // gated refs because those would have entered validation on a
+    // live run and contribute to `done`.
+    paper.parse_skipped = loaded
+        .references
+        .iter()
+        .filter(|r| r.status == "skipped" && !r.url_check_skipped)
+        .count();
+
     (paper, ref_states)
 }
 
