@@ -148,6 +148,10 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
             } else {
                 Some(state.arxiv_offline_path.clone())
             },
+            // TUI doesn't expose iacr_eprint yet — serialize `None`
+            // so round-tripping a TUI-saved config doesn't drop the
+            // field if main.rs loaded it from the file originally.
+            iacr_eprint_offline_path: None,
             openalex_offline_path: if state.openalex_offline_path.is_empty() {
                 None
             } else {

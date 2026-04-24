@@ -12,6 +12,7 @@ dist = false
 hallucinator-dblp.workspace = true
 hallucinator-acl.workspace = true
 hallucinator-arxiv-offline.workspace = true
+hallucinator-iacr-eprint.workspace = true
 hallucinator-openalex.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

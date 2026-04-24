@@ -69,6 +69,13 @@ enum Command {
         #[arg(long)]
         arxiv_offline: Option<PathBuf>,
 
+        /// Path to offline IACR Cryptology ePrint Archive database
+        /// (built by `update-iacr-eprint`). No online counterpart —
+        /// the archive has no public search API, so this backend
+        /// only fires when a local index is available.
+        #[arg(long)]
+        iacr_eprint_offline: Option<PathBuf>,
+
         /// Path to offline OpenAlex Tantivy index
         #[arg(long)]
         openalex_offline: Option<PathBuf>,
@@ -173,6 +180,19 @@ enum Command {
         #[arg(long)]
         min_year: Option<u32>,
     },
+
+    /// Harvest the IACR Cryptology ePrint Archive over OAI-PMH into a
+    /// local SQLite + FTS5 index.
+    ///
+    /// The archive has no search API, so this local index is the only
+    /// way to title-match ePrint citations. Full harvest takes a few
+    /// minutes (~25-30k papers); subsequent runs are incremental
+    /// (send only records newer than the stored `last_harvest`
+    /// timestamp). IACR's metadata is CC0.
+    UpdateIacrEprint {
+        /// Path to store the IACR ePrint SQLite database
+        path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -238,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
             since,
             min_year,
         } => update_openalex(&path, since.as_deref(), min_year).await,
+        Command::UpdateIacrEprint { path } => update_iacr_eprint(&path).await,
         Command::Check {
             file_path,
             no_color,
@@ -249,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
             dblp_offline,
             acl_offline,
             arxiv_offline,
+            iacr_eprint_offline,
             openalex_offline,
             disable_dbs,
             check_openalex_authors,
@@ -322,6 +344,7 @@ async fn main() -> anyhow::Result<()> {
                     dblp_offline,
                     acl_offline,
                     arxiv_offline,
+                    iacr_eprint_offline,
                     openalex_offline,
                     disable_dbs,
                     check_openalex_authors,
@@ -448,6 +471,7 @@ async fn check(
     dblp_offline: Option<PathBuf>,
     acl_offline: Option<PathBuf>,
     arxiv_offline: Option<PathBuf>,
+    iacr_eprint_offline: Option<PathBuf>,
     openalex_offline: Option<PathBuf>,
     disable_dbs: Vec<String>,
     check_openalex_authors: bool,
@@ -524,6 +548,19 @@ async fn check(
                 .databases
                 .as_ref()
                 .and_then(|d| d.arxiv_offline_path.as_ref())
+                .map(PathBuf::from)
+        });
+    let iacr_eprint_offline_path = iacr_eprint_offline
+        .or_else(|| {
+            std::env::var("IACR_EPRINT_OFFLINE_PATH")
+                .ok()
+                .map(PathBuf::from)
+        })
+        .or_else(|| {
+            file_config
+                .databases
+                .as_ref()
+                .and_then(|d| d.iacr_eprint_offline_path.as_ref())
                 .map(PathBuf::from)
         });
     let openalex_offline_path = openalex_offline
@@ -720,6 +757,49 @@ async fn check(
         None
     };
 
+    // Open offline IACR ePrint database if configured. No online
+    // counterpart exists — `eprint.iacr.org` has no search API — so
+    // the backend only registers when a local index is present.
+    let iacr_eprint_offline_db = if let Some(ref path) = iacr_eprint_offline_path {
+        if !path.exists() {
+            anyhow::bail!(
+                "Offline IACR ePrint database not found at {}. Build it with: hallucinator-cli update-iacr-eprint {}",
+                path.display(),
+                path.display()
+            );
+        }
+        let db = hallucinator_iacr_eprint::IacrDatabase::open(path)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        if let Ok(staleness) = db.staleness(30)
+            && staleness.is_stale
+        {
+            let msg = if let Some(days) = staleness.age_days {
+                format!(
+                    "Offline IACR ePrint database is {} days old. Consider running: hallucinator-cli update-iacr-eprint {}",
+                    days,
+                    path.display()
+                )
+            } else {
+                format!(
+                    "Offline IACR ePrint database may be stale. Consider running: hallucinator-cli update-iacr-eprint {}",
+                    path.display()
+                )
+            };
+            if color.enabled() {
+                use owo_colors::OwoColorize;
+                writeln!(writer, "{}", msg.yellow())?;
+            } else {
+                writeln!(writer, "{}", msg)?;
+            }
+            writeln!(writer)?;
+        }
+
+        Some(Arc::new(Mutex::new(db)))
+    } else {
+        None
+    };
+
     // Open offline OpenAlex index if configured
     let openalex_offline_db = if let Some(ref path) = openalex_offline_path {
         if !path.exists() {
@@ -832,6 +912,8 @@ async fn check(
         acl_offline_db,
         arxiv_offline_path: arxiv_offline_path.clone(),
         arxiv_offline_db,
+        iacr_eprint_offline_path: iacr_eprint_offline_path.clone(),
+        iacr_eprint_offline_db,
         openalex_offline_path: openalex_offline_path.clone(),
         openalex_offline_db,
         num_workers,
@@ -1701,6 +1783,80 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
         println!("ACL database saved to: {}", canonical.display());
     }
 
+    Ok(())
+}
+
+/// Build (or incrementally refresh) the offline IACR Cryptology
+/// ePrint Archive database.
+///
+/// OAI-PMH is the only machine-readable interface the archive
+/// exposes, so there's no "fast path" — full first-time harvests
+/// page through every record, typically in a few minutes for the
+/// ~25–30k papers currently in the archive. Subsequent runs send
+/// `from=<last_harvest>` and only receive records that changed
+/// since, so day-to-day updates are near-instant.
+async fn update_iacr_eprint(db_path: &PathBuf) -> anyhow::Result<()> {
+    use indicatif::{HumanCount, ProgressBar, ProgressStyle};
+    use std::time::{Duration, Instant};
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} [{elapsed_precise}] {msg}").unwrap(),
+    );
+    spinner.enable_steady_tick(Duration::from_millis(120));
+    spinner.set_message("Contacting eprint.iacr.org OAI-PMH endpoint...");
+
+    let build_start = Instant::now();
+
+    let updated = hallucinator_iacr_eprint::builder::build(db_path, |event| match event {
+        hallucinator_iacr_eprint::BuildProgress::Starting { incremental_from } => {
+            if let Some(from) = incremental_from {
+                spinner.set_message(format!(
+                    "Incremental harvest from {} (records changed since last run)",
+                    from
+                ));
+            } else {
+                spinner.set_message("Full harvest: fetching every OAI-PMH page");
+            }
+        }
+        hallucinator_iacr_eprint::BuildProgress::Fetched { records, pages } => {
+            spinner.set_message(format!(
+                "Indexed {} records across {} pages",
+                HumanCount(records),
+                HumanCount(pages)
+            ));
+        }
+        hallucinator_iacr_eprint::BuildProgress::Indexed { records } => {
+            spinner.set_message(format!(
+                "Finalizing index ({} records)",
+                HumanCount(records)
+            ));
+        }
+        hallucinator_iacr_eprint::BuildProgress::Complete { records, skipped } => {
+            let elapsed = build_start.elapsed();
+            if skipped {
+                spinner.finish_with_message(
+                    "Already up to date — server reports no new records since last harvest"
+                        .to_string(),
+                );
+            } else {
+                spinner.finish_with_message(format!(
+                    "Done: {} records indexed in {:.1?}",
+                    HumanCount(records),
+                    elapsed
+                ));
+            }
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("IACR ePrint harvest failed: {e}"))?;
+
+    // Caller probably wants the exit status to reflect whether
+    // anything new was actually ingested — returning Ok here
+    // either way matches the sibling update commands; `updated`
+    // would be useful for CI-style workflows but can't be surfaced
+    // via this signature without an API break.
+    let _ = updated;
     Ok(())
 }
 

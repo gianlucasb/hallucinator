@@ -8,6 +8,7 @@ pub mod dblp;
 pub mod doi_resolver;
 pub mod europe_pmc;
 pub mod govinfo;
+pub mod iacr_eprint;
 pub mod neurips;
 pub mod openalex;
 pub mod openalex_offline;
