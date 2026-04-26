@@ -2,6 +2,8 @@ use once_cell::sync::Lazy;
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::matching::fold_special_letters;
+
 /// Common surname prefixes (case-insensitive).
 static SURNAME_PREFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -292,13 +294,17 @@ fn get_surname_from_parts(parts: &[&str]) -> String {
 }
 
 /// Strip diacritics and normalize typographic characters for comparison.
-/// "Müller" → "Muller", "Crépeau" → "Crepeau", "O'Brien" → "O'Brien"
+/// "Müller" → "Muller", "Crépeau" → "Crepeau", "Müßig" → "Mussig",
+/// "Adıgüzel" → "Adiguzel", "O'Brien" → "O'Brien"
 fn strip_diacritics(s: &str) -> String {
     // Normalize curly quotes/apostrophes to ASCII before NFKD
     // (NFKD doesn't decompose U+2019 RIGHT SINGLE QUOTATION MARK)
     let s = s
         .replace(['\u{2019}', '\u{2018}'], "'") // curly single quotes → apostrophe
         .replace(['\u{201C}', '\u{201D}'], "\""); // curly double quotes → straight
+    // Fold ß/ı/ø/… to their DBLP/arXiv-style ASCII transliteration; NFKD alone
+    // would leave these untouched and the ASCII filter would then drop them.
+    let s = fold_special_letters(&s);
     s.nfkd().filter(|c| c.is_ascii()).collect()
 }
 
@@ -563,6 +569,41 @@ mod tests {
         assert!(validate_authors(
             &s(&["Florian Tramèr"]),
             &s(&["Florian Tramer"]),
+        ));
+    }
+
+    #[test]
+    fn test_sharp_s_folds_to_ss() {
+        // PDF: "Müßig", DBLP/arXiv: "Mussig" (ß → ss).
+        // NFKD alone would drop ß and produce "Mig", which never matched.
+        assert!(validate_authors(&s(&["Hans Müßig"]), &s(&["Hans Mussig"]),));
+    }
+
+    #[test]
+    fn test_dotless_i_folds_to_i() {
+        // PDF: "Adıgüzel" (Turkish dotless i), DBLP: "Adiguzel".
+        // NFKD alone would drop ı and produce "Adgzel", which never matched.
+        assert!(validate_authors(
+            &s(&["Cemal Adıgüzel"]),
+            &s(&["Cemal Adiguzel"]),
+        ));
+    }
+
+    #[test]
+    fn test_slashed_o_folds_to_o() {
+        // PDF: "Bjørn Østergaard", DBLP: "Bjorn Ostergaard".
+        assert!(validate_authors(
+            &s(&["Bjørn Østergaard"]),
+            &s(&["Bjorn Ostergaard"]),
+        ));
+    }
+
+    #[test]
+    fn test_l_with_stroke_folds_to_l() {
+        // PDF: "Wojciech Łukasz", DBLP: "Wojciech Lukasz".
+        assert!(validate_authors(
+            &s(&["Wojciech Łukasz"]),
+            &s(&["Wojciech Lukasz"]),
         ));
     }
 

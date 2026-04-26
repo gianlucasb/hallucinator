@@ -3,6 +3,43 @@ use regex::Regex;
 use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 
+/// Map non-decomposable Latin letters to their conventional ASCII transliteration.
+///
+/// NFKD only decomposes characters built from a base + combining mark (ä → a + ¨),
+/// so letters that are atomic codepoints (ß, ı, ø, æ, …) survive NFKD and then get
+/// dropped by an ASCII filter — turning "Müßig" into "Mig" and "Adıgüzel" into
+/// "Adgzel". DBLP, arXiv and OpenAlex all transliterate these the standard way
+/// (ß → "ss", ı → "i", ø → "o", …) before publishing metadata, so we replicate
+/// the mapping here to keep author and title comparisons aligned with backends.
+pub(crate) fn fold_special_letters(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'ß' => out.push_str("ss"),
+            'ẞ' => out.push_str("SS"),
+            'ı' => out.push('i'),
+            'ø' => out.push('o'),
+            'Ø' => out.push('O'),
+            'æ' => out.push_str("ae"),
+            'Æ' => out.push_str("AE"),
+            'œ' => out.push_str("oe"),
+            'Œ' => out.push_str("OE"),
+            'ł' => out.push('l'),
+            'Ł' => out.push('L'),
+            'đ' => out.push('d'),
+            'Đ' => out.push('D'),
+            'ð' => out.push('d'),
+            'Ð' => out.push('D'),
+            'þ' => out.push_str("th"),
+            'Þ' => out.push_str("Th"),
+            'ħ' => out.push('h'),
+            'Ħ' => out.push('H'),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Mapping of (diacritic, letter) pairs to precomposed characters.
 /// Used to fix separated diacritics from PDF extraction.
 static DIACRITIC_COMPOSITIONS: Lazy<HashMap<(&str, &str), &str>> = Lazy::new(|| {
@@ -202,7 +239,8 @@ pub fn normalize_title(title: &str) -> String {
         .replace('⇐', "impliedby")
         .replace('⇔', "iff");
 
-    // 5-6. NFKD normalization and strip to ASCII
+    // 5-6. Fold non-decomposable Latin letters, NFKD-normalize, strip to ASCII
+    let title = fold_special_letters(&title);
     let normalized: String = title.nfkd().filter(|c| c.is_ascii()).collect();
 
     // 7-8. Keep only alphanumeric, lowercase
@@ -293,6 +331,15 @@ mod tests {
     fn test_normalize_title_unicode() {
         // é decomposes to e + combining accent, accent gets stripped as non-alnum
         assert_eq!(normalize_title("résumé"), "resume");
+    }
+
+    #[test]
+    fn test_normalize_title_special_letters() {
+        // Letters that don't decompose under NFKD must still fold to ASCII
+        // the way DBLP/arXiv transliterate them.
+        assert_eq!(normalize_title("Außenseiter"), "aussenseiter");
+        assert_eq!(normalize_title("İstanbul Adıgüzel"), "istanbuladiguzel");
+        assert_eq!(normalize_title("Bjørn Ærø"), "bjornaero");
     }
 
     #[test]
