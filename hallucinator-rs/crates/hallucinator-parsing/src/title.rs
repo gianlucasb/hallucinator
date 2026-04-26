@@ -210,6 +210,47 @@ pub(crate) fn clean_title_with_config(
 
     let mut title = fix_hyphenation(title);
 
+    // PDF line-break heuristic for system-name titles. When a title
+    // begins with `[A-Z][a-z]+-[a-z]+:` — e.g. "Stack-guard: …" — the
+    // hyphen is almost always a PDF typesetting artifact ("Stack-\n
+    // guard"), not a real compound word. The original system name is
+    // typically `StackGuard` / `Stackguard`, indexed by databases as a
+    // single token; both `fix_hyphenation` (dictionary-based) and the
+    // FTS5 unicode61 tokenizer (used by DBLP / arXiv / IACR offline
+    // indexes) leave the hyphen alone, so the cited form never matches
+    // the indexed record. Dehyphenate exactly this shape once, after
+    // the dictionary pass has run, so the cleaned title carries the
+    // form databases actually use.
+    //
+    // Restricted to: capital first half, lowercase second half,
+    // immediately followed by `:`, AND the first half is *not* a
+    // common English compound prefix (`Pre-`, `Post-`, `Multi-`, …).
+    // This excludes legitimate compounds like `Pre-training` (which
+    // can plausibly appear before a colon) and `Machine-Learning`
+    // (capital second half, doesn't match the regex anyway).
+    static COMPOUND_PREFIXES: Lazy<std::collections::HashSet<&'static str>> = Lazy::new(|| {
+        [
+            "pre", "post", "sub", "non", "multi", "anti", "pseudo", "meta", "quasi", "semi", "co",
+            "self", "auto", "cross", "inter", "intra", "trans", "ultra", "super", "hyper", "micro",
+            "macro", "mini", "mid", "over", "under", "re", "de",
+        ]
+        .into_iter()
+        .collect()
+    });
+    static SYSTEM_LINEBREAK_HYPHEN: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^([A-Z][a-z]+)-([a-z]+):").unwrap());
+    title = SYSTEM_LINEBREAK_HYPHEN
+        .replace(&title, |caps: &regex::Captures| {
+            let first = &caps[1];
+            let second = &caps[2];
+            if COMPOUND_PREFIXES.contains(first.to_lowercase().as_str()) {
+                format!("{}-{}:", first, second)
+            } else {
+                format!("{}{}:", first, second)
+            }
+        })
+        .into_owned();
+
     // Strip leading year from ACM-style titles ("2017. Title" -> "Title")
     // Must run BEFORE truncate_at_sentence_end to avoid truncating at year period
     static LEADING_YEAR: Lazy<Regex> =
@@ -1254,7 +1295,18 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
     let title = TRAIL.replace(title, "");
 
-    if title.is_empty() {
+    // Reject identifier-prefixed extractions. When the citation's
+    // year-period boundary is a *publication date* like "Dec. 2024."
+    // mid-citation (rather than the canonical ACM "Author. YYYY.
+    // Title." prefix), the text after that boundary is venue/DOI/URL
+    // metadata, not the title. Returning it here would let
+    // `clean_title` empty it and short-circuit the format chain
+    // before later, structurally-stronger paths (try_venue_marker,
+    // try_arxiv_preprint) get a chance. Bail so the chain continues.
+    static IDENT_PREFIX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^(?:doi:|https?://|arXiv[:\s]|ISBN[:\s]|ISSN[:\s]|URL\s*:?)").unwrap()
+    });
+    if title.is_empty() || IDENT_PREFIX.is_match(&title) {
         None
     } else {
         Some((title.to_string(), false))
@@ -2267,6 +2319,23 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // This matches author surname followed by any capital, treating it as author continuation
             // The sentence splitting will later determine actual boundaries
             Regex::new(&format!(r"^([A-Z]{}+)\.\s+[A-Z]", sc)).unwrap(),
+            // Surname + period + system-name + colon + title:
+            // "Chandrakasan. eedtls: Energy-efficient ..."
+            // After an initial like "A. P.", the next token is the surname,
+            // and the surname can be followed by a CS-style "system: title"
+            // where the system name is lowercase, mixed-case, or starts with
+            // digits. The default `Surname.\s+[A-Z]` pattern above only
+            // catches Capital-led continuations and would miss this shape,
+            // causing the splitter to break between the initial and the
+            // surname. Recognise the shape so the period after the initial
+            // is correctly skipped as an initial-end and the period after
+            // the surname is then handled as a sentence boundary by the
+            // SYSTEM_COLON_TITLE escape hatch in the lowercase guard.
+            Regex::new(&format!(
+                r"^[A-Z]{}+\.\s+(?:[A-Za-z0-9][A-Za-z0-9+\-]{{0,30}}|\{{[A-Za-z0-9+\-]+\}}):\s+[A-Za-z]\S*\s+\S+",
+                sc
+            ))
+            .unwrap(),
             // Surname + "and" + Name, followed by author terminator (comma, period, or another "and")
             // This prevents matching title phrases like "Universal and Transferable Adversarial"
             // which would otherwise match "Surname and Firstname" pattern
@@ -2489,12 +2558,12 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             if word_before.to_lowercase() == "al" {
                 let after_period = &text[next_start..];
                 let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
-                if !is_author
-                    && after_period
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_uppercase())
-                {
+                // Use first *alphabetic* character (skipping leading
+                // punctuation like `{` or `"`) so brace-wrapped acronyms
+                // — `et al. {FLAME}: Taming backdoors ...` — are still
+                // recognised as a title boundary.
+                let first_alpha = after_period.chars().find(|c| c.is_alphabetic());
+                if !is_author && first_alpha.is_some_and(|c| c.is_uppercase()) {
                     // This "al." is followed by what looks like a title - treat it as a boundary
                     // (don't continue, fall through to sentence boundary handling)
                 } else {
@@ -2547,11 +2616,30 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         }
 
         // Only treat as sentence boundary if followed by uppercase letter (or punctuation + uppercase)
-        // This prevents splitting at "h.p. lovecraft" where lowercase follows
+        // This prevents splitting at "h.p. lovecraft" where lowercase follows.
+        //
+        // Exception: CS reference titles often start with a lowercase or
+        // mixed-case "system name" followed by a colon: "eedtls: Energy-
+        // efficient ...", "iSpy: automatic reconstruction ...",
+        // "mixup: Beyond empirical risk ...", "idlg: Improved deep
+        // leakage ...". The default lowercase guard would treat the
+        // period before such a title as non-boundary, joining the last
+        // author surname to the title and ruining title extraction
+        // (the cleaner then truncates at "Surname.", leaving just the
+        // surname). Allow the boundary when the next tokens form a
+        // single short alphanumeric token + ":" + whitespace + an
+        // alphabetic title word + at least one more word — a shape
+        // common to system-name-prefixed titles but rare in mid-
+        // sentence prose.
         let after_period = &text[next_start..];
         let first_alpha = after_period.chars().find(|c| c.is_alphabetic());
         if !first_alpha.is_some_and(|c| c.is_uppercase()) {
-            continue;
+            static SYSTEM_COLON_TITLE: Lazy<Regex> = Lazy::new(|| {
+                Regex::new(r"^[A-Za-z0-9][A-Za-z0-9+\-]{0,30}:\s+[A-Za-z]\S*\s+\S+").unwrap()
+            });
+            if !SYSTEM_COLON_TITLE.is_match(after_period) {
+                continue;
+            }
         }
 
         // This is a real sentence boundary
@@ -2731,8 +2819,12 @@ mod tests {
                 "Opaque control-flow integrity",
             ),
             (
+                // The real paper is "Sanctuary: Arming TrustZone with User-Space
+                // Enclaves" (NDSS 2019); "Sanc-tuary" is a PDF line break that
+                // the system-name dehyphenation correctly merges so the title
+                // matches what databases store.
                 "Sanc-tuary: Arming trustzone with user-space enclaves.: in NDSS",
-                "Sanc-tuary: Arming trustzone with user-space enclaves",
+                "Sanctuary: Arming trustzone with user-space enclaves",
             ),
             (
                 "Snow white: Provably secure proofs of stake.: IACR Cryptol. ePrint Arch., vol. 2017, p. 919, 2017",
@@ -5221,6 +5313,204 @@ fn test_colon_comma_journal_stripped() {
     assert!(
         cleaned.contains("Flagr"),
         "Title should contain 'Flagr': '{}'",
+        cleaned
+    );
+}
+
+// ─── System-name-colon-title shape ────────────────────────────────
+//
+// CS references often title their paper as "<system-name>: <Subtitle>"
+// where the system name is lowercase, mixed-case, or contains digits/
+// hyphens. The default sentence splitter requires the next word after
+// a period to start with an uppercase letter, which dropped these on
+// the floor and let `clean_title` truncate at the last author surname's
+// period — extracting just the surname as title.
+
+#[test]
+fn test_title_system_lowercase_eedtls() {
+    // Real reference: U. Banerjee et al., "eedtls: Energy-efficient
+    // datagram transport layer security…", IEEE GLOBECOM 2017.
+    // Pre-fix, title extracted as "Chandrakasan" (last author surname).
+    let r = "U. Banerjee, C. Juvekar, S. H. Fuller, and A. P. Chandrakasan. eedtls: Energy-efficient datagram transport layer security for the internet of things. In IEEE Global Communications Conference, 2017";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("eedtls:"),
+        "Expected eedtls title, got: {:?}",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("Energy-efficient"),
+        "Expected full title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_lowercase_itls_journal_only() {
+    // Same shape but with a journal venue marker (no "In" prefix).
+    let r = "P. Li, J. Su, and X. Wang. itls: Lightweight transport-layer security protocol for iot with minimal latency and perfect forward secrecy. IEEE Internet of Things Journal, 2020";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("itls:"),
+        "Expected itls title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_camelcase_ispy() {
+    // Mixed-case system name "iSpy" with all-lowercase subtitle.
+    let r = "Rahul Raguram, Andrew M White, Dibyendusekhar Goswami, Fabian Monrose, and Jan-Michael Frahm. iSpy: automatic reconstruction of typed input from compromising reflections. In Proceedings of the ACM conference on Computer and Communications Security (CCS), pages 527-536, 2011";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("iSpy:"),
+        "Expected iSpy title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_lowercase_mixup_arxiv() {
+    // arXiv-only venue — no "In Proc" / journal anchor.
+    let r = "Hongyi Zhang, Moustapha Cisse, Yann N Dauphin, and David Lopez-Paz. mixup: Beyond empirical risk minimization. arXiv preprint arXiv:1710.09412, 2017";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("mixup:"),
+        "Expected mixup title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_bracketed_acronym() {
+    // BibTeX-protected acronym `{PRSA}:` — the AUTHOR_AFTER pattern
+    // must accept `{TOKEN}:` continuations as well as plain tokens.
+    let r = "Y. Yang, C. Li, Q. Li, O. Ma, H. Wang, Z. Wang, Y. Gao, W. Chen, and S. Ji. {PRSA}: Prompt stealing attacks against {Real-World} prompt services. In USENIX Security, 2025";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("PRSA:") || cleaned.starts_with("{PRSA}:"),
+        "Expected PRSA title, got: {:?}",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("Prompt stealing"),
+        "Expected full subtitle, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_lowercase_with_hyphen_after_dehyphenation() {
+    // Models the "Hyper-\nKitten:" PDF line-break: the parser's
+    // `fix_hyphenation` collapses the linebreak before this code runs,
+    // so the test feeds the post-hyphenation form.
+    let r = "Alice Author and Bob Author. HyperKitten: A novel system for cat synthesis. In Proc. Symposium on Felines, 2024";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("HyperKitten:"),
+        "Expected HyperKitten title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_stackguard_pdf_linebreak_dehyphenation() {
+    // Crump ref 16 in usenix2026: PDF typeset "Stack-\nguard:" so the
+    // extracted title was "Stack-guard:". Databases (DBLP, CrossRef)
+    // index the original "StackGuard" as a single FTS5 token, so a
+    // search that splits "Stack-guard" into ["stack", "guard"] missed
+    // the record entirely. clean_title now collapses the leading
+    // system-name hyphen so the cited form matches the indexed record.
+    let r = "Crispin Cowan, Calton Pu, Dave Maier, Heather Hintony, Jonathan Walpole, Peat Bakke, Steve Beattie, Aaron Grier, Perry Wagle, and Qian Zhang. Stack-guard: automatic adaptive detection and prevention of buffer-overflow attacks. In USENIX Security Symposium, 1998";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("Stackguard:"),
+        "Expected dehyphenated Stackguard title, got: {:?}",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("automatic adaptive detection"),
+        "Expected full subtitle preserved, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_compound_prefix_preserved() {
+    // Compound English prefixes (Pre-, Multi-, Post-, Anti-, …) before
+    // a colon are *not* PDF line-break artifacts — they're legitimate
+    // hyphenated compounds. Must keep the hyphen so the title matches
+    // databases that store them in compound form.
+    for r in [
+        "Some Author. Pre-training: A Survey of Methods. arXiv preprint, 2018",
+        "Some Author. Multi-modal: Combining Vision and Language. In Proc. ACL, 2020",
+        "Some Author. Post-quantum: Cryptography After Shor. In Proc. Crypto, 2021",
+    ] {
+        let (raw, q) = extract_title_from_reference(r);
+        let cleaned = clean_title(&raw, q);
+        assert!(
+            cleaned.contains('-'),
+            "Compound-prefix title should keep its hyphen: {:?}",
+            cleaned
+        );
+    }
+}
+
+#[test]
+fn test_title_et_al_followed_by_brace_acronym() {
+    // "et al. {FLAME}: Title" — the "al." mid-sentence-abbrev path
+    // looked at the FIRST char after the period. With `{` as first
+    // char (a brace-wrapped acronym title), the existing check
+    // refused to treat the period as a boundary. Now uses the first
+    // *alphabetic* char.
+    let r = "Marchal, Markus Miettinen, Azalia Mirhoseini, Shaza Zeitouni, et al. {FLAME}: Taming backdoors in federated learning. In 31st USENIX security symposium (USENIX Security 22), pages 1415-1432, 2022";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.contains("FLAME") && cleaned.contains("Taming backdoors"),
+        "Expected FLAME title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_acm_year_rejects_identifier_extraction() {
+    // try_acm_year used to match mid-citation publication dates like
+    // "Dec. 2024." and extract "DOI:..." as the title. clean_title's
+    // identifier guard would empty that, but by then the format chain
+    // had short-circuited and try_venue_marker / try_arxiv_preprint
+    // never got a chance. try_acm_year now bails on identifier-prefixed
+    // results so the chain falls through to a structurally-stronger path.
+    let r = "Marco Casagrande et al. CTRAPS: CTAP Client Impersonation and API Confusion on FIDO2. arXiv:2412.02349 [cs]. Dec. 2024. DOI: 10.48550/arXiv.2412.02349. URL: http://arxiv.org/abs/2412.02349";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.contains("CTRAPS") && cleaned.contains("CTAP"),
+        "Expected CTRAPS title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_does_not_split_at_lowercase_non_system_continuation() {
+    // The existing "h.p. lovecraft" guard must still hold: a period
+    // followed by a lowercase word that is *not* a "system: title"
+    // shape should not be treated as a sentence boundary.
+    let r = "Smith, J. h.p. lovecraft and the supernatural. In Proc. Horror Studies, 2020";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    // The title shouldn't be split mid-name. We can't predict the exact
+    // format extraction returns here, but it must not stop at "Smith".
+    assert!(
+        !cleaned.is_empty() && cleaned != "Smith" && cleaned != "J",
+        "Title should not be truncated to author surname, got: {:?}",
         cleaned
     );
 }
