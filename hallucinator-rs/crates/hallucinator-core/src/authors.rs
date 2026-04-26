@@ -149,20 +149,26 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
         }
         false
     } else {
-        // Phantom-author guard — when the DB returned a substantial
-        // author list and the citation lists noticeably more authors,
-        // count the surnames in the citation that don't appear in the
-        // DB record. A few unmatched names are tolerable (typos,
-        // unusual transliterations), but a citation that pads several
-        // unrelated names onto a real paper's author list — common
-        // for AI-hallucinated bibliographies that splice famous co-
-        // authors onto an existing title — should be flagged as a
-        // mismatch even though the genuine authors still overlap.
+        // Phantom-author guard — when the citation lists noticeably
+        // more authors than the DB record, count the surnames in the
+        // citation that don't appear in the DB record. A few unmatched
+        // names are tolerable (typos, unusual transliterations), but a
+        // citation that pads several unrelated names onto a real
+        // paper's author list — common for AI-hallucinated
+        // bibliographies that splice famous co-authors onto an existing
+        // title — should be flagged as a mismatch even though the
+        // genuine authors still overlap. Skipped when ref ≤ found (the
+        // et-al-truncation case is handled below).
         //
-        // Skip when found has <3 authors (some sources truncate, so
-        // "extra" doesn't necessarily mean "fabricated") or when ref
-        // ≤ found (the et-al-truncation case is handled below).
-        if found_authors.len() >= 3 && ref_authors.len() > found_authors.len() {
+        // We don't gate on `found.len() >= 3` like a more conservative
+        // guard would: some DB records are themselves incomplete
+        // (DBLP's StackGuard entry has just 1 author of the real 10,
+        // and citations with 9 phantoms vs that single hit are common
+        // padded-citation patterns). Trusting DB completeness here
+        // would hand a "verified" stamp to citations whose author list
+        // bears no resemblance to the indexed paper. Better to flag
+        // and let the user mark safe than to silently approve.
+        if ref_authors.len() > found_authors.len() {
             let found_surnames_for_phantom: HashSet<String> = found_authors
                 .iter()
                 .filter_map(|a| {
@@ -729,19 +735,31 @@ mod tests {
     }
 
     #[test]
-    fn test_phantom_authors_skipped_for_small_found() {
-        // When the DB returns only 1-2 authors, "extras" in the citation
-        // could just be a truncated DB response, not fabrication. The
-        // guard must not fire below the 3-author floor.
-        assert!(validate_authors(
+    fn test_phantom_authors_fires_even_with_small_found() {
+        // Real failure: DBLP's StackGuard (USENIX 1998) entry has only
+        // one author indexed (Crispan Cowan) although the actual paper
+        // has 10. A padded citation (10 ref authors, 1 DBLP author, 9
+        // surnames not matching the lone DB author) used to pass the
+        // standard intersection because the phantom guard was gated on
+        // `found.len() >= 3` — DB-completeness is too generous a
+        // benefit-of-the-doubt when the citation/DB skew is this
+        // extreme. The guard now fires regardless of DB size, so
+        // citations that don't match the indexed author list (whatever
+        // its size) are flagged as mismatches.
+        assert!(!validate_authors(
             &s(&[
-                "Alice Author",
-                "Bob Author",
-                "Carol Phantom",
-                "Dave Phantom",
-                "Eve Phantom",
+                "Crispan Cowan",
+                "Calton Pu",
+                "Dave Maier",
+                "Heather Hintony",
+                "Jonathan Walpole",
+                "Peat Bakke",
+                "Steve Beattie",
+                "Aaron Grier",
+                "Perry Wagle",
+                "Qian Zhang",
             ]),
-            &s(&["Alice Author", "Bob Author"]),
+            &s(&["Crispan Cowan"]),
         ));
     }
 
