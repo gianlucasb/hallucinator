@@ -2267,6 +2267,23 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // This matches author surname followed by any capital, treating it as author continuation
             // The sentence splitting will later determine actual boundaries
             Regex::new(&format!(r"^([A-Z]{}+)\.\s+[A-Z]", sc)).unwrap(),
+            // Surname + period + system-name + colon + title:
+            // "Chandrakasan. eedtls: Energy-efficient ..."
+            // After an initial like "A. P.", the next token is the surname,
+            // and the surname can be followed by a CS-style "system: title"
+            // where the system name is lowercase, mixed-case, or starts with
+            // digits. The default `Surname.\s+[A-Z]` pattern above only
+            // catches Capital-led continuations and would miss this shape,
+            // causing the splitter to break between the initial and the
+            // surname. Recognise the shape so the period after the initial
+            // is correctly skipped as an initial-end and the period after
+            // the surname is then handled as a sentence boundary by the
+            // SYSTEM_COLON_TITLE escape hatch in the lowercase guard.
+            Regex::new(&format!(
+                r"^[A-Z]{}+\.\s+(?:[A-Za-z0-9][A-Za-z0-9+\-]{{0,30}}|\{{[A-Za-z0-9+\-]+\}}):\s+[A-Za-z]\S*\s+\S+",
+                sc
+            ))
+            .unwrap(),
             // Surname + "and" + Name, followed by author terminator (comma, period, or another "and")
             // This prevents matching title phrases like "Universal and Transferable Adversarial"
             // which would otherwise match "Surname and Firstname" pattern
@@ -2547,11 +2564,30 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         }
 
         // Only treat as sentence boundary if followed by uppercase letter (or punctuation + uppercase)
-        // This prevents splitting at "h.p. lovecraft" where lowercase follows
+        // This prevents splitting at "h.p. lovecraft" where lowercase follows.
+        //
+        // Exception: CS reference titles often start with a lowercase or
+        // mixed-case "system name" followed by a colon: "eedtls: Energy-
+        // efficient ...", "iSpy: automatic reconstruction ...",
+        // "mixup: Beyond empirical risk ...", "idlg: Improved deep
+        // leakage ...". The default lowercase guard would treat the
+        // period before such a title as non-boundary, joining the last
+        // author surname to the title and ruining title extraction
+        // (the cleaner then truncates at "Surname.", leaving just the
+        // surname). Allow the boundary when the next tokens form a
+        // single short alphanumeric token + ":" + whitespace + an
+        // alphabetic title word + at least one more word — a shape
+        // common to system-name-prefixed titles but rare in mid-
+        // sentence prose.
         let after_period = &text[next_start..];
         let first_alpha = after_period.chars().find(|c| c.is_alphabetic());
         if !first_alpha.is_some_and(|c| c.is_uppercase()) {
-            continue;
+            static SYSTEM_COLON_TITLE: Lazy<Regex> = Lazy::new(|| {
+                Regex::new(r"^[A-Za-z0-9][A-Za-z0-9+\-]{0,30}:\s+[A-Za-z]\S*\s+\S+").unwrap()
+            });
+            if !SYSTEM_COLON_TITLE.is_match(after_period) {
+                continue;
+            }
         }
 
         // This is a real sentence boundary
@@ -5221,6 +5257,125 @@ fn test_colon_comma_journal_stripped() {
     assert!(
         cleaned.contains("Flagr"),
         "Title should contain 'Flagr': '{}'",
+        cleaned
+    );
+}
+
+// ─── System-name-colon-title shape ────────────────────────────────
+//
+// CS references often title their paper as "<system-name>: <Subtitle>"
+// where the system name is lowercase, mixed-case, or contains digits/
+// hyphens. The default sentence splitter requires the next word after
+// a period to start with an uppercase letter, which dropped these on
+// the floor and let `clean_title` truncate at the last author surname's
+// period — extracting just the surname as title.
+
+#[test]
+fn test_title_system_lowercase_eedtls() {
+    // Real reference: U. Banerjee et al., "eedtls: Energy-efficient
+    // datagram transport layer security…", IEEE GLOBECOM 2017.
+    // Pre-fix, title extracted as "Chandrakasan" (last author surname).
+    let r = "U. Banerjee, C. Juvekar, S. H. Fuller, and A. P. Chandrakasan. eedtls: Energy-efficient datagram transport layer security for the internet of things. In IEEE Global Communications Conference, 2017";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("eedtls:"),
+        "Expected eedtls title, got: {:?}",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("Energy-efficient"),
+        "Expected full title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_lowercase_itls_journal_only() {
+    // Same shape but with a journal venue marker (no "In" prefix).
+    let r = "P. Li, J. Su, and X. Wang. itls: Lightweight transport-layer security protocol for iot with minimal latency and perfect forward secrecy. IEEE Internet of Things Journal, 2020";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("itls:"),
+        "Expected itls title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_camelcase_ispy() {
+    // Mixed-case system name "iSpy" with all-lowercase subtitle.
+    let r = "Rahul Raguram, Andrew M White, Dibyendusekhar Goswami, Fabian Monrose, and Jan-Michael Frahm. iSpy: automatic reconstruction of typed input from compromising reflections. In Proceedings of the ACM conference on Computer and Communications Security (CCS), pages 527-536, 2011";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("iSpy:"),
+        "Expected iSpy title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_lowercase_mixup_arxiv() {
+    // arXiv-only venue — no "In Proc" / journal anchor.
+    let r = "Hongyi Zhang, Moustapha Cisse, Yann N Dauphin, and David Lopez-Paz. mixup: Beyond empirical risk minimization. arXiv preprint arXiv:1710.09412, 2017";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("mixup:"),
+        "Expected mixup title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_bracketed_acronym() {
+    // BibTeX-protected acronym `{PRSA}:` — the AUTHOR_AFTER pattern
+    // must accept `{TOKEN}:` continuations as well as plain tokens.
+    let r = "Y. Yang, C. Li, Q. Li, O. Ma, H. Wang, Z. Wang, Y. Gao, W. Chen, and S. Ji. {PRSA}: Prompt stealing attacks against {Real-World} prompt services. In USENIX Security, 2025";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("PRSA:") || cleaned.starts_with("{PRSA}:"),
+        "Expected PRSA title, got: {:?}",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("Prompt stealing"),
+        "Expected full subtitle, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_system_lowercase_with_hyphen_after_dehyphenation() {
+    // Models the "Hyper-\nKitten:" PDF line-break: the parser's
+    // `fix_hyphenation` collapses the linebreak before this code runs,
+    // so the test feeds the post-hyphenation form.
+    let r = "Alice Author and Bob Author. HyperKitten: A novel system for cat synthesis. In Proc. Symposium on Felines, 2024";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("HyperKitten:"),
+        "Expected HyperKitten title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_does_not_split_at_lowercase_non_system_continuation() {
+    // The existing "h.p. lovecraft" guard must still hold: a period
+    // followed by a lowercase word that is *not* a "system: title"
+    // shape should not be treated as a sentence boundary.
+    let r = "Smith, J. h.p. lovecraft and the supernatural. In Proc. Horror Studies, 2020";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    // The title shouldn't be split mid-name. We can't predict the exact
+    // format extraction returns here, but it must not stop at "Smith".
+    assert!(
+        !cleaned.is_empty() && cleaned != "Smith" && cleaned != "J",
+        "Title should not be truncated to author surname, got: {:?}",
         cleaned
     );
 }
