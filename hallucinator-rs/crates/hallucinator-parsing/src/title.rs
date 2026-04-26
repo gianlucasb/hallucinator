@@ -1254,7 +1254,18 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     static TRAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.\s*$").unwrap());
     let title = TRAIL.replace(title, "");
 
-    if title.is_empty() {
+    // Reject identifier-prefixed extractions. When the citation's
+    // year-period boundary is a *publication date* like "Dec. 2024."
+    // mid-citation (rather than the canonical ACM "Author. YYYY.
+    // Title." prefix), the text after that boundary is venue/DOI/URL
+    // metadata, not the title. Returning it here would let
+    // `clean_title` empty it and short-circuit the format chain
+    // before later, structurally-stronger paths (try_venue_marker,
+    // try_arxiv_preprint) get a chance. Bail so the chain continues.
+    static IDENT_PREFIX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^(?:doi:|https?://|arXiv[:\s]|ISBN[:\s]|ISSN[:\s]|URL\s*:?)").unwrap()
+    });
+    if title.is_empty() || IDENT_PREFIX.is_match(&title) {
         None
     } else {
         Some((title.to_string(), false))
@@ -2506,12 +2517,12 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             if word_before.to_lowercase() == "al" {
                 let after_period = &text[next_start..];
                 let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
-                if !is_author
-                    && after_period
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_uppercase())
-                {
+                // Use first *alphabetic* character (skipping leading
+                // punctuation like `{` or `"`) so brace-wrapped acronyms
+                // — `et al. {FLAME}: Taming backdoors ...` — are still
+                // recognised as a title boundary.
+                let first_alpha = after_period.chars().find(|c| c.is_alphabetic());
+                if !is_author && first_alpha.is_some_and(|c| c.is_uppercase()) {
                     // This "al." is followed by what looks like a title - treat it as a boundary
                     // (don't continue, fall through to sentence boundary handling)
                 } else {
@@ -5359,6 +5370,41 @@ fn test_title_system_lowercase_with_hyphen_after_dehyphenation() {
     assert!(
         cleaned.starts_with("HyperKitten:"),
         "Expected HyperKitten title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_et_al_followed_by_brace_acronym() {
+    // "et al. {FLAME}: Title" — the "al." mid-sentence-abbrev path
+    // looked at the FIRST char after the period. With `{` as first
+    // char (a brace-wrapped acronym title), the existing check
+    // refused to treat the period as a boundary. Now uses the first
+    // *alphabetic* char.
+    let r = "Marchal, Markus Miettinen, Azalia Mirhoseini, Shaza Zeitouni, et al. {FLAME}: Taming backdoors in federated learning. In 31st USENIX security symposium (USENIX Security 22), pages 1415-1432, 2022";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.contains("FLAME") && cleaned.contains("Taming backdoors"),
+        "Expected FLAME title, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_acm_year_rejects_identifier_extraction() {
+    // try_acm_year used to match mid-citation publication dates like
+    // "Dec. 2024." and extract "DOI:..." as the title. clean_title's
+    // identifier guard would empty that, but by then the format chain
+    // had short-circuited and try_venue_marker / try_arxiv_preprint
+    // never got a chance. try_acm_year now bails on identifier-prefixed
+    // results so the chain falls through to a structurally-stronger path.
+    let r = "Marco Casagrande et al. CTRAPS: CTAP Client Impersonation and API Confusion on FIDO2. arXiv:2412.02349 [cs]. Dec. 2024. DOI: 10.48550/arXiv.2412.02349. URL: http://arxiv.org/abs/2412.02349";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.contains("CTRAPS") && cleaned.contains("CTAP"),
+        "Expected CTRAPS title, got: {:?}",
         cleaned
     );
 }
