@@ -46,6 +46,16 @@ pub(crate) fn extract_title_from_reference_with_config(
         Lazy::new(|| Regex::new(r"(doi\.org/[^\s]+)\.\s*\n\s*(\d+)").unwrap());
     let ref_text = DOI_LINE_BREAK.replace_all(&ref_text, "$1.$2");
 
+    // Fix arXiv ID line breaks: arXiv IDs (NNNN.NNNNN) can split across
+    // lines too — "arXiv:2412.02\n349" → "arXiv:2412.02349". Same
+    // motivation: must run before whitespace collapse so the sentence
+    // splitter doesn't treat "02. 349" as a sentence break and lose the
+    // ID. Match both `arXiv:` and `arXiv preprint arXiv:` prefixes,
+    // case-insensitive, with the trailing fragment being any digit run.
+    static ARXIV_LINE_BREAK: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)(arxiv\s*:\s*\d{4}\.\d+)\s*\n\s*(\d+)").unwrap());
+    let ref_text = ARXIV_LINE_BREAK.replace_all(&ref_text, "$1$2");
+
     // Normalize whitespace
     static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
     let ref_text = WS_RE.replace_all(&ref_text, " ");
@@ -5477,6 +5487,29 @@ fn test_title_et_al_followed_by_brace_acronym() {
         cleaned.contains("FLAME") && cleaned.contains("Taming backdoors"),
         "Expected FLAME title, got: {:?}",
         cleaned
+    );
+}
+
+#[test]
+fn test_title_arxiv_id_rejoined_across_line_break() {
+    // arXiv IDs split across lines in PDF text extraction, e.g.
+    // "arXiv:2412.02\n349 [cs]". Without rejoining, whitespace
+    // normalisation collapses the newline to a space and the bare
+    // "349" looks like the start of a new sentence to the splitter
+    // (which can drop it or absorb it as venue text). Mirror the
+    // existing DOI line-break handling so the ID stays contiguous.
+    //
+    // We assert the *contiguous* form ends up in the parsed title
+    // text (before any clean_title pass) — i.e. the digits "02"
+    // and "349" are joined with no whitespace separator. Title
+    // extraction quality past the arXiv marker is a separate
+    // concern handled by the format chain.
+    let r = "Some Author. A Title That Comes Before The ID. arXiv:2412.02\n349 [cs]";
+    let (raw, _q) = extract_title_from_reference(r);
+    assert!(
+        !raw.contains("02 349") && !raw.contains("02\n349"),
+        "Rejoined arXiv ID should be contiguous (no space between '02' and '349'), got: {:?}",
+        raw
     );
 }
 

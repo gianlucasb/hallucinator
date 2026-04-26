@@ -839,7 +839,7 @@ pub fn compute_fp_identity(title: &str, authors: &[String]) -> Option<String> {
 /// - `"Smith, John"`  → `"j:smith"` (handled by the comma branch below)
 /// - `"C.-P. Yuan"`   → `"c:yuan"` (first ASCII letter of first token)
 /// - `"Balázs, C."`   → `"c:balazs"`
-fn author_fingerprint(raw: &str) -> Option<String> {
+pub(crate) fn author_fingerprint(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() {
         return None;
