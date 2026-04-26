@@ -1699,4 +1699,156 @@ mod propagation_tests {
         assert_eq!(n, 0, "empty-authors ref is not a match");
         assert!(ref_states[1][0].fp_reason.is_none());
     }
+
+    /// End-to-end version of `space_after_json_load_writes_to_cache`:
+    /// constructs a real App, populates it from a loaded JSON report,
+    /// fires the actual `Action::ToggleSafe` via `app.update`, and asserts
+    /// the cache was written. The unit-level reproducer below tests the
+    /// inner helper in isolation; this one routes through the same Space
+    /// dispatch path the user hits, so any drift between the two paths
+    /// (cache not opened, screen-specific routing, propagation clobbers,
+    /// …) would surface here.
+    #[test]
+    fn space_via_app_after_json_load_writes_to_cache() {
+        use super::super::App;
+        use super::super::Screen;
+        use crate::action::Action;
+        use crate::load::load_results_file;
+        use crate::theme::Theme;
+        use std::io::Write;
+
+        let json = r#"[
+  {
+    "filename": "fixture.pdf",
+    "verdict": "safe",
+    "stats": {"total": 1, "skipped": 0},
+    "references": [
+      {
+        "index": 0,
+        "original_number": 1,
+        "title": "Attention Is All You Need",
+        "raw_citation": "Vaswani et al. 2017",
+        "status": "verified",
+        "effective_status": "verified",
+        "url_check_skipped": false,
+        "fp_reason": null,
+        "source": "arxiv",
+        "ref_authors": ["Ashish Vaswani", "Noam Shazeer"],
+        "found_authors": ["Ashish Vaswani", "Noam Shazeer"],
+        "paper_url": "https://arxiv.org/abs/1706.03762",
+        "failed_dbs": [],
+        "doi_info": null,
+        "arxiv_info": null,
+        "retraction_info": null,
+        "db_results": []
+      }
+    ]
+  }
+]"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json_path = dir.path().join("fixture.json");
+        std::fs::File::create(&json_path)
+            .and_then(|mut f| f.write_all(json.as_bytes()))
+            .expect("write json");
+        let cache_path = dir.path().join("cache.db");
+
+        let mut app = App::new(vec![], Theme::hacker());
+        app.config_state.cache_path = cache_path.to_string_lossy().into_owned();
+        // Mirror main.rs:587-589 — eagerly open the cache so the Space
+        // handler finds it on the App.
+        app.get_or_build_query_cache();
+
+        let loaded = load_results_file(&json_path).expect("load");
+        let first_idx = app.papers.len();
+        for (paper, refs) in loaded {
+            app.papers.push(paper);
+            app.ref_states.push(refs);
+            app.file_paths.push(std::path::PathBuf::new());
+        }
+        app.sync_loaded_fp_overrides(first_idx);
+        app.recompute_sorted_indices();
+
+        // Simulate the user navigating to the paper and pressing Space.
+        app.screen = Screen::Paper(0);
+        app.paper_cursor = 0;
+        app.update(Action::ToggleSafe);
+
+        let cache = app.current_query_cache.as_ref().expect("cache opened");
+        let key = hallucinator_core::cache::compute_fp_identity(
+            "Attention Is All You Need",
+            &["Ashish Vaswani".into(), "Noam Shazeer".into()],
+        )
+        .expect("identity");
+        assert_eq!(
+            cache.get_fp_override(&key).as_deref(),
+            Some("broken_parse"),
+            "Space on a JSON-loaded ref must update the cache via the App's Action::ToggleSafe path",
+        );
+    }
+
+    /// Regression: refs loaded from a JSON report should persist Space-mark
+    /// updates to the cache the same way live PDF refs do. Previously the
+    /// cache write went through, but the identity key produced from the
+    /// loaded RefState diverged from the key the next live PDF run would
+    /// compute, so the persisted override was unreachable on reload.
+    #[test]
+    fn space_after_json_load_writes_to_cache() {
+        use crate::load::load_results_file;
+        use std::io::Write;
+
+        // Minimal export-format JSON with a verified ref carrying authors.
+        let json = r#"[
+  {
+    "filename": "fixture.pdf",
+    "verdict": "safe",
+    "stats": {"total": 1, "skipped": 0},
+    "references": [
+      {
+        "index": 0,
+        "original_number": 1,
+        "title": "Attention Is All You Need",
+        "raw_citation": "Vaswani et al. 2017",
+        "status": "verified",
+        "effective_status": "verified",
+        "url_check_skipped": false,
+        "fp_reason": null,
+        "source": "arxiv",
+        "ref_authors": ["Ashish Vaswani", "Noam Shazeer"],
+        "found_authors": ["Ashish Vaswani", "Noam Shazeer"],
+        "paper_url": "https://arxiv.org/abs/1706.03762",
+        "failed_dbs": [],
+        "doi_info": null,
+        "arxiv_info": null,
+        "retraction_info": null,
+        "db_results": []
+      }
+    ]
+  }
+]"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json_path = dir.path().join("fixture.json");
+        let mut f = std::fs::File::create(&json_path).expect("create json");
+        f.write_all(json.as_bytes()).expect("write json");
+        drop(f);
+
+        let loaded = load_results_file(&json_path).expect("load");
+        let (paper, refs) = loaded.into_iter().next().expect("one paper");
+        let mut papers = vec![paper];
+        let mut ref_states = vec![refs];
+
+        let cache_path = dir.path().join("cache.db");
+        let cache = hallucinator_core::build_query_cache(Some(&cache_path), 60, 60);
+
+        // Simulate Space on the loaded ref.
+        let (origin_identity, new_fp) =
+            cycle_fp_reason_and_adjust_stats(&mut papers, &mut ref_states, 0, 0, Some(&cache));
+
+        let key = origin_identity.expect("identity key built from loaded title+authors");
+        assert_eq!(new_fp, Some(FpReason::BrokenParse));
+        assert_eq!(
+            cache.get_fp_override(&key).as_deref(),
+            Some("broken_parse"),
+            "Space-mark on a JSON-loaded ref must write through to the cache",
+        );
+    }
 }
