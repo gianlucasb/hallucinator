@@ -387,9 +387,75 @@ pub(crate) fn segment_references_with_config(
     // Strip headers for scoring (same preprocessing as in segment_references_all_strategies)
     let preprocessed = strip_page_headers(ref_text);
 
-    select_best_segmentation(all_results, &preprocessed, config, &weights)
+    let chosen = select_best_segmentation(all_results, &preprocessed, config, &weights)
         .map(|r| r.references)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    chosen
+        .into_iter()
+        .filter(|s| looks_like_reference(s))
+        .collect()
+}
+
+/// Decide whether a segment produced by the segmenters is plausibly an
+/// academic reference. Drops body text that snuck into the references
+/// section because the section-end detector (`END_RE` above) missed an
+/// appendix header and the segmenter dutifully chunked the appendix
+/// prose into pseudo-references.
+///
+/// Two cheap signals — both required:
+/// 1. **Punctuation prefix**: real refs always start with a letter,
+///    digit, bullet, em-dash, or quote — never a comma, semicolon,
+///    period, or bang. Segments leading with those are column-break
+///    artifacts (e.g., a continuation line that got split off when
+///    the segmenter saw a stray period before it).
+/// 2. **Academic marker**: any ref ≥100 chars almost always carries a
+///    year, DOI, arXiv ID, URL, or recognisable venue keyword. Body
+///    paragraphs from appendix sections — theorems, hybrid games,
+///    figure captions, experimental setups — rarely do. Short
+///    segments are exempt so legitimate URL-only refs ("guac.
+///    https://guac.sh/") and short standards ("RFC 5246") still pass.
+fn looks_like_reference(seg: &str) -> bool {
+    let trimmed = seg.trim();
+    let Some(first) = trimmed.chars().next() else {
+        return false;
+    };
+
+    // Punctuation-prefix guard
+    if matches!(first, ',' | ';' | '!' | '.') {
+        return false;
+    }
+
+    // Length-gated academic-marker check
+    if trimmed.chars().count() < 100 {
+        return true;
+    }
+
+    static ACADEMIC_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(concat!(
+            // 4-digit year (1900-2099)
+            r"\b(?:19|20)\d{2}\b|",
+            // 2-digit year preceded by an apostrophe (EUROCRYPT '24)
+            r"['\u{2018}\u{2019}]\d{2}\b|",
+            // DOI prefix or doi.org URL
+            r"(?i)\b(?:doi\.org/|10\.\d{4,9}/)|",
+            // arXiv identifier
+            r"(?i)\barxiv[:\.]|",
+            // Any URL
+            r"https?://|",
+            // Common venue cues — case-insensitive
+            r"(?i)\b(?:",
+            r"in\s+(?:proc|proceedings)|proceedings\s+of|",
+            r"trans\.\s|journal\s+of|workshop\s+on|",
+            r"symposium\s+on|conference\s+on|",
+            r"usenix|ndss|s&p|crypto|eurocrypt|",
+            r"acm\s+(?:trans|conference|sigsac)|ieee\s+(?:trans|conference|symposium)|",
+            r"rfc\s*\d+|iso[/\s\-]?\d+",
+            r")\b",
+        ))
+        .unwrap()
+    });
+
+    ACADEMIC_RE.is_match(trimmed)
 }
 
 fn try_ieee_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<String>> {
@@ -1282,5 +1348,81 @@ mod tests {
             !section.contains("Classification"),
             "Should not contain table content"
         );
+    }
+
+    // ─── looks_like_reference: structural validity ──────────────────
+
+    #[test]
+    fn looks_like_reference_drops_punctuation_prefixed_fragment() {
+        // baweja ref 58 in the USENIX 2026 corpus: a column-break
+        // artifact that opens with a comma. Real refs never do.
+        let body = ", and as a result they suffer from a logN overhead on the prover time.";
+        assert!(!looks_like_reference(body));
+    }
+
+    #[test]
+    fn looks_like_reference_drops_period_prefixed_fragment() {
+        // gong ref 66: starts with ". Theorem 4. Let p0 = N(0,C2σ2)..."
+        let body = ". Theorem 4. Let p0 = N(0,C2σ2) and p1 = N(1,C2σ2) denote the probability density functions.";
+        assert!(!looks_like_reference(body));
+    }
+
+    #[test]
+    fn looks_like_reference_drops_long_body_text() {
+        // fan ref 63: "Datasets. The experiments are performed on five
+        // commonly-used scalable realistic graph datasets..." Long, no
+        // year, no DOI, no URL, no venue cue → body text.
+        let body = "Datasets. The experiments are performed on five commonly-used scalable realistic graph datasets: Cora, Cora_ML, Cite-seer, Amazon Photo, and PubMed. Baselines. To evaluate our approach, we employ four types of graph adversarial attacks.";
+        assert!(!looks_like_reference(body));
+    }
+
+    #[test]
+    fn looks_like_reference_drops_algorithm_pseudocode() {
+        // chen-liqun ref 110: KP-ABS algorithm pseudocode from an appendix.
+        let body = "KP-ABS with Type-III pairings (mpk, msk) ←Setup(1λ). Run GroupGen(1λ) to obtain the group parameters par. Pick α and a hash function H.";
+        assert!(!looks_like_reference(body));
+    }
+
+    #[test]
+    fn looks_like_reference_keeps_ref_with_4digit_year() {
+        let r = "Allan Wigfield and Jacquelynne S. Eccles. Expectancy-Value Theory of Achievement Motivation. Contemporary Educational Psychology, 25(1):68-81, 2000.";
+        assert!(looks_like_reference(r));
+    }
+
+    #[test]
+    fn looks_like_reference_keeps_ref_with_apostrophe_year() {
+        // baweja's heavy '24-style citations: long but no 4-digit year.
+        let r = "A. Arun, S. T. V. Setty, and J. Thaler. \"Jolt: SNARKs for Virtual Machines via Lookups\". In: EUROCRYPT '24. Lecture Notes in Computer Science.";
+        assert!(looks_like_reference(r));
+    }
+
+    #[test]
+    fn looks_like_reference_keeps_ref_with_doi() {
+        let r = "S. Smith. A title. Some Journal, 10.1145/1234567.1234568. Pages 1-10. With more text padding to push past one hundred characters total.";
+        assert!(looks_like_reference(r));
+    }
+
+    #[test]
+    fn looks_like_reference_keeps_ref_with_url() {
+        let r = "bomctl/bomctl. https://github.com/bomctl/bomctl. original-date: 2024-01-10T18:42:31Z. Lower-case GitHub repo references are legitimate.";
+        assert!(looks_like_reference(r));
+    }
+
+    #[test]
+    fn looks_like_reference_keeps_short_ref_without_markers() {
+        // Short refs like "RFC 5246" or "ISO 9001" don't always carry
+        // any of the academic-marker patterns, but they're real refs.
+        // The 100-char floor preserves them.
+        assert!(looks_like_reference("RFC 5246"));
+        assert!(looks_like_reference("ISO 9001"));
+        assert!(looks_like_reference(
+            "Dmitry Kogan and Henry Corrigan-Gibbs. Private Blocklist Lookups with Checklist."
+        ));
+    }
+
+    #[test]
+    fn looks_like_reference_drops_empty() {
+        assert!(!looks_like_reference(""));
+        assert!(!looks_like_reference("   \n  "));
     }
 }
