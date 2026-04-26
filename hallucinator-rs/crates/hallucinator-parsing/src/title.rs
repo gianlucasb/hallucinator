@@ -210,6 +210,47 @@ pub(crate) fn clean_title_with_config(
 
     let mut title = fix_hyphenation(title);
 
+    // PDF line-break heuristic for system-name titles. When a title
+    // begins with `[A-Z][a-z]+-[a-z]+:` — e.g. "Stack-guard: …" — the
+    // hyphen is almost always a PDF typesetting artifact ("Stack-\n
+    // guard"), not a real compound word. The original system name is
+    // typically `StackGuard` / `Stackguard`, indexed by databases as a
+    // single token; both `fix_hyphenation` (dictionary-based) and the
+    // FTS5 unicode61 tokenizer (used by DBLP / arXiv / IACR offline
+    // indexes) leave the hyphen alone, so the cited form never matches
+    // the indexed record. Dehyphenate exactly this shape once, after
+    // the dictionary pass has run, so the cleaned title carries the
+    // form databases actually use.
+    //
+    // Restricted to: capital first half, lowercase second half,
+    // immediately followed by `:`, AND the first half is *not* a
+    // common English compound prefix (`Pre-`, `Post-`, `Multi-`, …).
+    // This excludes legitimate compounds like `Pre-training` (which
+    // can plausibly appear before a colon) and `Machine-Learning`
+    // (capital second half, doesn't match the regex anyway).
+    static COMPOUND_PREFIXES: Lazy<std::collections::HashSet<&'static str>> = Lazy::new(|| {
+        [
+            "pre", "post", "sub", "non", "multi", "anti", "pseudo", "meta", "quasi", "semi", "co",
+            "self", "auto", "cross", "inter", "intra", "trans", "ultra", "super", "hyper", "micro",
+            "macro", "mini", "mid", "over", "under", "re", "de",
+        ]
+        .into_iter()
+        .collect()
+    });
+    static SYSTEM_LINEBREAK_HYPHEN: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^([A-Z][a-z]+)-([a-z]+):").unwrap());
+    title = SYSTEM_LINEBREAK_HYPHEN
+        .replace(&title, |caps: &regex::Captures| {
+            let first = &caps[1];
+            let second = &caps[2];
+            if COMPOUND_PREFIXES.contains(first.to_lowercase().as_str()) {
+                format!("{}-{}:", first, second)
+            } else {
+                format!("{}{}:", first, second)
+            }
+        })
+        .into_owned();
+
     // Strip leading year from ACM-style titles ("2017. Title" -> "Title")
     // Must run BEFORE truncate_at_sentence_end to avoid truncating at year period
     static LEADING_YEAR: Lazy<Regex> =
@@ -2778,8 +2819,12 @@ mod tests {
                 "Opaque control-flow integrity",
             ),
             (
+                // The real paper is "Sanctuary: Arming TrustZone with User-Space
+                // Enclaves" (NDSS 2019); "Sanc-tuary" is a PDF line break that
+                // the system-name dehyphenation correctly merges so the title
+                // matches what databases store.
                 "Sanc-tuary: Arming trustzone with user-space enclaves.: in NDSS",
-                "Sanc-tuary: Arming trustzone with user-space enclaves",
+                "Sanctuary: Arming trustzone with user-space enclaves",
             ),
             (
                 "Snow white: Provably secure proofs of stake.: IACR Cryptol. ePrint Arch., vol. 2017, p. 919, 2017",
@@ -5372,6 +5417,50 @@ fn test_title_system_lowercase_with_hyphen_after_dehyphenation() {
         "Expected HyperKitten title, got: {:?}",
         cleaned
     );
+}
+
+#[test]
+fn test_title_stackguard_pdf_linebreak_dehyphenation() {
+    // Crump ref 16 in usenix2026: PDF typeset "Stack-\nguard:" so the
+    // extracted title was "Stack-guard:". Databases (DBLP, CrossRef)
+    // index the original "StackGuard" as a single FTS5 token, so a
+    // search that splits "Stack-guard" into ["stack", "guard"] missed
+    // the record entirely. clean_title now collapses the leading
+    // system-name hyphen so the cited form matches the indexed record.
+    let r = "Crispin Cowan, Calton Pu, Dave Maier, Heather Hintony, Jonathan Walpole, Peat Bakke, Steve Beattie, Aaron Grier, Perry Wagle, and Qian Zhang. Stack-guard: automatic adaptive detection and prevention of buffer-overflow attacks. In USENIX Security Symposium, 1998";
+    let (raw, q) = extract_title_from_reference(r);
+    let cleaned = clean_title(&raw, q);
+    assert!(
+        cleaned.starts_with("Stackguard:"),
+        "Expected dehyphenated Stackguard title, got: {:?}",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("automatic adaptive detection"),
+        "Expected full subtitle preserved, got: {:?}",
+        cleaned
+    );
+}
+
+#[test]
+fn test_title_compound_prefix_preserved() {
+    // Compound English prefixes (Pre-, Multi-, Post-, Anti-, …) before
+    // a colon are *not* PDF line-break artifacts — they're legitimate
+    // hyphenated compounds. Must keep the hyphen so the title matches
+    // databases that store them in compound form.
+    for r in [
+        "Some Author. Pre-training: A Survey of Methods. arXiv preprint, 2018",
+        "Some Author. Multi-modal: Combining Vision and Language. In Proc. ACL, 2020",
+        "Some Author. Post-quantum: Cryptography After Shor. In Proc. Crypto, 2021",
+    ] {
+        let (raw, q) = extract_title_from_reference(r);
+        let cleaned = clean_title(&raw, q);
+        assert!(
+            cleaned.contains('-'),
+            "Compound-prefix title should keep its hyphen: {:?}",
+            cleaned
+        );
+    }
 }
 
 #[test]
