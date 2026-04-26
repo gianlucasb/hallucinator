@@ -83,6 +83,13 @@ fn export_sort_key(r: &ValidationResult, fp: Option<FpReason>) -> u8 {
     if is_retracted(r) {
         return 0;
     }
+    // URL-gated NotFound refs are effectively skipped; group them with
+    // clean verified (5) rather than with the not-found bucket so they
+    // sort to the bottom of the per-paper section instead of cluttering
+    // the problems area with non-issues.
+    if r.url_check_skipped {
+        return 5;
+    }
     match r.status {
         Status::NotFound => 1,
         Status::Mismatch(_) => 2,
@@ -1022,6 +1029,7 @@ summary:hover { background: var(--card); border-radius: 8px; }
 .badge.not-found { background: var(--red); color: #fff; }
 .badge.mismatch { background: var(--yellow); color: #000; }
 .badge.retracted { background: var(--dark-red); color: #fff; }
+.badge.skipped { background: var(--dim); color: #fff; }
 .ref-detail {
   font-size: 0.9rem;
   color: var(--dim);
@@ -1261,6 +1269,15 @@ fn write_html_ref(out: &mut String, ref_num: usize, r: &ValidationResult, fp: Op
         ("verified".to_string(), "Verified".to_string())
     } else if retracted {
         ("retracted".to_string(), "RETRACTED".to_string())
+    } else if r.url_check_skipped {
+        // Mirror `effective_status_str`: a NotFound ref whose only
+        // remaining signal would have come from URL Check / Wayback was
+        // gated by `--url-match` and is effectively skipped, not a
+        // genuine "not found". The JSON export already collapses these
+        // to "skipped" via `effective_status`; the HTML must follow
+        // suit so users don't see hundreds of bogus "Not Found" badges
+        // for URL-only references they explicitly opted out of probing.
+        ("skipped".to_string(), "Skipped".to_string())
     } else {
         match &r.status {
             Status::Verified => ("verified".to_string(), "Verified".to_string()),
@@ -2035,6 +2052,85 @@ mod tests {
         assert!(out.contains("<!DOCTYPE html>"));
         assert!(out.contains("stat-card"));
         assert!(out.contains("</html>"));
+    }
+
+    #[test]
+    fn test_html_url_check_skipped_renders_as_skipped() {
+        // User report: "many references that are marked as safe still
+        // show as 'not found' in the report". Root cause: `write_html_ref`
+        // ignored `r.url_check_skipped` and rendered the underlying
+        // Status::NotFound, even though the JSON's `effective_status`
+        // collapses these to "skipped". Live in-memory state (a fresh
+        // PDF run with --url-match disabled) keeps Status=NotFound +
+        // url_check_skipped=true; HTML must follow the JSON convention
+        // and show these as Skipped, not Not Found.
+        let stats = CheckStats {
+            total: 2,
+            not_found: 1,
+            skipped: 1,
+            ..Default::default()
+        };
+        let mut url_gated = make_result("Github URL Ref", Status::NotFound);
+        url_gated.url_check_skipped = true;
+        let plain_nf = make_result("Real Hallucination", Status::NotFound);
+        let results = vec![Some(url_gated), Some(plain_nf)];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![
+            make_ref(0, "Github URL Ref"),
+            make_ref(1, "Real Hallucination"),
+        ];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_html(&[paper], ref_slices, false);
+
+        // The url_check_skipped ref renders as "Skipped" badge.
+        let url_idx = out.find("Github URL Ref").expect("title in HTML");
+        let url_end = (url_idx + 800).min(out.len());
+        let url_card = &out[url_idx..url_end];
+        assert!(
+            url_card.contains("badge skipped\">Skipped</span>"),
+            "URL-gated ref should render as Skipped"
+        );
+        assert!(
+            !url_card.contains("badge not-found\">Not Found</span>"),
+            "URL-gated ref must NOT render as Not Found"
+        );
+
+        // The plain not-found ref still renders as Not Found.
+        let plain_idx = out.find("Real Hallucination").expect("title in HTML");
+        let plain_end = (plain_idx + 800).min(out.len());
+        let plain_card = &out[plain_idx..plain_end];
+        assert!(
+            plain_card.contains("badge not-found\">Not Found</span>"),
+            "Real not-found ref must still render Not Found"
+        );
+    }
+
+    #[test]
+    fn test_html_fp_marked_ref_shows_as_verified() {
+        // User reports: "many references that are marked as safe still
+        // show as 'not found' in the report". Reproduce by exporting a
+        // NotFound ref that has fp_reason set — the badge must show as
+        // "Verified", not "Not Found".
+        let stats = CheckStats {
+            total: 1,
+            not_found: 1,
+            ..Default::default()
+        };
+        let results = vec![Some(make_result("Marked Safe NF", Status::NotFound))];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![make_ref_fp(0, "Marked Safe NF", FpReason::BrokenParse)];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_html(&[paper], ref_slices, false);
+
+        // The ref's badge should be "Verified" — NOT "Not Found".
+        assert!(
+            out.contains("Marked Safe NF"),
+            "ref title should appear in HTML"
+        );
+        assert!(
+            !out.contains("badge not-found\">Not Found</span>"),
+            "FP-marked ref must not render with the Not Found badge"
+        );
     }
 
     #[test]

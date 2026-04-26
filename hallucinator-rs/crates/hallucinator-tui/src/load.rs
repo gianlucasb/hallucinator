@@ -390,3 +390,173 @@ pub fn load_results_file(path: &Path) -> Result<Vec<(PaperState, Vec<RefState>)>
 
     Ok(loaded_files.into_iter().map(convert_loaded).collect())
 }
+
+#[cfg(test)]
+mod export_regression_tests {
+    use super::*;
+    use hallucinator_reporting::{ExportFormat, ReportPaper, ReportRef, SkipInfo, export_results};
+    use std::io::Write;
+
+    /// Synthetic-fixture version of the regression test for CI / fresh
+    /// checkouts that don't have the v3 JSON.
+    #[test]
+    fn html_export_after_json_load_marks_fp_refs_as_verified() {
+        // Minimal JSON in severity-sorted order (not_found ref first,
+        // even though its original_number is 3) — the same shape as
+        // usenix2026-v3.json.
+        let json = r#"[
+  {
+    "filename": "fixture.pdf",
+    "verdict": null,
+    "stats": {"total": 3, "skipped": 0},
+    "references": [
+      {
+        "index": 2,
+        "original_number": 3,
+        "title": "Marked Safe Paper",
+        "raw_citation": "Some Author. Marked Safe Paper. 2024",
+        "status": "not_found",
+        "effective_status": "not_found",
+        "url_check_skipped": false,
+        "fp_reason": "non_academic",
+        "source": null,
+        "ref_authors": ["Some Author"],
+        "found_authors": [],
+        "paper_url": null,
+        "failed_dbs": [],
+        "doi_info": null,
+        "arxiv_info": null,
+        "retraction_info": null,
+        "db_results": []
+      },
+      {
+        "index": 0,
+        "original_number": 1,
+        "title": "Verified Paper",
+        "raw_citation": "Author 1. Verified Paper. 2024",
+        "status": "verified",
+        "effective_status": "verified",
+        "url_check_skipped": false,
+        "fp_reason": null,
+        "source": "arxiv",
+        "ref_authors": ["Author 1"],
+        "found_authors": ["Author 1"],
+        "paper_url": "https://arxiv.org/abs/0001",
+        "failed_dbs": [],
+        "doi_info": null,
+        "arxiv_info": null,
+        "retraction_info": null,
+        "db_results": []
+      },
+      {
+        "index": 1,
+        "original_number": 2,
+        "title": "Plain Not Found",
+        "raw_citation": "Author 2. Plain Not Found. 2024",
+        "status": "not_found",
+        "effective_status": "not_found",
+        "url_check_skipped": false,
+        "fp_reason": null,
+        "source": null,
+        "ref_authors": ["Author 2"],
+        "found_authors": [],
+        "paper_url": null,
+        "failed_dbs": [],
+        "doi_info": null,
+        "arxiv_info": null,
+        "retraction_info": null,
+        "db_results": []
+      }
+    ]
+  }
+]"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json_path = dir.path().join("fixture.json");
+        std::fs::File::create(&json_path)
+            .and_then(|mut f| f.write_all(json.as_bytes()))
+            .expect("write json");
+
+        let loaded = load_results_file(&json_path).expect("load");
+        assert_eq!(loaded.len(), 1);
+        let (paper, ref_states) = &loaded[0];
+
+        // Build the export structures EXACTLY the way app/update.rs does.
+        let results_vec: Vec<Option<hallucinator_core::ValidationResult>> =
+            ref_states.iter().map(|rs| rs.result.clone()).collect();
+        let report_paper = ReportPaper {
+            filename: &paper.filename,
+            stats: &paper.stats,
+            results: &results_vec,
+            verdict: paper.verdict,
+        };
+        let report_refs: Vec<ReportRef> = ref_states
+            .iter()
+            .map(|rs| ReportRef {
+                index: rs.index,
+                title: rs.title.clone(),
+                skip_info: if let RefPhase::Skipped(reason) = &rs.phase {
+                    Some(SkipInfo {
+                        reason: reason.clone(),
+                    })
+                } else {
+                    None
+                },
+                fp_reason: rs.fp_reason,
+            })
+            .collect();
+        let ref_slices: &[&[ReportRef]] = &[&report_refs];
+
+        let html_path = dir.path().join("fixture.html");
+        export_results(
+            &[report_paper],
+            ref_slices,
+            ExportFormat::Html,
+            &html_path,
+            false,
+        )
+        .expect("export html");
+
+        let html = std::fs::read_to_string(&html_path).expect("read html");
+
+        // The FP-marked ref ("Marked Safe Paper") MUST show as Verified
+        // — its badge cannot be "Not Found". The ref-card spans from
+        // an opening `<div class="ref-card" data-status="...">` through
+        // a closing `</div>` matched at the same depth. Slice between
+        // the title and the next ref-card to get this card's body.
+        let marked_idx = html
+            .find("Marked Safe Paper")
+            .expect("FP-marked ref title should appear in HTML");
+        let after_title = &html[marked_idx..];
+        // The next ref-card or the end of the papers block bounds us.
+        let card_end = after_title
+            .find("<div class=\"ref-card\"")
+            .or_else(|| after_title.find("</div>\n</details>"))
+            .unwrap_or(after_title.len());
+        let card = &after_title[..card_end];
+        assert!(
+            !card.contains("badge not-found"),
+            "FP-marked ref's badge is 'not-found' — bug reproduced. Card body:\n{card}"
+        );
+        assert!(
+            card.contains("badge verified"),
+            "FP-marked ref's badge should be 'verified'. Card body:\n{card}"
+        );
+
+        // Sanity: the unmarked NotFound ref ("Plain Not Found") MUST
+        // still render with the not-found badge — we shouldn't have
+        // accidentally promoted everything.
+        let plain_idx = html
+            .find("Plain Not Found")
+            .expect("Plain not-found title should appear in HTML");
+        let plain_after = &html[plain_idx..];
+        let plain_end = plain_after
+            .find("<div class=\"ref-card\"")
+            .or_else(|| plain_after.find("</div>\n</details>"))
+            .unwrap_or(plain_after.len());
+        let plain_card = &plain_after[..plain_end];
+        assert!(
+            plain_card.contains("badge not-found"),
+            "Unmarked NotFound ref must still render the not-found badge"
+        );
+    }
+}
