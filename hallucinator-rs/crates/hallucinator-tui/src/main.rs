@@ -596,11 +596,13 @@ async fn main() -> anyhow::Result<()> {
         match load::load_results_file(load_path) {
             Ok(loaded) => {
                 let count = loaded.len();
+                let first_idx = app.papers.len();
                 for (paper, refs) in loaded {
                     app.papers.push(paper);
                     app.ref_states.push(refs);
                     app.file_paths.push(PathBuf::new()); // placeholder
                 }
+                app.sync_loaded_fp_overrides(first_idx);
                 app.batch_complete = true;
                 app.processing_started = true;
                 app.recompute_sorted_indices();

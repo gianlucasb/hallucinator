@@ -1,12 +1,53 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use hallucinator_core::QueryCache;
 use hallucinator_ingest::archive::ArchiveItem;
+use hallucinator_reporting::FpReason;
 
 use super::App;
-use crate::model::paper::RefPhase;
+use crate::model::paper::{RefPhase, RefState};
 use crate::model::queue::{PaperPhase, PaperState};
 use crate::tui_event::BackendCommand;
+
+/// Reconcile freshly-loaded refs with the query cache's `fp_overrides`
+/// table. PDF runs do this implicitly via `BackendEvent::ExtractionComplete`
+/// in `backend.rs`, which reads `get_fp_override` per ref before the user
+/// can interact. The JSON-load path never receives that event, so without
+/// this step Space-marks made on a loaded paper would persist to SQLite
+/// but be invisible the next time the JSON is reopened.
+///
+/// Per ref:
+/// - If the cache already has an entry for this identity, that value wins
+///   over the JSON's `fp_reason` and is stamped onto the `RefState`. This
+///   keeps the cache the live source of truth — re-loading a JSON whose
+///   `fp_reason` field is stale (e.g. the user toggled the mark in a
+///   previous session) restores the latest mark instead of clobbering it.
+/// - Otherwise, if the JSON carried an `fp_reason`, seed the cache with
+///   it so future sessions see the mark even when re-extracted from PDF.
+pub(crate) fn sync_fp_overrides_with_cache(refs: &mut [RefState], cache: &QueryCache) {
+    for rs in refs {
+        let Some(key) = hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
+        else {
+            continue;
+        };
+        match cache.get_fp_override(&key) {
+            Some(reason_str) => {
+                // Cache wins. Parse and stamp; if the cache holds an
+                // unknown variant (forward-compat), leave rs.fp_reason
+                // untouched rather than silently dropping the mark.
+                if let Ok(reason) = reason_str.parse::<FpReason>() {
+                    rs.fp_reason = Some(reason);
+                }
+            }
+            None => {
+                if let Some(reason) = rs.fp_reason {
+                    cache.set_fp_override(&key, Some(reason.as_str()));
+                }
+            }
+        }
+    }
+}
 
 impl App {
     /// Send a start command to the backend if not already started.
@@ -65,6 +106,48 @@ impl App {
                 config: Box::new(config),
             });
             self.inflight_batches += 1;
+        }
+    }
+
+    /// Reconcile freshly-loaded papers (those at indices `first_paper_idx..`)
+    /// with the query cache. For each ref:
+    /// - Restore `fp_reason` from cache if present (cache wins over JSON).
+    /// - Otherwise seed cache from the JSON's `fp_reason`.
+    /// Then re-walk the papers' stats to apply the `apply_fp_delta`
+    /// adjustments for refs whose `fp_reason` flipped from None → Some
+    /// during the cache-restore step. This keeps the queue table's
+    /// "Safe" / "Problems" counts consistent with what the user sees
+    /// per-ref, just as `backend.rs` ExtractionComplete already does
+    /// for live PDF runs.
+    pub(crate) fn sync_loaded_fp_overrides(&mut self, first_paper_idx: usize) {
+        let cache = self.get_or_build_query_cache();
+        for paper_idx in first_paper_idx..self.ref_states.len() {
+            let refs = &mut self.ref_states[paper_idx];
+
+            // Snapshot pre-sync fp_reason to detect None → Some flips
+            // that need a stat adjustment (load.rs already credited
+            // the JSON's marks, so we only need to credit *new* ones
+            // restored from cache).
+            let pre: Vec<Option<FpReason>> = refs.iter().map(|rs| rs.fp_reason).collect();
+
+            sync_fp_overrides_with_cache(refs, &cache);
+
+            for (i, rs) in refs.iter().enumerate() {
+                let was_safe = pre[i].is_some();
+                let is_safe = rs.fp_reason.is_some();
+                if was_safe == is_safe {
+                    continue;
+                }
+                let Some(result) = &rs.result else { continue };
+                let is_retracted = result
+                    .retraction_info
+                    .as_ref()
+                    .is_some_and(|r| r.is_retracted);
+                let dir: i32 = if is_safe { 1 } else { -1 };
+                if let Some(paper) = self.papers.get_mut(paper_idx) {
+                    paper.apply_fp_delta(&result.status, is_retracted, dir);
+                }
+            }
         }
     }
 
@@ -240,11 +323,13 @@ impl App {
                 match crate::load::load_results_file(&path) {
                     Ok(loaded) => {
                         let count = loaded.len();
+                        let first_idx = self.papers.len();
                         for (paper, refs) in loaded {
                             self.papers.push(paper);
                             self.ref_states.push(refs);
                             self.file_paths.push(PathBuf::new()); // placeholder
                         }
+                        self.sync_loaded_fp_overrides(first_idx);
                         self.batch_complete = true;
                         self.processing_started = true;
                         self.activity.log(format!(
@@ -561,5 +646,125 @@ impl App {
                 config: Box::new(config),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::paper::FpReason;
+
+    fn ref_with(title: &str, authors: &[&str], fp_reason: Option<FpReason>) -> RefState {
+        RefState {
+            index: 0,
+            title: title.into(),
+            phase: RefPhase::Done,
+            result: None,
+            fp_reason,
+            raw_citation: String::new(),
+            authors: authors.iter().map(|s| s.to_string()).collect(),
+            doi: None,
+            arxiv_id: None,
+            urls: vec![],
+        }
+    }
+
+    fn temp_cache() -> (tempfile::TempDir, std::sync::Arc<QueryCache>) {
+        // SQLite-backed cache; the in-memory fallback (`build_query_cache(None, …)`)
+        // silently drops fp_overrides since there's no persistence layer.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache.db");
+        let cache = hallucinator_core::build_query_cache(Some(&path), 60, 60);
+        (dir, cache)
+    }
+
+    #[test]
+    fn sync_seeds_cache_from_json_fp_reasons() {
+        // Regression for case (A): pre-marked refs in JSON should land
+        // in the cache so future sessions (PDF or JSON) see the mark.
+        let (_dir, cache) = temp_cache();
+        let mut refs = vec![
+            ref_with(
+                "Marked Safe Paper",
+                &["Alice Author"],
+                Some(FpReason::KnownGood),
+            ),
+            ref_with("Untouched Paper", &["Bob Author"], None),
+        ];
+
+        sync_fp_overrides_with_cache(&mut refs, &cache);
+
+        let key_marked = hallucinator_core::cache::compute_fp_identity(
+            "Marked Safe Paper",
+            &["Alice Author".into()],
+        )
+        .unwrap();
+        let key_untouched = hallucinator_core::cache::compute_fp_identity(
+            "Untouched Paper",
+            &["Bob Author".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            cache.get_fp_override(&key_marked).as_deref(),
+            Some("known_good")
+        );
+        assert!(cache.get_fp_override(&key_untouched).is_none());
+    }
+
+    #[test]
+    fn sync_restores_cache_marks_into_loaded_refs() {
+        // Regression for case (B): a Space-mark made in a previous JSON
+        // session writes to the cache, but reopening the JSON used to
+        // ignore the cache (only PDF extraction restored marks). Now
+        // the load path also reads `get_fp_override` and stamps the
+        // mark onto the freshly-loaded RefState.
+        let (_dir, cache) = temp_cache();
+        let key = hallucinator_core::cache::compute_fp_identity(
+            "Persisted Paper",
+            &["Carol Author".into()],
+        )
+        .unwrap();
+        cache.set_fp_override(&key, Some("broken_parse"));
+
+        let mut refs = vec![ref_with("Persisted Paper", &["Carol Author"], None)];
+        sync_fp_overrides_with_cache(&mut refs, &cache);
+
+        assert_eq!(refs[0].fp_reason, Some(FpReason::BrokenParse));
+    }
+
+    #[test]
+    fn sync_cache_wins_over_json_fp_reason() {
+        // If JSON and cache disagree, cache is the live source of truth
+        // (the user may have toggled the mark in a later session and
+        // the JSON on disk is stale).
+        let (_dir, cache) = temp_cache();
+        let key = hallucinator_core::cache::compute_fp_identity(
+            "Disagreeing Paper",
+            &["Dave Author".into()],
+        )
+        .unwrap();
+        cache.set_fp_override(&key, Some("non_academic"));
+
+        let mut refs = vec![ref_with(
+            "Disagreeing Paper",
+            &["Dave Author"],
+            Some(FpReason::KnownGood),
+        )];
+        sync_fp_overrides_with_cache(&mut refs, &cache);
+
+        assert_eq!(refs[0].fp_reason, Some(FpReason::NonAcademic));
+        // Cache stays untouched (we read, didn't write).
+        assert_eq!(cache.get_fp_override(&key).as_deref(), Some("non_academic"));
+    }
+
+    #[test]
+    fn sync_skips_refs_with_empty_authors() {
+        // compute_fp_identity returns None when authors are missing,
+        // so those refs cannot be cached — they were session-local
+        // even on the live path. Just confirm we don't panic and skip them.
+        let (_dir, cache) = temp_cache();
+        let mut refs = vec![ref_with("No Authors Paper", &[], Some(FpReason::KnownGood))];
+        sync_fp_overrides_with_cache(&mut refs, &cache);
+        // No identity key → nothing to assert beyond "did not crash".
     }
 }
