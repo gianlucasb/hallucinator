@@ -149,6 +149,46 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
         }
         false
     } else {
+        // Phantom-author guard — when the DB returned a substantial
+        // author list and the citation lists noticeably more authors,
+        // count the surnames in the citation that don't appear in the
+        // DB record. A few unmatched names are tolerable (typos,
+        // unusual transliterations), but a citation that pads several
+        // unrelated names onto a real paper's author list — common
+        // for AI-hallucinated bibliographies that splice famous co-
+        // authors onto an existing title — should be flagged as a
+        // mismatch even though the genuine authors still overlap.
+        //
+        // Skip when found has <3 authors (some sources truncate, so
+        // "extra" doesn't necessarily mean "fabricated") or when ref
+        // ≤ found (the et-al-truncation case is handled below).
+        if found_authors.len() >= 3 && ref_authors.len() > found_authors.len() {
+            let found_surnames_for_phantom: HashSet<String> = found_authors
+                .iter()
+                .filter_map(|a| {
+                    let s = get_last_name(a);
+                    if s.is_empty() { None } else { Some(s) }
+                })
+                .collect();
+            let phantom_count = ref_authors
+                .iter()
+                .filter(|a| {
+                    let last = get_last_name(a);
+                    // Empty surnames and the trailing "et al" token
+                    // shouldn't count toward phantoms.
+                    !last.is_empty() && last != "al" && !found_surnames_for_phantom.contains(&last)
+                })
+                .count();
+            // Trip the guard when there are 3+ phantom surnames AND
+            // they make up >25% of the citation. The absolute floor
+            // keeps the check quiet for short citations with one or
+            // two unmatched names; the percentage floor keeps it from
+            // firing on long-but-mostly-correct rosters.
+            if phantom_count >= 3 && phantom_count * 4 > ref_authors.len() {
+                return false;
+            }
+        }
+
         let ref_set: HashSet<String> = ref_authors.iter().map(|a| normalize_author(a)).collect();
         let found_set: HashSet<String> =
             found_authors.iter().map(|a| normalize_author(a)).collect();
@@ -631,6 +671,77 @@ mod tests {
         assert!(validate_authors(
             &s(&["Craig Gentry"]),
             &s(&["Dan Boneh", "Craig Gentry"]),
+        ));
+    }
+
+    #[test]
+    fn test_phantom_authors_padded_citation_rejected() {
+        // Real USENIX 2022 paper "Are Your Sensitive Attributes Private?"
+        // has 5 authors. A hallucinated citation pads in 5 famous security
+        // researchers as fake co-authors — the genuine 5 still overlap, so
+        // the standard intersection would pass. The phantom-author guard
+        // must catch this and flag it as a mismatch.
+        assert!(!validate_authors(
+            &s(&[
+                "Shagufta Mehnaz",
+                "Sayanton V Dibbo",
+                "Roberta De Viti",
+                "Ehsanul Kabir",
+                "Björn B Brandenburg",
+                "Stefan Mangard",
+                "Ninghui Li",
+                "Elisa Bertino",
+                "Michael Backes",
+                "Emiliano De Cristofaro",
+            ]),
+            &s(&[
+                "Shagufta Mehnaz",
+                "Sayanton V. Dibbo",
+                "Ehsanul Kabir",
+                "Ninghui Li",
+                "Elisa Bertino",
+            ]),
+        ));
+    }
+
+    #[test]
+    fn test_phantom_authors_one_extra_still_passes() {
+        // A single unmatched name (e.g., a typo'd or unusual
+        // transliteration) shouldn't trip the guard — only sustained
+        // padding should.
+        assert!(validate_authors(
+            &s(&[
+                "Alice Author",
+                "Bob Author",
+                "Carol Author",
+                "Dave Author",
+                "Eve Author",
+                "Frank Typo",
+            ]),
+            &s(&[
+                "Alice Author",
+                "Bob Author",
+                "Carol Author",
+                "Dave Author",
+                "Eve Author",
+            ]),
+        ));
+    }
+
+    #[test]
+    fn test_phantom_authors_skipped_for_small_found() {
+        // When the DB returns only 1-2 authors, "extras" in the citation
+        // could just be a truncated DB response, not fabrication. The
+        // guard must not fire below the 3-author floor.
+        assert!(validate_authors(
+            &s(&[
+                "Alice Author",
+                "Bob Author",
+                "Carol Phantom",
+                "Dave Phantom",
+                "Eve Phantom",
+            ]),
+            &s(&["Alice Author", "Bob Author"]),
         ));
     }
 
