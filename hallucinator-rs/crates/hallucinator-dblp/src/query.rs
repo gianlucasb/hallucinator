@@ -493,12 +493,39 @@ pub fn query_fts_with_authors(
         return Ok(result);
     }
 
-    // Fallback: retry with top 3 words when primary query returned nothing
+    // Fallback A: retry with top 3 words AND-joined when the full query
+    // returned nothing. Helps when the citation has stop-shaped tokens
+    // that the indexed title doesn't carry.
     if words.len() > 3 {
         let fallback_query = words[..3].join(" ");
-        return fts_match(
+        let result = fts_match(
             conn,
             &fallback_query,
+            &norm_query,
+            &norm_query_stripped,
+            threshold,
+            ref_authors,
+        )?;
+        if result.is_some() {
+            return Ok(result);
+        }
+    }
+
+    // Fallback B: OR-join the strongest 4 words when both AND queries
+    // returned nothing. The AND requirement misses titles where the
+    // citation lists a slightly-truncated form (e.g. citation says
+    // "Software bills of materials are required" while DBLP indexes
+    // "Software Bills of Materials Are Required. Are We There Yet?")
+    // and vice-versa. The fuzzy-match threshold inside `fts_match` is
+    // unchanged, so OR widens recall without sacrificing precision —
+    // any candidate still has to clear the same title-similarity bar
+    // before being accepted.
+    if words.len() >= 2 {
+        let take = words.len().min(4);
+        let or_query = words[..take].join(" OR ");
+        return fts_match(
+            conn,
+            &or_query,
             &norm_query,
             &norm_query_stripped,
             threshold,
@@ -1067,6 +1094,50 @@ mod tests {
             result.record.url.as_deref().unwrap().contains("/X99"),
             "author-tie-break should not override a much higher title score, got {:?}",
             result.record.url
+        );
+    }
+
+    #[test]
+    fn test_or_fallback_finds_when_one_citation_token_absent_from_db() {
+        // The OR fallback exists to handle citations where one of the
+        // strong query tokens isn't present in the DB title. AND
+        // requires every token, so a single mismatch (typo, citation
+        // appendage like "extended", "revised") drops the whole
+        // candidate. With OR we still find the entry on the remaining
+        // tokens; the fuzzy-similarity gate then decides whether the
+        // candidate is actually the right paper.
+        //
+        // Concrete shape: citation includes a parenthetical tag the
+        // DB doesn't carry ("Foundations of Cryptography Volume Two
+        // Revised") vs DB ("Foundations of Cryptography Volume Two").
+        // Tokenisation gives ["foundations", "cryptography", "volume",
+        // "revised"] (after the 4-char filter). AND requires "revised"
+        // present in DB, which it isn't, so AND misses entirely. OR
+        // finds it on the other three tokens, fuzzy ≈ 0.96 → match.
+        let conn = Connection::open_in_memory().unwrap();
+        init_database(&conn).unwrap();
+        let pid = insert_or_get_publication(
+            &conn,
+            "books/cu/Goldreich2004",
+            "Foundations of Cryptography Volume Two",
+        )
+        .unwrap();
+        let aid = insert_or_get_author(&conn, "Oded Goldreich").unwrap();
+        let mut batch = InsertBatch::new();
+        batch.publication_authors.push((pid, aid));
+        insert_batch(&conn, &batch).unwrap();
+        rebuild_fts_index(&conn).unwrap();
+
+        let result = query_fts_with_authors(
+            &conn,
+            "Foundations of Cryptography Volume Two Revised",
+            &["Oded Goldreich".to_string()],
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(
+            result.is_some(),
+            "OR fallback should find a candidate when one citation token is absent from the DB title"
         );
     }
 }
