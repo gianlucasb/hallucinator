@@ -169,20 +169,32 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
         // bears no resemblance to the indexed paper. Better to flag
         // and let the user mark safe than to silently approve.
         if ref_authors.len() > found_authors.len() {
-            let found_surnames_for_phantom: HashSet<String> = found_authors
+            // Use the same `<initial>:<surname>` fingerprint as the
+            // mark-safe identity key (`compute_fp_identity` in cache.rs)
+            // — it's strictly stronger than `get_last_name` for the
+            // phantom check. Two cases this fixes vs. the surname-only
+            // form:
+            //
+            //  * Particle-prefixed surnames where one side carries the
+            //    particle and the other doesn't ("Emiliano De Cristofaro"
+            //    vs DBLP's "Cristofaro, E."). `get_last_name` produced
+            //    "de cristofaro" vs "cristofaro" → phantom inflated.
+            //  * Initial collisions where two authors share a surname
+            //    but have different initials ("J. Smith" vs "A. Smith");
+            //    surname-only would have called these the same person.
+            //
+            // The `et al.` token is stripped by author_fingerprint
+            // returning None on an unparseable string, so we don't need
+            // the explicit `last != "al"` guard the surname-only form
+            // had.
+            let found_fps: HashSet<String> = found_authors
                 .iter()
-                .filter_map(|a| {
-                    let s = get_last_name(a);
-                    if s.is_empty() { None } else { Some(s) }
-                })
+                .filter_map(|a| crate::cache::author_fingerprint(a))
                 .collect();
             let phantom_count = ref_authors
                 .iter()
                 .filter(|a| {
-                    let last = get_last_name(a);
-                    // Empty surnames and the trailing "et al" token
-                    // shouldn't count toward phantoms.
-                    !last.is_empty() && last != "al" && !found_surnames_for_phantom.contains(&last)
+                    crate::cache::author_fingerprint(a).is_some_and(|fp| !found_fps.contains(&fp))
                 })
                 .count();
             // Trip the guard when there are 3+ phantom surnames AND
@@ -760,6 +772,35 @@ mod tests {
                 "Qian Zhang",
             ]),
             &s(&["Crispan Cowan"]),
+        ));
+    }
+
+    #[test]
+    fn test_phantom_authors_use_fingerprint_normalization() {
+        // The phantom guard now keys on `<initial>:<surname>`
+        // fingerprints (the same form `compute_fp_identity` uses) so
+        // particle-prefixed surnames don't inflate the phantom count
+        // when one side carries the particle and the other doesn't:
+        //   ref:  "Emiliano De Cristofaro"  →  e:cristofaro
+        //   db:   "Cristofaro, E."          →  e:cristofaro
+        // Surname-only would have produced "de cristofaro" vs
+        // "cristofaro" — different — and counted the matched author
+        // as a phantom. With fingerprints they collide, so a citation
+        // whose authors all match the DB record (even via different
+        // surname formats) doesn't trip the guard.
+        assert!(validate_authors(
+            &s(&[
+                "Alice Author",
+                "Bob Author",
+                "Carol Author",
+                "Emiliano De Cristofaro",
+            ]),
+            &s(&[
+                "Alice Author",
+                "Bob Author",
+                "Carol Author",
+                "Cristofaro, E.",
+            ]),
         ));
     }
 
