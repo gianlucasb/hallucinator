@@ -308,7 +308,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
         // mark-safe adjustment into the paper stats so the queue table
         // and totals line reflect the prior user decision on load.
         if fp_reason.is_some() {
-            paper.apply_fp_delta(&result.status, is_retracted, 1);
+            paper.apply_fp_delta(&result.status, result.url_check_skipped, is_retracted, 1);
         }
 
         let raw_cit = loaded_ref.raw_citation.clone().unwrap_or_default();

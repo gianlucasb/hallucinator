@@ -143,43 +143,29 @@ fn problematic_pct(stats: &CheckStats) -> f64 {
     }
 }
 
-/// Compute stats adjusted for false-positive overrides.
+/// Return the paper's already-adjusted stats.
 ///
-/// References marked as FP are moved out of their original bucket
-/// (not_found / author_mismatch / retracted) and into `verified`,
-/// since the user has vouched for them.
-fn adjusted_stats(paper: &ReportPaper<'_>, refs: &[ReportRef]) -> CheckStats {
-    let mut s = paper.stats.clone();
-    for (ri, result) in paper.results.iter().enumerate() {
-        if let Some(r) = result
-            && refs.get(ri).and_then(|rs| rs.fp_reason).is_some()
-        {
-            match &r.status {
-                Status::NotFound => {
-                    s.not_found = s.not_found.saturating_sub(1);
-                    s.verified += 1;
-                }
-                Status::Mismatch(kind) => {
-                    s.mismatch = s.mismatch.saturating_sub(1);
-                    if kind.contains(MismatchKind::AUTHOR) {
-                        s.author_mismatch = s.author_mismatch.saturating_sub(1);
-                    }
-                    if kind.contains(MismatchKind::DOI) {
-                        s.doi_mismatch = s.doi_mismatch.saturating_sub(1);
-                    }
-                    if kind.contains(MismatchKind::ARXIV_ID) {
-                        s.arxiv_mismatch = s.arxiv_mismatch.saturating_sub(1);
-                    }
-                    s.verified += 1;
-                }
-                Status::Verified => {}
-            }
-            if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
-                s.retracted = s.retracted.saturating_sub(1);
-            }
-        }
-    }
-    s
+/// Historical note: this used to re-apply the false-positive move
+/// (decrement the ref's original bucket, increment `verified`) at
+/// export time. That assumed `paper.stats` held the *raw* counts
+/// before any FP marks, but every code path that mutates the stats —
+/// `record_status` / `apply_fp_delta` in the TUI for live PDF runs,
+/// the same pair in `load.rs` after deserialising a JSON, the
+/// spacebar handler when the user toggles a mark, and the
+/// propagation pass — already applies the move *once* into
+/// `paper.stats`. Doing it again here doubled the move: every non-
+/// url-gated FP-marked ref got `verified += 1` and a `not_found -= 1`
+/// (saturating to 0 since the move had already brought it down), so
+/// the visible categories summed to `Total + N` where N was the
+/// count of FP-marked refs with a `Some(result)` — i.e. excluding
+/// url-gated ones whose `result` is `None` after loading from JSON.
+///
+/// Now we trust the caller's bookkeeping and just clone the stats.
+/// The function is kept rather than inlined because callers want a
+/// `CheckStats` value (not a `&CheckStats`) and to leave an obvious
+/// hook for any future per-export adjustments.
+fn adjusted_stats(paper: &ReportPaper<'_>, _refs: &[ReportRef]) -> CheckStats {
+    paper.stats.clone()
 }
 
 fn json_escape(s: &str) -> String {
@@ -972,10 +958,18 @@ h2 { color: var(--text); margin: 1.5rem 0 1rem; font-size: 1.3rem; }
   display: block;
 }
 .stat-card .label { font-size: 0.85rem; color: var(--dim); }
+.stat-card .sublabel {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--green);
+  margin-top: 0.2rem;
+}
 .stat-card.verified .number { color: var(--green); }
 .stat-card.not-found .number { color: var(--red); }
 .stat-card.mismatch .number { color: var(--yellow); }
 .stat-card.retracted .number { color: var(--dark-red); }
+.stat-card.skipped .number { color: var(--dim); }
+.stat-card.safe .number { color: var(--green); }
 .stat-card.total .number { color: var(--text); }
 .stat-card.pct .number { color: var(--red); }
 details {
@@ -1111,18 +1105,58 @@ body.hide-verified .ref-card[data-status="verified"] { display: none; }
 "#,
     );
 
-    // Overall stats cards
+    // Count refs marked safe (fp_reason set) across all papers — these
+    // are folded into `total_stats.verified` by `adjusted_stats`. We
+    // surface the count as a small sub-label under the Verified card
+    // (not its own card), so the reader can see at a glance how much
+    // of Verified is user-vouched-for without polluting the additive
+    // category row.
+    let safe_count: usize = ref_states
+        .iter()
+        .map(|refs| refs.iter().filter(|r| r.fp_reason.is_some()).count())
+        .sum();
+
+    // Top stats: only the additive categories.
+    //
+    //     Total = Verified + Not Found + Mismatch + Skipped
+    //
+    // Every ref lives in exactly one of those four buckets after
+    // `adjusted_stats` has moved FP-marked refs into Verified. We
+    // hide cards whose count is 0 to keep the row compact (Retracted
+    // is the most common — most reports have none). `Retracted` is
+    // orthogonal to the status buckets (a ref can be Verified-and-
+    // retracted), so when it's non-zero it renders alongside the
+    // others as a separate annotation card.
     out.push_str("<div class=\"stats\">\n");
     write_stat_card(&mut out, "total", total_stats.total, "Total");
-    write_stat_card(&mut out, "verified", total_stats.verified, "Verified");
-    write_stat_card(&mut out, "not-found", total_stats.not_found, "Not Found");
-    write_stat_card(
+    write_stat_card_with_sublabel(
         &mut out,
-        "mismatch",
-        total_stats.author_mismatch,
-        "Mismatch",
+        "verified",
+        total_stats.verified,
+        "Verified",
+        if safe_count > 0 {
+            Some(format!("{} marked safe", safe_count))
+        } else {
+            None
+        },
     );
-    write_stat_card(&mut out, "retracted", total_stats.retracted, "Retracted");
+    if total_stats.not_found > 0 {
+        write_stat_card(&mut out, "not-found", total_stats.not_found, "Not Found");
+    }
+    if total_stats.author_mismatch > 0 {
+        write_stat_card(
+            &mut out,
+            "mismatch",
+            total_stats.author_mismatch,
+            "Mismatch",
+        );
+    }
+    if total_stats.retracted > 0 {
+        write_stat_card(&mut out, "retracted", total_stats.retracted, "Retracted");
+    }
+    if total_stats.skipped > 0 {
+        write_stat_card(&mut out, "skipped", total_stats.skipped, "Skipped");
+    }
     let pct = problematic_pct(&total_stats);
     out.push_str(&format!(
         "<div class=\"stat-card pct\"><span class=\"number\">{:.1}%</span><span class=\"label\">Problematic</span></div>\n",
@@ -1257,10 +1291,27 @@ body.hide-verified .ref-card[data-status="verified"] { display: none; }
 }
 
 fn write_stat_card(out: &mut String, class: &str, value: usize, label: &str) {
+    write_stat_card_with_sublabel(out, class, value, label, None);
+}
+
+fn write_stat_card_with_sublabel(
+    out: &mut String,
+    class: &str,
+    value: usize,
+    label: &str,
+    sublabel: Option<String>,
+) {
     out.push_str(&format!(
-        "<div class=\"stat-card {}\"><span class=\"number\">{}</span><span class=\"label\">{}</span></div>\n",
+        "<div class=\"stat-card {}\"><span class=\"number\">{}</span><span class=\"label\">{}</span>",
         class, value, label,
     ));
+    if let Some(sub) = sublabel {
+        out.push_str(&format!(
+            "<span class=\"sublabel\">{}</span>",
+            html_escape(&sub)
+        ));
+    }
+    out.push_str("</div>\n");
 }
 
 fn write_html_ref(out: &mut String, ref_num: usize, r: &ValidationResult, fp: Option<FpReason>) {
@@ -1685,11 +1736,19 @@ mod tests {
     }
 
     #[test]
-    fn test_adjusted_stats_fp_not_found() {
+    fn test_adjusted_stats_returns_paper_stats_unchanged() {
+        // adjusted_stats no longer re-applies FP moves: callers
+        // (TUI live state, JSON load, persistence auto-save) all
+        // populate `paper.stats` post-move via record_status +
+        // apply_fp_delta. Re-applying at export time produced
+        // double-counted verified totals and broke the
+        // Total = Verified + Not Found + Mismatch + Skipped invariant.
+        // The function is now a clone; assert it returns stats
+        // verbatim regardless of which refs are FP-marked.
         let stats = CheckStats {
             total: 3,
-            verified: 1,
-            not_found: 2,
+            verified: 2,  // already post-move (1 original + 1 FP)
+            not_found: 1, // 2 original - 1 FP
             ..Default::default()
         };
         let results: Vec<Option<ValidationResult>> = vec![
@@ -1704,18 +1763,23 @@ mod tests {
             make_ref(2, "C"),
         ];
         let adj = adjusted_stats(&paper, &refs);
-        assert_eq!(adj.not_found, 1);
         assert_eq!(adj.verified, 2);
+        assert_eq!(adj.not_found, 1);
+        assert_eq!(adj.total, 3);
     }
 
     #[test]
-    fn test_adjusted_stats_fp_mismatch() {
+    fn test_adjusted_stats_does_not_double_apply_fp_move() {
+        // Regression: pre-fix, `paper.stats` already reflected the FP
+        // move (from `apply_fp_delta` in TUI/load) and adjusted_stats
+        // would apply it AGAIN, leaving verified inflated by N (where
+        // N is the number of FP-marked refs with non-None results).
+        // For the user's data this produced sum = total + 7.
         let stats = CheckStats {
             total: 2,
-            verified: 1,
-            not_found: 0,
-            mismatch: 1,
-            author_mismatch: 1,
+            verified: 1, // already post-move
+            mismatch: 0, // already 0 (was 1, FP move took it to 0)
+            author_mismatch: 0,
             ..Default::default()
         };
         let results: Vec<Option<ValidationResult>> = vec![
@@ -1728,41 +1792,9 @@ mod tests {
             make_ref_fp(1, "B", FpReason::ExistsElsewhere),
         ];
         let adj = adjusted_stats(&paper, &refs);
-        assert_eq!(adj.author_mismatch, 0);
-        assert_eq!(adj.verified, 2);
-    }
-
-    #[test]
-    fn test_adjusted_stats_fp_verified_noop() {
-        let stats = CheckStats {
-            total: 1,
-            verified: 1,
-            not_found: 0,
-            ..Default::default()
-        };
-        let results: Vec<Option<ValidationResult>> = vec![Some(make_result("A", Status::Verified))];
-        let paper = make_paper("test.pdf", &stats, &results);
-        let refs = vec![make_ref_fp(0, "A", FpReason::KnownGood)];
-        let adj = adjusted_stats(&paper, &refs);
-        // Verified → Verified is a no-op
+        // Critical: verified stays at 1, not 2. Mismatch stays at 0.
         assert_eq!(adj.verified, 1);
-        assert_eq!(adj.not_found, 0);
-    }
-
-    #[test]
-    fn test_adjusted_stats_fp_retracted() {
-        let stats = CheckStats {
-            total: 1,
-            verified: 1,
-            not_found: 0,
-            retracted: 1,
-            ..Default::default()
-        };
-        let results: Vec<Option<ValidationResult>> = vec![Some(make_retracted("A"))];
-        let paper = make_paper("test.pdf", &stats, &results);
-        let refs = vec![make_ref_fp(0, "A", FpReason::KnownGood)];
-        let adj = adjusted_stats(&paper, &refs);
-        assert_eq!(adj.retracted, 0);
+        assert_eq!(adj.author_mismatch, 0);
     }
 
     #[test]
@@ -2131,6 +2163,102 @@ mod tests {
             !out.contains("badge not-found\">Not Found</span>"),
             "FP-marked ref must not render with the Not Found badge"
         );
+    }
+
+    #[test]
+    fn test_html_top_stats_skipped_renders_when_nonzero() {
+        // Without Skipped surfaced, the visible categories don't sum
+        // to Total. Render Skipped as a card whenever there's at least
+        // one skipped ref so the math works at a glance.
+        let stats = CheckStats {
+            total: 10,
+            verified: 7,
+            not_found: 1,
+            skipped: 2,
+            ..Default::default()
+        };
+        let results = vec![Some(make_result("R", Status::Verified))];
+        let paper = make_paper("p.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "R")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_html(&[paper], ref_slices, false);
+
+        assert!(
+            out.contains(
+                "<div class=\"stat-card skipped\"><span class=\"number\">2</span><span class=\"label\">Skipped</span>"
+            ),
+            "Skipped card missing"
+        );
+    }
+
+    #[test]
+    fn test_html_top_stats_marked_safe_inline_under_verified() {
+        // Marked-safe refs are a subset of Verified. Render the count
+        // as a small sub-label inside the Verified card instead of a
+        // separate card so the additive row stays clean.
+        let stats = CheckStats {
+            total: 3,
+            not_found: 1,
+            verified: 0,
+            ..Default::default()
+        };
+        let results = vec![
+            Some(make_result("Real Hallucination", Status::NotFound)),
+            Some(make_result("Marked Safe Ref 1", Status::NotFound)),
+            Some(make_result("Marked Safe Ref 2", Status::NotFound)),
+        ];
+        let paper = make_paper("p.pdf", &stats, &results);
+        let refs = vec![
+            make_ref(0, "Real Hallucination"),
+            make_ref_fp(1, "Marked Safe Ref 1", FpReason::KnownGood),
+            make_ref_fp(2, "Marked Safe Ref 2", FpReason::ExistsElsewhere),
+        ];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_html(&[paper], ref_slices, false);
+
+        assert!(
+            out.contains("<span class=\"sublabel\">2 marked safe</span>"),
+            "Marked-safe sub-label should appear under Verified"
+        );
+        // Safe should NOT appear as a separate card any more.
+        assert!(
+            !out.contains("<span class=\"label\">Marked Safe</span>"),
+            "Marked Safe shouldn't render as its own top-row card"
+        );
+    }
+
+    #[test]
+    fn test_html_top_stats_hide_zero_count_cards() {
+        // Reports without any not-found / mismatch / retracted / skipped
+        // refs shouldn't grow empty cards for those categories. Total +
+        // Verified + Problematic % is the minimum useful row.
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            ..Default::default()
+        };
+        let results = vec![Some(make_result("Verified Ref", Status::Verified))];
+        let paper = make_paper("p.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "Verified Ref")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_html(&[paper], ref_slices, false);
+
+        for label in &[
+            "Not Found",
+            "Mismatch",
+            "Retracted",
+            "Skipped",
+            "Marked Safe",
+        ] {
+            let html_label = format!("<span class=\"label\">{}</span>", label);
+            assert!(
+                !out.contains(&html_label),
+                "Empty {} card shouldn't render",
+                label
+            );
+        }
+        assert!(out.contains("<span class=\"label\">Total</span>"));
+        assert!(out.contains("<span class=\"label\">Verified</span>"));
     }
 
     #[test]

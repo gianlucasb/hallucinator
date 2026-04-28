@@ -198,7 +198,19 @@ impl PaperState {
     ///     cache during extraction,
     ///   * `load.rs` after loading a JSON export whose refs carry
     ///     persisted fp_reason fields.
-    pub fn apply_fp_delta(&mut self, status: &Status, is_retracted: bool, dir: i32) {
+    /// Adjust paper-level stat counters for a false-positive override
+    /// on a single reference. Callers must pass the same
+    /// `url_check_skipped` flag that was used on `record_status`:
+    /// URL-gated NotFound refs live in the `skipped` bucket, so an FP
+    /// override on such a ref has to decrement `skipped`, not
+    /// `not_found`, otherwise the ref ends up double-counted.
+    pub fn apply_fp_delta(
+        &mut self,
+        status: &Status,
+        url_check_skipped: bool,
+        is_retracted: bool,
+        dir: i32,
+    ) {
         debug_assert!(dir == 1 || dir == -1, "dir must be +1 or -1");
         let add = |n: &mut usize, delta: i32| {
             if delta >= 0 {
@@ -210,7 +222,14 @@ impl PaperState {
         match status {
             Status::Verified => {}
             Status::NotFound => {
-                add(&mut self.stats.not_found, -dir);
+                if url_check_skipped {
+                    // The ref was counted in `skipped` (per record_status),
+                    // not `not_found`. Decrement the bucket it actually
+                    // lives in so the per-paper sum stays consistent.
+                    add(&mut self.stats.skipped, -dir);
+                } else {
+                    add(&mut self.stats.not_found, -dir);
+                }
                 add(&mut self.stats.verified, dir);
             }
             Status::Mismatch(kind) => {
@@ -400,7 +419,7 @@ mod tests {
         let mut p = paper_with_recorded(&[(Status::NotFound, false)]);
         assert_eq!(p.stats.not_found, 1);
         assert_eq!(p.stats.verified, 0);
-        p.apply_fp_delta(&Status::NotFound, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, 1);
         assert_eq!(p.stats.not_found, 0);
         assert_eq!(p.stats.verified, 1);
     }
@@ -409,8 +428,8 @@ mod tests {
     fn apply_fp_delta_not_found_is_reversible() {
         // Mark safe then un-mark → back to original raw counts.
         let mut p = paper_with_recorded(&[(Status::NotFound, false)]);
-        p.apply_fp_delta(&Status::NotFound, false, 1);
-        p.apply_fp_delta(&Status::NotFound, false, -1);
+        p.apply_fp_delta(&Status::NotFound, false, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, -1);
         assert_eq!(p.stats.not_found, 1);
         assert_eq!(p.stats.verified, 0);
     }
@@ -423,7 +442,7 @@ mod tests {
         assert_eq!(p.stats.author_mismatch, 1);
         assert_eq!(p.stats.doi_mismatch, 1);
         assert_eq!(p.stats.arxiv_mismatch, 0);
-        p.apply_fp_delta(&Status::Mismatch(kind), false, 1);
+        p.apply_fp_delta(&Status::Mismatch(kind), false, false, 1);
         assert_eq!(p.stats.mismatch, 0);
         assert_eq!(p.stats.author_mismatch, 0);
         assert_eq!(p.stats.doi_mismatch, 0);
@@ -438,7 +457,7 @@ mod tests {
         let mut p = paper_with_recorded(&[(Status::Verified, true)]);
         assert_eq!(p.stats.verified, 1);
         assert_eq!(p.stats.retracted, 1);
-        p.apply_fp_delta(&Status::Verified, true, 1);
+        p.apply_fp_delta(&Status::Verified, false, true, 1);
         // Status::Verified: verified unchanged. Retracted decrements.
         assert_eq!(p.stats.verified, 1);
         assert_eq!(p.stats.retracted, 0);
@@ -448,7 +467,7 @@ mod tests {
     fn apply_fp_delta_verified_status_only_retracted_flips() {
         let mut p = paper_with_recorded(&[(Status::Verified, false)]);
         let before = p.stats.clone();
-        p.apply_fp_delta(&Status::Verified, false, 1);
+        p.apply_fp_delta(&Status::Verified, false, false, 1);
         // Status::Verified + not_retracted → nothing to move.
         assert_eq!(p.stats.verified, before.verified);
         assert_eq!(p.stats.not_found, before.not_found);
@@ -543,8 +562,8 @@ mod tests {
             (Status::Verified, false),
         ]);
         assert_eq!(p.problems(), 2);
-        p.apply_fp_delta(&Status::NotFound, false, 1);
-        p.apply_fp_delta(&Status::NotFound, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, 1);
         assert_eq!(p.problems(), 0);
         assert_eq!(p.stats.verified, 3);
     }

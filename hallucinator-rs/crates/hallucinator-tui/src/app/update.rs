@@ -1120,9 +1120,10 @@ fn cycle_fp_reason_and_adjust_stats(
             .as_ref()
             .is_some_and(|r| r.is_retracted);
         let status = result.status.clone();
+        let url_check_skipped = result.url_check_skipped;
         let dir: i32 = if is_safe { 1 } else { -1 };
         if let Some(paper) = papers.get_mut(paper_idx) {
-            paper.apply_fp_delta(&status, is_retracted, dir);
+            paper.apply_fp_delta(&status, url_check_skipped, is_retracted, dir);
         }
     }
 
@@ -1277,9 +1278,10 @@ fn propagate_fp_override(
                 .as_ref()
                 .is_some_and(|r| r.is_retracted);
             let status = result.status.clone();
+            let url_check_skipped = result.url_check_skipped;
             let dir: i32 = if will_be_safe { 1 } else { -1 };
             if let Some(paper) = papers.get_mut(p_idx) {
-                paper.apply_fp_delta(&status, is_retracted, dir);
+                paper.apply_fp_delta(&status, url_check_skipped, is_retracted, dir);
             }
         }
     }
@@ -1361,7 +1363,7 @@ mod propagation_tests {
         assert_eq!(papers[2].stats.not_found, 1);
 
         ref_states[0][0].fp_reason = Some(FpReason::KnownGood);
-        papers[0].apply_fp_delta(&Status::NotFound, false, 1);
+        papers[0].apply_fp_delta(&Status::NotFound, false, false, 1);
 
         let key = compute_fp_identity("Shared Paper", &["Alice Author".into()]).unwrap();
         let n = __test_propagate_fp_override(
@@ -1454,7 +1456,7 @@ mod propagation_tests {
         ]];
 
         ref_states[0][0].fp_reason = Some(FpReason::KnownGood);
-        papers[0].apply_fp_delta(&Status::NotFound, false, 1);
+        papers[0].apply_fp_delta(&Status::NotFound, false, false, 1);
 
         let key = compute_fp_identity("Dup", &["A. Author".into()]).unwrap();
         let n = __test_propagate_fp_override(
@@ -1476,7 +1478,7 @@ mod propagation_tests {
         let (mut papers, mut ref_states) = fixture(2, "Shared", &["A. Author"], Status::NotFound);
         for i in 0..2 {
             ref_states[i][0].fp_reason = Some(FpReason::KnownGood);
-            papers[i].apply_fp_delta(&Status::NotFound, false, 1);
+            papers[i].apply_fp_delta(&Status::NotFound, false, false, 1);
         }
         assert_eq!(papers[0].stats.verified, 1);
         assert_eq!(papers[1].stats.verified, 1);
