@@ -1257,7 +1257,11 @@ body.hide-verified .ref-card[data-status="verified"] { display: none; }
     }
     out.push_str("</div>\n"); // close #papers
 
-    // Sort script
+    // Sort script. Use getAttribute('data-'+key) instead of
+    // dataset[key]: dataset only exposes camelCased keys, so
+    // dataset['not-found'] is undefined even though the attribute
+    // is data-not-found. getAttribute works for both hyphenated and
+    // single-word keys.
     out.push_str(
         "<script>\n\
          function sortPapers(key,btn){\n\
@@ -1266,8 +1270,8 @@ body.hide-verified .ref-card[data-status="verified"] { display: none; }
            var c=document.getElementById('papers');\n\
            var items=[].slice.call(c.children);\n\
            items.sort(function(a,b){\n\
-             var av=parseFloat(a.dataset[key])||0;\n\
-             var bv=parseFloat(b.dataset[key])||0;\n\
+             var av=parseFloat(a.getAttribute('data-'+key))||0;\n\
+             var bv=parseFloat(b.getAttribute('data-'+key))||0;\n\
              if(key==='order') return av-bv;\n\
              return bv-av;\n\
            });\n\
@@ -2118,6 +2122,43 @@ mod tests {
         assert!(out.contains("<!DOCTYPE html>"));
         assert!(out.contains("stat-card"));
         assert!(out.contains("</html>"));
+    }
+
+    #[test]
+    fn test_html_sort_script_uses_get_attribute() {
+        // Regression: the sort script previously read sort keys via
+        // `a.dataset[key]`. dataset only exposes camelCased keys, so
+        // `dataset['not-found']` is undefined even though the HTML
+        // sets `data-not-found="..."`. With undefined keys parseFloat
+        // returned NaN and the sort became a no-op for the Not Found
+        // button. Switching to `getAttribute('data-'+key)` fixes it
+        // for any key, hyphenated or not.
+        let stats = CheckStats {
+            total: 1,
+            not_found: 1,
+            ..Default::default()
+        };
+        let results = vec![Some(make_result("X", Status::NotFound))];
+        let paper = make_paper("a.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "X")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_html(&[paper], ref_slices, false);
+
+        assert!(
+            out.contains("getAttribute('data-'+key)"),
+            "sort script must use getAttribute, not dataset[key]"
+        );
+        assert!(
+            !out.contains("a.dataset[key]"),
+            "sort script must not use dataset[key] (broken for hyphenated names)"
+        );
+        // Each <details> still carries the data attributes the
+        // script reads.
+        assert!(out.contains("data-not-found=\""));
+        assert!(out.contains("data-mismatch=\""));
+        assert!(out.contains("data-retracted=\""));
+        assert!(out.contains("data-pct=\""));
+        assert!(out.contains("data-order=\""));
     }
 
     #[test]
