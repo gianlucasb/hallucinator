@@ -281,7 +281,12 @@ impl App {
                         is_retracted,
                     );
                     if fp_preexisting {
-                        paper.apply_fp_delta(&result.status, is_retracted, 1);
+                        paper.apply_fp_delta(
+                            &result.status,
+                            result.url_check_skipped,
+                            is_retracted,
+                            1,
+                        );
                     }
                 }
                 if let Some(refs) = self.ref_states.get_mut(paper_index)

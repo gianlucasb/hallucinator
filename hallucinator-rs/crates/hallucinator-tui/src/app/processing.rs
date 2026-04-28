@@ -145,7 +145,12 @@ impl App {
                     .is_some_and(|r| r.is_retracted);
                 let dir: i32 = if is_safe { 1 } else { -1 };
                 if let Some(paper) = self.papers.get_mut(paper_idx) {
-                    paper.apply_fp_delta(&result.status, is_retracted, dir);
+                    paper.apply_fp_delta(
+                        &result.status,
+                        result.url_check_skipped,
+                        is_retracted,
+                        dir,
+                    );
                 }
             }
         }
