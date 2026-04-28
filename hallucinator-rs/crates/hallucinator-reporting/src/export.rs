@@ -134,12 +134,20 @@ fn build_sorted_refs<'a>(paper: &ReportPaper<'a>, paper_refs: &[ReportRef]) -> V
 }
 
 fn problematic_pct(stats: &CheckStats) -> f64 {
-    let checked = stats.total.saturating_sub(stats.skipped);
-    if checked == 0 {
+    // Denominator is the *total* reference count, not `total -
+    // skipped`. The "problematic" stat sits next to "Total" in the
+    // report, and a reader naturally reads it as "what fraction of
+    // those <Total> references are problematic" — so the denominator
+    // had better be the same number they see on the Total card. The
+    // earlier `total - skipped` form gave a higher percentage (4/172
+    // = 2.3% instead of 4/251 = 1.6%) which surprised users; it
+    // implicitly assumed the reader thinks of skipped refs as
+    // "outside the universe", which they don't.
+    if stats.total == 0 {
         0.0
     } else {
         let problems = stats.not_found + stats.author_mismatch + stats.retracted;
-        (problems as f64 / checked as f64) * 100.0
+        (problems as f64 / stats.total as f64) * 100.0
     }
 }
 
@@ -1733,6 +1741,32 @@ mod tests {
             ..Default::default()
         };
         assert!((problematic_pct(&stats) - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_problematic_pct_uses_total_not_checked() {
+        // The denominator must be the *total* reference count, not
+        // `total - skipped`. With the old `total - skipped` form, 4
+        // problems out of 251 refs (78 skipped) renders as
+        // 4/(251-78) = 2.31% — which surprises users who read the %
+        // alongside "Total: 251" and expect 4/251 = 1.59%.
+        let stats = CheckStats {
+            total: 251,
+            verified: 168,
+            not_found: 1,
+            mismatch: 3,
+            author_mismatch: 3,
+            retracted: 0,
+            skipped: 78,
+            ..Default::default()
+        };
+        let pct = problematic_pct(&stats);
+        // 4 / 251 = 1.5936...
+        assert!(
+            (pct - 1.5936).abs() < 0.01,
+            "expected ~1.59% (4/251), got {}",
+            pct
+        );
     }
 
     #[test]

@@ -263,18 +263,16 @@ impl PaperState {
 
     /// Percentage of references that are problematic (0.0 - 100.0).
     ///
-    /// Mirrors `hallucinator_reporting::export::problematic_pct`:
-    /// denominator is `total - stats.skipped` (the combined skipped
-    /// bucket — parse-time + URL-gated), numerator is `problems()`
-    /// which already excludes URL-gated refs. This keeps the TUI's
-    /// sort-by-problematic column aligned with the number JSON and
-    /// CLI reports emit.
+    /// Denominator is the total reference count, matching
+    /// `hallucinator_reporting::export::problematic_pct`. A reader
+    /// naturally interprets the percentage relative to the visible
+    /// Total, so excluding the skipped bucket from the denominator
+    /// (a previous design) inflated the figure and surprised users.
     pub fn problematic_pct(&self) -> f64 {
-        let checkable = self.total_refs.saturating_sub(self.stats.skipped);
-        if checkable == 0 {
+        if self.total_refs == 0 {
             0.0
         } else {
-            (self.problems() as f64 / checkable as f64) * 100.0
+            (self.problems() as f64 / self.total_refs as f64) * 100.0
         }
     }
 }
