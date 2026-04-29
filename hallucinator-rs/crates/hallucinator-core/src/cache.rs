@@ -12,9 +12,11 @@
 //! key. Only successful results are cached; transient errors (timeouts, network
 //! failures) are never cached.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
@@ -323,6 +325,38 @@ impl ReadPool {
         result
     }
 
+    fn get_fp_overrides_batch(&self, keys: &[String]) -> HashMap<String, String> {
+        // SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999. Realistic
+        // paper ref counts are well below that, but chunk anyway so the
+        // function is safe for any input size.
+        const CHUNK: usize = 500;
+        let mut result = HashMap::with_capacity(keys.len());
+        let Some(conn) = self.acquire() else {
+            return result;
+        };
+        for chunk in keys.chunks(CHUNK) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT identity_key, fp_reason FROM fp_overrides WHERE identity_key IN ({})",
+                placeholders
+            );
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                let params = rusqlite::params_from_iter(chunk.iter());
+                if let Ok(mut rows) = stmt.query(params) {
+                    while let Ok(Some(row)) = rows.next() {
+                        if let (Ok(k), Ok(v)) = (row.get::<_, String>(0), row.get::<_, String>(1)) {
+                            result.insert(k, v);
+                        }
+                    }
+                }
+            }
+        }
+        self.release(conn);
+        result
+    }
+
     fn query(
         conn: &Connection,
         norm_title: &str,
@@ -394,15 +428,146 @@ fn now_epoch() -> u64 {
         .as_secs()
 }
 
+/// L2 write commands processed by a dedicated writer thread.
+///
+/// Sending a command is non-blocking; the writer thread drains the channel
+/// serially. Commands that the caller needs a return value from carry a
+/// response channel. Decouples the async runtime threads from SQLite I/O,
+/// so a slow disk or contended writer can never park a tokio worker — see
+/// issue #289.
+enum WriteCmd {
+    Insert {
+        norm: String,
+        db_name: String,
+        cached: CachedResult,
+        epoch: u64,
+    },
+    SetFpOverride {
+        key: String,
+        reason: String,
+    },
+    DeleteFpOverride {
+        key: String,
+    },
+    Clear {
+        ack: mpsc::Sender<()>,
+    },
+    ClearNotFound {
+        ack: mpsc::Sender<usize>,
+    },
+    /// Sync barrier — replies once all earlier queued commands have been
+    /// processed. Tests use it before asserting on counters; production
+    /// code uses it on shutdown.
+    Flush {
+        ack: mpsc::Sender<()>,
+    },
+}
+
+/// Owns the writer SQLite connection and a dedicated drain thread.
+///
+/// The handle exposes only `send`; the thread owns the writer and updates
+/// the L2 counter atomics in place. On drop the sender is closed first so
+/// the writer drains every queued command, then the thread is joined —
+/// without that the next `QueryCache::open` on the same path could race
+/// with still-pending writes from the previous handle.
+struct WriterHandle {
+    tx: Option<mpsc::Sender<WriteCmd>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl WriterHandle {
+    fn spawn(writer: SqliteWriter, l2_found: Arc<AtomicU64>, l2_not_found: Arc<AtomicU64>) -> Self {
+        let (tx, rx) = mpsc::channel::<WriteCmd>();
+        let join = std::thread::Builder::new()
+            .name("hallucinator-cache-writer".to_string())
+            .spawn(move || writer_loop(rx, writer, l2_found, l2_not_found))
+            .ok();
+        Self { tx: Some(tx), join }
+    }
+
+    fn send(&self, cmd: WriteCmd) {
+        if let Some(ref tx) = self.tx {
+            let _ = tx.send(cmd);
+        }
+    }
+}
+
+impl Drop for WriterHandle {
+    fn drop(&mut self) {
+        // Drop the sender first so the channel closes and the writer
+        // exits the recv() loop after draining all pending commands.
+        drop(self.tx.take());
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn writer_loop(
+    rx: mpsc::Receiver<WriteCmd>,
+    writer: SqliteWriter,
+    l2_found: Arc<AtomicU64>,
+    l2_not_found: Arc<AtomicU64>,
+) {
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            WriteCmd::Insert {
+                norm,
+                db_name,
+                cached,
+                epoch,
+            } => {
+                let now_is_found = matches!(cached, CachedResult::Found { .. });
+                let previous = writer.insert(&norm, &db_name, &cached, epoch);
+                match previous {
+                    Some(true) => {
+                        l2_found.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    Some(false) => {
+                        l2_not_found.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    None => {}
+                }
+                if now_is_found {
+                    l2_found.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    l2_not_found.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            WriteCmd::SetFpOverride { key, reason } => {
+                writer.set_fp_override(&key, &reason);
+            }
+            WriteCmd::DeleteFpOverride { key } => {
+                writer.delete_fp_override(&key);
+            }
+            WriteCmd::Clear { ack } => {
+                writer.clear();
+                l2_found.store(0, Ordering::Relaxed);
+                l2_not_found.store(0, Ordering::Relaxed);
+                let _ = ack.send(());
+            }
+            WriteCmd::ClearNotFound { ack } => {
+                let removed = writer.clear_not_found();
+                l2_not_found.store(0, Ordering::Relaxed);
+                let _ = ack.send(removed);
+            }
+            WriteCmd::Flush { ack } => {
+                let _ = ack.send(());
+            }
+        }
+    }
+}
+
 /// Thread-safe two-tier cache for database query results.
 ///
 /// L1: [`DashMap`] for lock-free concurrent access from multiple drainer tasks.
-/// L2: Optional SQLite database — reads use a [`ReadPool`] of concurrent connections,
-///     writes go through a single [`SqliteWriter`] behind a [`Mutex`].
+/// L2: Optional SQLite database — reads use a [`ReadPool`] of concurrent
+///     connections; writes go through a dedicated [`WriterHandle`] thread so
+///     no SQLite I/O ever runs on a tokio runtime worker.
 pub struct QueryCache {
     entries: DashMap<CacheKey, CacheEntry>,
-    /// Writer connection for inserts, clears, eviction (serialized).
-    sqlite_writer: Option<Mutex<SqliteWriter>>,
+    /// Background writer thread + channel; `None` for in-memory caches.
+    writer: Option<WriterHandle>,
     /// Pool of read-only connections for concurrent L2 lookups.
     read_pool: Option<ReadPool>,
     positive_ttl: Duration,
@@ -416,8 +581,10 @@ pub struct QueryCache {
     // ── Counters kept in sync on insert/remove/clear (no per-frame queries) ──
     l1_found_count: AtomicU64,
     l1_not_found_count: AtomicU64,
-    l2_found_count: AtomicU64,
-    l2_not_found_count: AtomicU64,
+    /// L2 counters are shared with the writer thread, which mutates them
+    /// in place after each Insert/Clear/ClearNotFound it processes.
+    l2_found_count: Arc<AtomicU64>,
+    l2_not_found_count: Arc<AtomicU64>,
 }
 
 impl Default for QueryCache {
@@ -431,7 +598,7 @@ impl QueryCache {
     pub fn new(positive_ttl: Duration, negative_ttl: Duration) -> Self {
         Self {
             entries: DashMap::new(),
-            sqlite_writer: None,
+            writer: None,
             read_pool: None,
             positive_ttl,
             negative_ttl,
@@ -441,8 +608,8 @@ impl QueryCache {
             total_lookups: AtomicU64::new(0),
             l1_found_count: AtomicU64::new(0),
             l1_not_found_count: AtomicU64::new(0),
-            l2_found_count: AtomicU64::new(0),
-            l2_not_found_count: AtomicU64::new(0),
+            l2_found_count: Arc::new(AtomicU64::new(0)),
+            l2_not_found_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -457,11 +624,18 @@ impl QueryCache {
     ) -> Result<Self, String> {
         let writer = SqliteWriter::open(path)
             .map_err(|e| format!("Failed to open cache database at {}: {}", path.display(), e))?;
+        // Eviction runs synchronously before we hand the writer off to its
+        // thread. It's a one-shot startup cost; later writes go through
+        // the channel.
         writer.evict_expired(positive_ttl, negative_ttl);
         let (l2_found, l2_nf) = writer.counts_by_type();
+        let l2_found_count = Arc::new(AtomicU64::new(l2_found as u64));
+        let l2_not_found_count = Arc::new(AtomicU64::new(l2_nf as u64));
+        let writer_handle =
+            WriterHandle::spawn(writer, l2_found_count.clone(), l2_not_found_count.clone());
         Ok(Self {
             entries: DashMap::new(),
-            sqlite_writer: Some(Mutex::new(writer)),
+            writer: Some(writer_handle),
             read_pool: Some(ReadPool::new(path)),
             positive_ttl,
             negative_ttl,
@@ -471,8 +645,8 @@ impl QueryCache {
             total_lookups: AtomicU64::new(0),
             l1_found_count: AtomicU64::new(0),
             l1_not_found_count: AtomicU64::new(0),
-            l2_found_count: AtomicU64::new(l2_found as u64),
-            l2_not_found_count: AtomicU64::new(l2_nf as u64),
+            l2_found_count,
+            l2_not_found_count,
         })
     }
 
@@ -613,33 +787,25 @@ impl QueryCache {
             self.l1_not_found_count.fetch_add(1, Ordering::Relaxed);
         }
 
-        // L2 — write-through to SQLite for persistence across restarts.
-        if let Some(ref sqlite_mutex) = self.sqlite_writer
-            && let Ok(store) = sqlite_mutex.lock()
-        {
-            let previous = store.insert(&norm, db_name, &cached, epoch);
-
-            // Adjust L2 counters: decrement old type, increment new type
-            match previous {
-                Some(true) => {
-                    self.l2_found_count.fetch_sub(1, Ordering::Relaxed);
-                }
-                Some(false) => {
-                    self.l2_not_found_count.fetch_sub(1, Ordering::Relaxed);
-                }
-                None => {} // new entry
-            }
-            if now_is_found {
-                self.l2_found_count.fetch_add(1, Ordering::Relaxed);
-            } else {
-                self.l2_not_found_count.fetch_add(1, Ordering::Relaxed);
-            }
+        // L2 — hand off to the writer thread. The send is non-blocking, so
+        // tokio drainer tasks return to processing the next ref immediately
+        // even if disk I/O is slow. The writer thread updates the L2
+        // counter atomics in place after the SQLite write completes.
+        if let Some(ref writer) = self.writer {
+            writer.send(WriteCmd::Insert {
+                norm,
+                db_name: db_name.to_string(),
+                cached,
+                epoch,
+            });
         }
     }
 
     /// Remove all not-found entries from L1 (in-memory) and L2 (SQLite).
     ///
     /// Returns the total number of entries removed across both tiers.
+    /// Blocks until the writer thread reports back the L2 count — admin
+    /// operation, called from a user button, so the pause is acceptable.
     pub fn clear_not_found(&self) -> usize {
         // L1: retain only Found entries
         let mut l1_removed = 0usize;
@@ -653,31 +819,29 @@ impl QueryCache {
         });
         self.l1_not_found_count.store(0, Ordering::Relaxed);
 
-        // L2: delete not-found rows from SQLite
-        let l2_removed = if let Some(ref sqlite_mutex) = self.sqlite_writer
-            && let Ok(store) = sqlite_mutex.lock()
-        {
-            store.clear_not_found()
+        // L2: writer thread deletes not-found rows and reports the count.
+        let l2_removed = if let Some(ref writer) = self.writer {
+            let (ack, ack_rx) = mpsc::channel();
+            writer.send(WriteCmd::ClearNotFound { ack });
+            ack_rx.recv().unwrap_or(0)
         } else {
             0
         };
-        self.l2_not_found_count.store(0, Ordering::Relaxed);
 
         l1_removed + l2_removed
     }
 
-    /// Remove all entries from both L1 and L2.
+    /// Remove all entries from both L1 and L2. Blocks until the writer
+    /// thread acknowledges the L2 clear.
     pub fn clear(&self) {
         self.entries.clear();
         self.l1_found_count.store(0, Ordering::Relaxed);
         self.l1_not_found_count.store(0, Ordering::Relaxed);
-        if let Some(ref sqlite_mutex) = self.sqlite_writer
-            && let Ok(store) = sqlite_mutex.lock()
-        {
-            store.clear();
+        if let Some(ref writer) = self.writer {
+            let (ack, ack_rx) = mpsc::channel();
+            writer.send(WriteCmd::Clear { ack });
+            let _ = ack_rx.recv();
         }
-        self.l2_found_count.store(0, Ordering::Relaxed);
-        self.l2_not_found_count.store(0, Ordering::Relaxed);
     }
 
     /// Number of cache hits since creation.
@@ -719,7 +883,22 @@ impl QueryCache {
 
     /// Whether this cache has a persistent SQLite backing store.
     pub fn has_persistence(&self) -> bool {
-        self.sqlite_writer.is_some()
+        self.writer.is_some()
+    }
+
+    /// Block until the writer thread has drained all queued commands.
+    ///
+    /// L2 counter assertions or read-after-write tests should call this
+    /// first since `insert` and `set_fp_override` are fire-and-forget.
+    /// Production paths use it before exporting the cache or shutting
+    /// down — anywhere the on-disk state needs to reflect the in-memory
+    /// state right now.
+    pub fn flush(&self) {
+        if let Some(ref writer) = self.writer {
+            let (ack, ack_rx) = mpsc::channel();
+            writer.send(WriteCmd::Flush { ack });
+            let _ = ack_rx.recv();
+        }
     }
 
     /// Count of (found, not_found) entries in L2 (SQLite).
@@ -761,14 +940,17 @@ impl QueryCache {
     /// the ref has no extracted authors, where the identity would
     /// collide with any other same-titled ref).
     pub fn set_fp_override(&self, identity_key: &str, reason: Option<&str>) {
-        if let Some(ref sqlite_mutex) = self.sqlite_writer
-            && let Ok(store) = sqlite_mutex.lock()
-        {
-            if let Some(r) = reason {
-                store.set_fp_override(identity_key, r);
-            } else {
-                store.delete_fp_override(identity_key);
-            }
+        if let Some(ref writer) = self.writer {
+            let cmd = match reason {
+                Some(r) => WriteCmd::SetFpOverride {
+                    key: identity_key.to_string(),
+                    reason: r.to_string(),
+                },
+                None => WriteCmd::DeleteFpOverride {
+                    key: identity_key.to_string(),
+                },
+            };
+            writer.send(cmd);
         }
     }
 
@@ -779,6 +961,23 @@ impl QueryCache {
             pool.get_fp_override(identity_key)
         } else {
             None
+        }
+    }
+
+    /// Look up a batch of FP overrides in a single SQL query.
+    ///
+    /// Returns a map from `identity_key` → stored `fp_reason` for keys
+    /// that have an override. Keys without an override are absent from
+    /// the map. The TUI calls this once per paper after extraction (one
+    /// query for all refs) instead of issuing N sequential reads on the
+    /// render task — see issue #289.
+    pub fn get_fp_overrides_batch(&self, keys: &[String]) -> HashMap<String, String> {
+        if keys.is_empty() {
+            return HashMap::new();
+        }
+        match self.read_pool {
+            Some(ref pool) => pool.get_fp_overrides_batch(keys),
+            None => HashMap::new(),
         }
     }
 }
@@ -1046,6 +1245,7 @@ mod tests {
             Some("https://doi.org/10.1234".into()),
         );
         cache.insert("Deep Learning", "CrossRef", &result);
+        cache.flush();
         assert_eq!(cache.disk_len(), 1);
 
         // Read back from a fresh cache instance (simulating restart)
@@ -1075,6 +1275,7 @@ mod tests {
         let result = DbQueryResult::not_found();
         cache.insert("Fake Paper", "arXiv", &result);
         assert!(cache.get("Fake Paper", "arXiv").is_some());
+        cache.flush();
         assert_eq!(cache.disk_len(), 1);
 
         drop(cache);
@@ -1096,6 +1297,7 @@ mod tests {
         cache.insert("Fake Paper", "arXiv", &DbQueryResult::not_found());
         // Not in L1 or L2
         assert!(cache.get("Fake Paper", "arXiv").is_none());
+        cache.flush();
         assert_eq!(cache.disk_len(), 0);
 
         // Found results still work
@@ -1105,6 +1307,7 @@ mod tests {
             &DbQueryResult::found("Real Paper", vec![], None),
         );
         assert!(cache.get("Real Paper", "arXiv").is_some());
+        cache.flush();
         assert_eq!(cache.disk_len(), 1);
 
         let _ = std::fs::remove_file(&path);
@@ -1117,6 +1320,7 @@ mod tests {
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
+        cache.flush();
         assert_eq!(cache.disk_len(), 1);
         cache.clear();
         assert_eq!(cache.disk_len(), 0);
@@ -1215,6 +1419,7 @@ mod tests {
             &DbQueryResult::found("Paper A", vec![], None),
         );
         cache.insert("Paper B", "DB2", &DbQueryResult::not_found());
+        cache.flush();
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.disk_len(), 2);
 
@@ -1265,6 +1470,7 @@ mod tests {
         }
 
         // All 10 entries should be present
+        cache.flush();
         assert_eq!(cache.len(), 10);
         assert_eq!(cache.disk_len(), 10);
 
@@ -1370,6 +1576,7 @@ mod tests {
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         cache.insert("Paper", "DB", &DbQueryResult::not_found());
+        cache.flush();
         assert_eq!(cache.disk_len(), 1);
 
         // Overwrite with found result
@@ -1378,6 +1585,7 @@ mod tests {
             "DB",
             &DbQueryResult::found("Paper", vec!["Author".into()], None),
         );
+        cache.flush();
         assert_eq!(cache.disk_len(), 1);
 
         // Restart and verify the overwritten value persisted
@@ -1486,9 +1694,11 @@ mod tests {
         assert_eq!(cache.l2_counts(), (0, 0));
 
         cache.insert("A", "DB1", &DbQueryResult::found("A", vec![], None));
+        cache.flush();
         assert_eq!(cache.l2_counts(), (1, 0));
 
         cache.insert("B", "DB1", &DbQueryResult::not_found());
+        cache.flush();
         assert_eq!(cache.l2_counts(), (1, 1));
 
         assert_eq!(cache.disk_len(), 2);
@@ -1526,11 +1736,13 @@ mod tests {
 
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         cache.insert("Paper", "DB", &DbQueryResult::not_found());
+        cache.flush();
         assert_eq!(cache.l1_counts(), (0, 1));
         assert_eq!(cache.l2_counts(), (0, 1));
 
         // Overwrite not-found → found
         cache.insert("Paper", "DB", &DbQueryResult::found("Paper", vec![], None));
+        cache.flush();
         assert_eq!(cache.l1_counts(), (1, 0));
         assert_eq!(cache.l2_counts(), (1, 0));
         assert_eq!(cache.disk_len(), 1);
@@ -1581,6 +1793,7 @@ mod tests {
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         cache.insert("A", "DB", &DbQueryResult::found("A", vec![], None));
         cache.insert("B", "DB", &DbQueryResult::not_found());
+        cache.flush();
         assert_eq!(cache.l1_counts(), (1, 1));
         assert_eq!(cache.l2_counts(), (1, 1));
 
@@ -1601,6 +1814,7 @@ mod tests {
         cache.insert("Found", "DB", &DbQueryResult::found("Found", vec![], None));
         cache.insert("NF1", "DB", &DbQueryResult::not_found());
         cache.insert("NF2", "DB2", &DbQueryResult::not_found());
+        cache.flush();
         assert_eq!(cache.l1_counts(), (1, 2));
         assert_eq!(cache.l2_counts(), (1, 2));
 
@@ -1671,11 +1885,13 @@ mod tests {
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         let key = ident("Some Paper Title", &["A. Author"]);
         cache.set_fp_override(&key, Some("broken_parse"));
+        cache.flush();
         let result = cache.get_fp_override(&key);
         assert_eq!(result.as_deref(), Some("broken_parse"));
 
         // Overwrite with a different reason
         cache.set_fp_override(&key, Some("known_good"));
+        cache.flush();
         let result = cache.get_fp_override(&key);
         assert_eq!(result.as_deref(), Some("known_good"));
 
@@ -1690,10 +1906,12 @@ mod tests {
         let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
         let key = ident("Paper To Remove", &["B. Author"]);
         cache.set_fp_override(&key, Some("all_timed_out"));
+        cache.flush();
         assert!(cache.get_fp_override(&key).is_some());
 
         // Setting None removes the override
         cache.set_fp_override(&key, None);
+        cache.flush();
         assert!(cache.get_fp_override(&key).is_none());
 
         let _ = std::fs::remove_file(&path);
@@ -1728,6 +1946,7 @@ mod tests {
         // Insert with accented title + author
         let key_in = ident("Résumé of Methods", &["Jean Dupont"]);
         cache.set_fp_override(&key_in, Some("non_academic"));
+        cache.flush();
         // Look up with ASCII equivalent — identity uses normalized
         // title so diacritic stripping should cross-match.
         let key_out = ident("Resume of Methods", &["Jean Dupont"]);
@@ -1783,6 +2002,61 @@ mod tests {
         let key = ident("Paper", &["F. Author"]);
         cache.set_fp_override(&key, Some("broken_parse"));
         assert!(cache.get_fp_override(&key).is_none());
+    }
+
+    #[test]
+    fn fp_override_batch_returns_only_present_keys() {
+        // The TUI calls get_fp_overrides_batch once per paper after
+        // extraction. Keys that haven't been marked safe must be
+        // absent from the result map (not None-valued, just missing) —
+        // see issue #289.
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        let marked = ident("Marked Paper", &["A. Author"]);
+        let unmarked = ident("Other Paper", &["B. Author"]);
+        cache.set_fp_override(&marked, Some("broken_parse"));
+        cache.flush();
+
+        let keys = vec![marked.clone(), unmarked.clone()];
+        let map = cache.get_fp_overrides_batch(&keys);
+
+        assert_eq!(map.get(&marked).map(String::as_str), Some("broken_parse"));
+        assert!(!map.contains_key(&unmarked));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fp_override_batch_empty_input_returns_empty_map() {
+        let cache = QueryCache::default();
+        assert!(cache.get_fp_overrides_batch(&[]).is_empty());
+    }
+
+    #[test]
+    fn fp_override_batch_chunks_large_input() {
+        // Validate the chunk loop handles inputs larger than the
+        // SQLite parameter limit (we cap CHUNK at 500). 750 keys
+        // forces two chunks; if the chunk path is broken, only the
+        // first 500 would round-trip.
+        let path = temp_cache_path();
+        let _ = std::fs::remove_file(&path);
+
+        let cache = QueryCache::open(&path, DEFAULT_POSITIVE_TTL, DEFAULT_NEGATIVE_TTL).unwrap();
+        let mut keys = Vec::with_capacity(750);
+        for i in 0..750 {
+            let title = format!("Paper {}", i);
+            let key = ident(&title, &["Author"]);
+            cache.set_fp_override(&key, Some("broken_parse"));
+            keys.push(key);
+        }
+        cache.flush();
+
+        let map = cache.get_fp_overrides_batch(&keys);
+        assert_eq!(map.len(), 750);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     // ── Identity-key unit tests (#267) ─────────────────────────────
@@ -1881,6 +2155,7 @@ mod tests {
             h.join().unwrap();
         }
 
+        cache.flush();
         let (l1_f, l1_nf) = cache.l1_counts();
         let (l2_f, l2_nf) = cache.l2_counts();
         // Total L1 entries should match DashMap len

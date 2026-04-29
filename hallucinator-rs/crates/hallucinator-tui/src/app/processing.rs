@@ -26,12 +26,21 @@ use crate::tui_event::BackendCommand;
 /// - Otherwise, if the JSON carried an `fp_reason`, seed the cache with
 ///   it so future sessions see the mark even when re-extracted from PDF.
 pub(crate) fn sync_fp_overrides_with_cache(refs: &mut [RefState], cache: &QueryCache) {
+    // Batch the cache lookups into one SQL query so a JSON load with
+    // many refs doesn't issue N round-trips on the calling task. See
+    // issue #289.
+    let keys: Vec<String> = refs
+        .iter()
+        .filter_map(|rs| hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors))
+        .collect();
+    let stored = cache.get_fp_overrides_batch(&keys);
+
     for rs in refs {
         let Some(key) = hallucinator_core::cache::compute_fp_identity(&rs.title, &rs.authors)
         else {
             continue;
         };
-        match cache.get_fp_override(&key) {
+        match stored.get(&key) {
             Some(reason_str) => {
                 // Cache wins. Parse and stamp; if the cache holds an
                 // unknown variant (forward-compat), leave rs.fp_reason
