@@ -43,6 +43,11 @@ pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
         {
             state.acl_offline_path = path.clone();
         }
+        if let Some(ref path) = db.iacr_eprint_offline_path
+            && !path.is_empty()
+        {
+            state.iacr_eprint_offline_path = path.clone();
+        }
         if let Some(ref path) = db.openalex_offline_path
             && !path.is_empty()
         {
@@ -148,10 +153,11 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
             } else {
                 Some(state.arxiv_offline_path.clone())
             },
-            // TUI doesn't expose iacr_eprint yet — serialize `None`
-            // so round-tripping a TUI-saved config doesn't drop the
-            // field if main.rs loaded it from the file originally.
-            iacr_eprint_offline_path: None,
+            iacr_eprint_offline_path: if state.iacr_eprint_offline_path.is_empty() {
+                None
+            } else {
+                Some(state.iacr_eprint_offline_path.clone())
+            },
             openalex_offline_path: if state.openalex_offline_path.is_empty() {
                 None
             } else {
@@ -251,6 +257,34 @@ mod tests {
         let state = ConfigState::default();
         let file_cfg = from_config_state(&state);
         assert!(file_cfg.databases.unwrap().cache_path.is_none());
+    }
+
+    #[test]
+    fn iacr_eprint_offline_path_round_trip() {
+        // Round-trip: a path set in the file ends up on ConfigState,
+        // and a path set on ConfigState ends up in the serialized
+        // file. Locks down the previous "TUI doesn't expose
+        // iacr_eprint" behavior where saving the TUI config silently
+        // dropped this field — see issue #289 follow-up.
+        let file_cfg = ConfigFile {
+            databases: Some(DatabasesConfig {
+                iacr_eprint_offline_path: Some("/data/iacr.db".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut state = ConfigState::default();
+        apply_to_config_state(&file_cfg, &mut state);
+        assert_eq!(state.iacr_eprint_offline_path, "/data/iacr.db");
+
+        let written = from_config_state(&state);
+        assert_eq!(
+            written
+                .databases
+                .and_then(|d| d.iacr_eprint_offline_path)
+                .as_deref(),
+            Some("/data/iacr.db"),
+        );
     }
 
     #[test]
