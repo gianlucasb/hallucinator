@@ -1,6 +1,6 @@
 [package]
 name = "hallucinator-python"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 description = "Python bindings for hallucinator reference extraction"
@@ -20,6 +20,8 @@ hallucinator-ingest = { path = "../hallucinator-ingest" }
 hallucinator-core = { path = "../hallucinator-core" }
 hallucinator-dblp = { path = "../hallucinator-dblp" }
 hallucinator-acl = { path = "../hallucinator-acl" }
+hallucinator-arxiv-offline = { path = "../hallucinator-arxiv-offline" }
+hallucinator-iacr-eprint = { path = "../hallucinator-iacr-eprint" }
 hallucinator-openalex = { path = "../hallucinator-openalex" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = "0.7"

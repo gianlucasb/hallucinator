@@ -2,7 +2,7 @@
 
 Rust implementation of the Hallucinated Reference Detector. Includes a CLI and an interactive terminal UI (TUI) for batch-processing PDFs and archives.
 
-Same validation engine as the Python version — queries 13 databases in parallel (academic APIs, DOI resolution, book catalogs, government documents, and web search fallback), fuzzy-matches titles, checks for retractions — but with a native async runtime and a full-screen TUI for working through large batches interactively.
+Same validation engine as the Python version — queries 14 databases in parallel (academic APIs, DOI resolution, book catalogs, government documents, cryptology ePrint, and web search fallback), fuzzy-matches titles, checks for retractions — but with a native async runtime and a full-screen TUI for working through large batches interactively.
 
 ---
 
@@ -79,6 +79,8 @@ hallucinator-cli check --no-color paper.pdf
 | `--dblp-offline=PATH` | Path to offline DBLP database |
 | `--acl-offline=PATH` | Path to offline ACL Anthology database |
 | `--arxiv-offline=PATH` | Path to offline arXiv database (Kaggle snapshot) |
+| `--iacr-eprint-offline=PATH` | Path to offline IACR Cryptology ePrint Archive database |
+| `--openalex-offline=PATH` | Path to offline OpenAlex Tantivy index |
 | `--output=PATH` | Write output to file |
 | `--no-color` | Disable colored output |
 | `--disable-dbs=CSV` | Comma-separated database names to skip |
@@ -103,9 +105,16 @@ hallucinator-cli update-arxiv arxiv.db
 # Alternative: skip the download and point at an already-downloaded
 # Kaggle zip / JSON dump (useful for retries)
 hallucinator-cli update-arxiv arxiv.db --dump /path/to/arxiv-metadata-oai-snapshot.json
+
+# IACR Cryptology ePrint Archive — offline-only (no public search API).
+# Initial harvest is ~25-30k records; subsequent runs are incremental.
+hallucinator-cli update-iacr-eprint iacr.db
+
+# OpenAlex (Tantivy index — large; consider `--min-year` to limit scope)
+hallucinator-cli update-openalex openalex.idx
 ```
 
-When `--arxiv-offline` is configured, the online arXiv backend is replaced entirely (same pattern as DBLP / ACL / OpenAlex).
+When `--arxiv-offline` is configured, the online arXiv backend is replaced entirely (same pattern as DBLP / ACL / OpenAlex). The IACR ePrint backend has no online counterpart — it only registers when a local index is provided.
 
 ---
 
@@ -121,7 +130,8 @@ hallucinator-tui
 hallucinator-tui paper1.pdf paper2.pdf proceedings.zip
 
 # With options
-hallucinator-tui --dblp-offline=dblp.db --acl-offline=acl.db --arxiv-offline=arxiv.db --theme=modern
+hallucinator-tui --dblp-offline=dblp.db --acl-offline=acl.db \
+    --arxiv-offline=arxiv.db --iacr-eprint-offline=iacr.db --theme=modern
 ```
 
 ### TUI Options
@@ -134,7 +144,7 @@ All CLI options above, plus:
 | `--mouse` | Enable mouse support |
 | `--fps N` | Target framerate, 1-120 (default: 30) |
 
-The TUI also has `update-dblp`, `update-acl`, and `update-arxiv` subcommands, same as the CLI.
+The TUI has `update-dblp`, `update-acl`, and `update-openalex` subcommands. `update-arxiv` and `update-iacr-eprint` are CLI-only — build those indexes with `hallucinator-cli` and point the TUI at them via `--arxiv-offline` / `--iacr-eprint-offline` (or the config file).
 
 ### Screens
 
@@ -173,7 +183,7 @@ The TUI also has `update-dblp`, `update-acl`, and `update-arxiv` subcommands, sa
 Settings are loaded from (highest to lowest priority):
 
 1. CLI arguments
-2. Environment variables (`OPENALEX_KEY`, `S2_API_KEY`, `GOVINFO_KEY`, `DBLP_OFFLINE_PATH`, `ACL_OFFLINE_PATH`, `SEARXNG_URL`, `DB_TIMEOUT`, `DB_TIMEOUT_SHORT`)
+2. Environment variables (`OPENALEX_KEY`, `S2_API_KEY`, `GOVINFO_KEY`, `DBLP_OFFLINE_PATH`, `ACL_OFFLINE_PATH`, `IACR_EPRINT_OFFLINE_PATH`, `OPENALEX_OFFLINE_PATH`, `SEARXNG_URL`, `DB_TIMEOUT`, `DB_TIMEOUT_SHORT`)
 3. Config file
 4. Defaults
 
@@ -196,6 +206,8 @@ govinfo_key = "..."  # Free from api.data.gov
 dblp_offline_path = "/path/to/dblp.db"
 acl_offline_path = "/path/to/acl.db"
 arxiv_offline_path = "/path/to/arxiv.db"
+iacr_eprint_offline_path = "/path/to/iacr.db"
+openalex_offline_path = "/path/to/openalex.idx"
 disabled = ["OpenAlex", "PubMed"]
 
 [concurrency]
@@ -213,8 +225,8 @@ fps = 30
 ### Offline Database Auto-Detection
 
 If no path is specified, the tool checks:
-1. `dblp.db` / `acl.db` / `arxiv.db` in the current directory
-2. `~/.local/share/hallucinator/dblp.db` (or platform equivalent)
+1. `dblp.db` / `acl.db` / `arxiv.db` / `iacr.db` / `openalex.idx` in the current directory
+2. `~/.local/share/hallucinator/<filename>` (or platform equivalent)
 
 ---
 
@@ -233,6 +245,7 @@ If no path is specified, the tool checks:
 | OpenAlex | 250M+ works | Online (needs API key) or offline SQLite |
 | Open Library | Books, technical reports, and non-academic publications | |
 | GovInfo | US federal laws, regulations, court opinions | Optional, needs free API key from api.data.gov |
+| IACR ePrint | Cryptology ePrint Archive | Offline-only — build the local index with `update-iacr-eprint` |
 | URL Checker | Liveness check for non-academic URLs (GitHub, blogs, etc.) | Weaker verification — confirms URL is reachable |
 | Web Search | SearxNG metasearch fallback (Google, Bing, Google Scholar) | Optional, self-hosted, no author verification |
 
@@ -338,6 +351,13 @@ GovInfo indexes:
 | `hallucinator-dblp` | Offline DBLP database builder and querier (SQLite + FTS5) |
 | `hallucinator-acl` | Offline ACL Anthology database builder and querier |
 | `hallucinator-arxiv-offline` | Offline arXiv database builder (Kaggle snapshot ingester) and querier |
+| `hallucinator-iacr-eprint` | Offline IACR Cryptology ePrint Archive harvester and querier |
+| `hallucinator-openalex` | Offline OpenAlex Tantivy index builder and querier |
+| `hallucinator-ingest` | PDF / archive / BBL / GROBID ingestion glue |
+| `hallucinator-bbl` | BBL (LaTeX bibliography) parser |
+| `hallucinator-grobid` | GROBID TEI XML reference parser |
+| `hallucinator-reporting` | Output formatters (HTML / JSON / Markdown / CSV / text) |
+| `hallucinator-scowl` | SCOWL-based English dictionary helper |
 | `hallucinator-cli` | CLI binary |
 | `hallucinator-tui` | Terminal UI (Ratatui) |
 | `hallucinator-web` | Web interface |
