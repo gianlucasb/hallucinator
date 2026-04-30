@@ -79,6 +79,7 @@ The tool queries these databases simultaneously:
 | **OpenAlex** | 250M+ works (online with free API key, or offline) |
 | **Open Library** | Books, technical reports, and non-academic publications |
 | **GovInfo** | US federal laws, regulations, court opinions (optional, needs free API key) |
+| **IACR ePrint** | Cryptology ePrint Archive (offline-only — no public search API) |
 | **URL Checker** | Liveness check for non-academic URLs like GitHub repos (fallback) |
 | **Web Search** | SearxNG metasearch fallback for unindexed papers (optional, see below) |
 
@@ -116,19 +117,21 @@ GovInfo covers Public Laws, Congressional Bills, Code of Federal Regulations (CF
 
 ## Offline Databases
 
-Four databases can be downloaded for local querying. Offline databases are faster than online APIs and avoid rate limits.
+Five databases can be downloaded for local querying. Offline databases are faster than online APIs and avoid rate limits.
 
 ```bash
-# Build all four (run once, refresh periodically)
+# Build all five (run once, refresh periodically)
 hallucinator-cli update-dblp dblp.db
 hallucinator-cli update-acl acl.db
 hallucinator-cli update-arxiv arxiv.db
+hallucinator-cli update-iacr-eprint iacr.db
 hallucinator-cli update-openalex openalex.idx
 
 # Use them
 hallucinator-cli check \
     --dblp-offline=dblp.db --acl-offline=acl.db \
-    --arxiv-offline=arxiv.db --openalex-offline=openalex.idx \
+    --arxiv-offline=arxiv.db --iacr-eprint-offline=iacr.db \
+    --openalex-offline=openalex.idx \
     paper.pdf
 ```
 
@@ -166,6 +169,22 @@ hallucinator-cli update-arxiv arxiv.db --dump /path/to/arxiv-metadata-oai-snapsh
 ```
 
 When `--arxiv-offline` is configured, the online arXiv backend is **replaced entirely** (same pattern as DBLP and ACL). The Kaggle snapshot carries only each paper's latest-version title — the rare retitled-paper edge case (reference cites an old title, paper was renamed in a later version) is not caught. Clear the offline DB config and re-run if you need that coverage.
+
+### IACR ePrint (cryptology papers)
+
+The [IACR Cryptology ePrint Archive](https://eprint.iacr.org/) has no public search API, so this backend is **offline-only** — without a local index it never registers. Build the index once (~25–30k records, takes a few minutes) and refresh periodically; subsequent runs are incremental and only fetch records newer than the stored `last_harvest` timestamp.
+
+```bash
+hallucinator-cli update-iacr-eprint iacr.db
+
+# CLI
+hallucinator-cli check --iacr-eprint-offline=iacr.db paper.pdf
+
+# TUI — same flag, or set `iacr_eprint_offline_path` in the config file
+hallucinator-tui --iacr-eprint-offline=iacr.db paper.pdf
+```
+
+Auto-detected at `iacr.db` in the current directory or `~/.local/share/hallucinator/iacr.db`. IACR's metadata is published under CC0.
 
 ### ACL Anthology
 

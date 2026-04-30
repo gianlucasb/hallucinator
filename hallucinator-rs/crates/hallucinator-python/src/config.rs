@@ -22,6 +22,8 @@ pub struct PyValidatorConfig {
     pub(crate) s2_api_key: Option<String>,
     pub(crate) dblp_offline_path: Option<String>,
     pub(crate) acl_offline_path: Option<String>,
+    pub(crate) arxiv_offline_path: Option<String>,
+    pub(crate) iacr_eprint_offline_path: Option<String>,
     pub(crate) openalex_offline_path: Option<String>,
     pub(crate) cache_path: Option<String>,
     pub(crate) cache_positive_ttl_secs: u64,
@@ -34,6 +36,7 @@ pub struct PyValidatorConfig {
     pub(crate) disabled_dbs: Vec<String>,
     pub(crate) check_openalex_authors: bool,
     pub(crate) crossref_mailto: Option<String>,
+    pub(crate) url_match: bool,
 }
 
 impl PyValidatorConfig {
@@ -57,6 +60,33 @@ impl PyValidatorConfig {
                 let db = hallucinator_acl::AclDatabase::open(std::path::Path::new(path)).map_err(
                     |e| PyRuntimeError::new_err(format!("Failed to open ACL database: {}", e)),
                 )?;
+                Some(Arc::new(Mutex::new(db)))
+            }
+            None => None,
+        };
+
+        let arxiv_offline_db = match &self.arxiv_offline_path {
+            Some(path) => {
+                let db = hallucinator_arxiv_offline::ArxivDatabase::open(std::path::Path::new(
+                    path,
+                ))
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to open arXiv database: {}", e))
+                })?;
+                Some(Arc::new(Mutex::new(db)))
+            }
+            None => None,
+        };
+
+        let iacr_eprint_offline_db = match &self.iacr_eprint_offline_path {
+            Some(path) => {
+                let db = hallucinator_iacr_eprint::IacrDatabase::open(std::path::Path::new(path))
+                    .map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "Failed to open IACR ePrint database: {}",
+                            e
+                        ))
+                    })?;
                 Some(Arc::new(Mutex::new(db)))
             }
             None => None,
@@ -88,6 +118,10 @@ impl PyValidatorConfig {
             dblp_offline_db,
             acl_offline_path: self.acl_offline_path.as_ref().map(PathBuf::from),
             acl_offline_db,
+            arxiv_offline_path: self.arxiv_offline_path.as_ref().map(PathBuf::from),
+            arxiv_offline_db,
+            iacr_eprint_offline_path: self.iacr_eprint_offline_path.as_ref().map(PathBuf::from),
+            iacr_eprint_offline_db,
             openalex_offline_path: self.openalex_offline_path.as_ref().map(PathBuf::from),
             openalex_offline_db,
             num_workers: self.num_workers,
@@ -109,6 +143,7 @@ impl PyValidatorConfig {
                 self.cache_positive_ttl_secs,
                 self.cache_negative_ttl_secs,
             )),
+            url_match: self.url_match,
         })
     }
 }
@@ -122,6 +157,8 @@ impl PyValidatorConfig {
             s2_api_key: None,
             dblp_offline_path: None,
             acl_offline_path: None,
+            arxiv_offline_path: None,
+            iacr_eprint_offline_path: None,
             openalex_offline_path: None,
             cache_path: None,
             cache_positive_ttl_secs: hallucinator_core::DEFAULT_POSITIVE_TTL.as_secs(),
@@ -134,6 +171,7 @@ impl PyValidatorConfig {
             disabled_dbs: vec![],
             check_openalex_authors: false,
             crossref_mailto: None,
+            url_match: false,
         }
     }
 
@@ -179,6 +217,29 @@ impl PyValidatorConfig {
     #[setter]
     fn set_acl_offline_path(&mut self, value: Option<String>) {
         self.acl_offline_path = value;
+    }
+
+    /// Path to offline arXiv SQLite database (Kaggle snapshot, optional).
+    #[getter]
+    fn get_arxiv_offline_path(&self) -> Option<&str> {
+        self.arxiv_offline_path.as_deref()
+    }
+
+    #[setter]
+    fn set_arxiv_offline_path(&mut self, value: Option<String>) {
+        self.arxiv_offline_path = value;
+    }
+
+    /// Path to offline IACR Cryptology ePrint Archive SQLite database
+    /// (optional, no online counterpart — the backend is offline-only).
+    #[getter]
+    fn get_iacr_eprint_offline_path(&self) -> Option<&str> {
+        self.iacr_eprint_offline_path.as_deref()
+    }
+
+    #[setter]
+    fn set_iacr_eprint_offline_path(&mut self, value: Option<String>) {
+        self.iacr_eprint_offline_path = value;
     }
 
     /// Path to offline OpenAlex index directory (optional).
@@ -311,6 +372,20 @@ impl PyValidatorConfig {
     #[setter]
     fn set_crossref_mailto(&mut self, value: Option<String>) {
         self.crossref_mailto = value;
+    }
+
+    /// Cross-check unverified references against their raw URLs via URL
+    /// liveness checks and the Wayback Machine. When False (default),
+    /// non-academic-URL refs that miss every database land as "skipped"
+    /// rather than "not_found".
+    #[getter]
+    fn get_url_match(&self) -> bool {
+        self.url_match
+    }
+
+    #[setter]
+    fn set_url_match(&mut self, value: bool) {
+        self.url_match = value;
     }
 
     fn __repr__(&self) -> String {

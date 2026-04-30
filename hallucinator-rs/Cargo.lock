@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-acl"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-arxiv-offline"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "flate2",
@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-bbl"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "biblatex",
  "hallucinator-core",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-cli"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "async-channel",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-dblp"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "futures-util",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-grobid"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "hallucinator-core",
  "quick-xml",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-iacr-eprint"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "once_cell",
  "quick-xml",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-ingest"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "hallucinator-bbl",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-openalex"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-compression",
  "flate2",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-parsing"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-pdf-mupdf"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "hallucinator-core",
  "mupdf",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-reporting"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "hallucinator-core",
 ]
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "hallucinator-tui"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-channel",
