@@ -378,6 +378,24 @@ pub fn open_arxiv_db(
     Ok(Arc::new(Mutex::new(db)))
 }
 
+/// Open offline IACR Cryptology ePrint Archive database, returning the
+/// `Arc<Mutex<..>>` handle. The archive has no online search API, so
+/// without this local index the IACR backend never registers.
+pub fn open_iacr_eprint_db(
+    path: &std::path::Path,
+) -> anyhow::Result<Arc<Mutex<hallucinator_iacr_eprint::IacrDatabase>>> {
+    if !path.exists() {
+        anyhow::bail!(
+            "Offline IACR ePrint database not found at {}. Build it with `hallucinator-cli update-iacr-eprint {}`.",
+            path.display(),
+            path.display(),
+        );
+    }
+    let db =
+        hallucinator_iacr_eprint::IacrDatabase::open(path).map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(Arc::new(Mutex::new(db)))
+}
+
 /// Open offline OpenAlex Tantivy index if a path is configured, returning the Arc<Mutex<..>> handle.
 pub fn open_openalex_db(
     path: &std::path::Path,

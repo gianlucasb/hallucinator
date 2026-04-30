@@ -75,6 +75,7 @@ pub struct ConfigState {
     pub dblp_offline_path: String,
     pub acl_offline_path: String,
     pub arxiv_offline_path: String,
+    pub iacr_eprint_offline_path: String,
     pub openalex_offline_path: String,
     pub cache_path: String,
     /// Inline status message for cache clear operation.
@@ -135,6 +136,7 @@ impl Default for ConfigState {
             dblp_offline_path: String::new(),
             acl_offline_path: String::new(),
             arxiv_offline_path: String::new(),
+            iacr_eprint_offline_path: String::new(),
             openalex_offline_path: String::new(),
             cache_path: String::new(),
             cache_clear_status: None,

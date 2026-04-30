@@ -1467,6 +1467,7 @@ dependencies = [
  "hallucinator-bbl",
  "hallucinator-core",
  "hallucinator-dblp",
+ "hallucinator-iacr-eprint",
  "hallucinator-ingest",
  "hallucinator-openalex",
  "hallucinator-reporting",

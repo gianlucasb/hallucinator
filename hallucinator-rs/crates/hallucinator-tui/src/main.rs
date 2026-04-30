@@ -67,6 +67,11 @@ struct Cli {
     #[arg(long)]
     arxiv_offline: Option<PathBuf>,
 
+    /// Path to offline IACR Cryptology ePrint Archive database
+    /// (build with `hallucinator-cli update-iacr-eprint`).
+    #[arg(long)]
+    iacr_eprint_offline: Option<PathBuf>,
+
     /// Path to offline OpenAlex Tantivy index
     #[arg(long)]
     openalex_offline: Option<PathBuf>,
@@ -209,6 +214,11 @@ async fn main() -> anyhow::Result<()> {
     {
         config_state.acl_offline_path = path;
     }
+    if let Ok(path) = std::env::var("IACR_EPRINT_OFFLINE_PATH")
+        && !path.is_empty()
+    {
+        config_state.iacr_eprint_offline_path = path;
+    }
     if let Ok(path) = std::env::var("OPENALEX_OFFLINE_PATH")
         && !path.is_empty()
     {
@@ -243,6 +253,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(ref path) = cli.arxiv_offline {
         config_state.arxiv_offline_path = path.display().to_string();
+    }
+    if let Some(ref path) = cli.iacr_eprint_offline {
+        config_state.iacr_eprint_offline_path = path.display().to_string();
     }
     if let Some(ref path) = cli.openalex_offline {
         config_state.openalex_offline_path = path.display().to_string();
@@ -319,6 +332,23 @@ async fn main() -> anyhow::Result<()> {
         for candidate in &candidates {
             if candidate.exists() {
                 config_state.arxiv_offline_path = candidate.display().to_string();
+                break;
+            }
+        }
+    }
+
+    // Auto-detect default IACR ePrint DB if no explicit path configured
+    if config_state.iacr_eprint_offline_path.is_empty() {
+        let candidates = [
+            PathBuf::from("iacr.db"),
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hallucinator")
+                .join("iacr.db"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                config_state.iacr_eprint_offline_path = candidate.display().to_string();
                 break;
             }
         }
@@ -404,6 +434,33 @@ async fn main() -> anyhow::Result<()> {
             match backend::open_arxiv_db(path) {
                 Ok(db) => {
                     startup_info.push(format!("arXiv offline DB loaded: {}", path.display()));
+                    Some(db)
+                }
+                Err(e) => {
+                    startup_warnings.push(format!("{e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    // Resolve IACR ePrint offline path from config state
+    let iacr_eprint_offline_path: Option<PathBuf> =
+        if config_state.iacr_eprint_offline_path.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(&config_state.iacr_eprint_offline_path))
+        };
+
+    // Open IACR ePrint database if configured. The archive has no
+    // online search API, so without a local index this backend never
+    // registers — non-fatal if missing or corrupt.
+    let iacr_eprint_offline_db: Option<Arc<Mutex<hallucinator_iacr_eprint::IacrDatabase>>> =
+        if let Some(ref path) = iacr_eprint_offline_path {
+            match backend::open_iacr_eprint_db(path) {
+                Ok(db) => {
+                    startup_info.push(format!("IACR ePrint offline DB loaded: {}", path.display()));
                     Some(db)
                 }
                 Err(e) => {
@@ -656,6 +713,8 @@ async fn main() -> anyhow::Result<()> {
     let mut cached_acl_db = acl_offline_db.clone();
     let mut cached_arxiv_path = arxiv_offline_path.clone();
     let mut cached_arxiv_db = arxiv_offline_db.clone();
+    let mut cached_iacr_eprint_path = iacr_eprint_offline_path.clone();
+    let mut cached_iacr_eprint_db = iacr_eprint_offline_db.clone();
     let mut cached_openalex_path = openalex_offline_path.clone();
     let mut cached_openalex_db = openalex_offline_db.clone();
     let check_openalex_authors = cli.check_openalex_authors;
@@ -703,6 +762,16 @@ async fn main() -> anyhow::Result<()> {
                         };
                     }
 
+                    // If user changed the IACR ePrint path in config, try to open the new DB
+                    if config.iacr_eprint_offline_path != cached_iacr_eprint_path {
+                        cached_iacr_eprint_path = config.iacr_eprint_offline_path.clone();
+                        cached_iacr_eprint_db = if let Some(ref path) = cached_iacr_eprint_path {
+                            backend::open_iacr_eprint_db(path).ok()
+                        } else {
+                            None
+                        };
+                    }
+
                     // If user changed the OpenAlex path in config, try to open the new index
                     if config.openalex_offline_path != cached_openalex_path {
                         cached_openalex_path = config.openalex_offline_path.clone();
@@ -719,6 +788,8 @@ async fn main() -> anyhow::Result<()> {
                     config.acl_offline_db = cached_acl_db.clone();
                     config.arxiv_offline_path = cached_arxiv_path.clone();
                     config.arxiv_offline_db = cached_arxiv_db.clone();
+                    config.iacr_eprint_offline_path = cached_iacr_eprint_path.clone();
+                    config.iacr_eprint_offline_db = cached_iacr_eprint_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
@@ -743,6 +814,8 @@ async fn main() -> anyhow::Result<()> {
                     config.acl_offline_db = cached_acl_db.clone();
                     config.arxiv_offline_path = cached_arxiv_path.clone();
                     config.arxiv_offline_db = cached_arxiv_db.clone();
+                    config.iacr_eprint_offline_path = cached_iacr_eprint_path.clone();
+                    config.iacr_eprint_offline_db = cached_iacr_eprint_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
