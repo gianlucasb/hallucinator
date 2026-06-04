@@ -30,11 +30,43 @@ impl SegmentationStrategy {
     }
 }
 
+/// A single segmented reference.
+///
+/// `number` carries the explicit list number the segmenter parsed from the
+/// text — the `N` in `[N]` for IEEE, or the `N` in `N.` for the numbered
+/// style. Strategies with no explicit marker (author-year, fallback) leave
+/// it `None`, and the caller falls back to a positional number.
+///
+/// Keeping the explicit number is what keeps the reported reference number
+/// aligned with the paper: if a later step drops or merges a segment, every
+/// surviving reference still reports its true `[N]` instead of drifting by
+/// one (the position-based off-by-one bug).
+#[derive(Debug, Clone)]
+pub struct Segment {
+    pub text: String,
+    pub number: Option<usize>,
+}
+
+impl Segment {
+    /// Segment whose list number is known from an explicit marker.
+    fn numbered(text: String, number: usize) -> Self {
+        Segment {
+            text,
+            number: Some(number),
+        }
+    }
+
+    /// Segment from a strategy with no explicit list marker.
+    fn unnumbered(text: String) -> Self {
+        Segment { text, number: None }
+    }
+}
+
 /// Result of a single segmentation strategy attempt
 #[derive(Debug, Clone)]
 pub struct SegmentationResult {
     pub strategy: SegmentationStrategy,
-    pub references: Vec<String>,
+    pub references: Vec<Segment>,
 }
 
 /// Locate the references section in the document text.
@@ -319,11 +351,14 @@ pub fn segment_references_all_strategies(
         });
     }
 
+    // Strategies 3-5 below have no explicit per-reference list marker, so
+    // their segments are unnumbered and fall back to positional numbering.
+
     // Strategy 3a: AAAI
     if let Some(refs) = try_aaai(ref_text) {
         results.push(SegmentationResult {
             strategy: SegmentationStrategy::Aaai,
-            references: refs,
+            references: refs.into_iter().map(Segment::unnumbered).collect(),
         });
     }
 
@@ -331,7 +366,7 @@ pub fn segment_references_all_strategies(
     if let Some(refs) = try_neurips(ref_text) {
         results.push(SegmentationResult {
             strategy: SegmentationStrategy::Neurips,
-            references: refs,
+            references: refs.into_iter().map(Segment::unnumbered).collect(),
         });
     }
 
@@ -339,7 +374,7 @@ pub fn segment_references_all_strategies(
     if let Some(refs) = try_ml_full_name(ref_text) {
         results.push(SegmentationResult {
             strategy: SegmentationStrategy::MlFullName,
-            references: refs,
+            references: refs.into_iter().map(Segment::unnumbered).collect(),
         });
     }
 
@@ -347,7 +382,7 @@ pub fn segment_references_all_strategies(
     if let Some(refs) = try_springer_nature(ref_text) {
         results.push(SegmentationResult {
             strategy: SegmentationStrategy::SpringerNature,
-            references: refs,
+            references: refs.into_iter().map(Segment::unnumbered).collect(),
         });
     }
 
@@ -356,7 +391,7 @@ pub fn segment_references_all_strategies(
     if !fallback_refs.is_empty() {
         results.push(SegmentationResult {
             strategy: SegmentationStrategy::Fallback,
-            references: fallback_refs,
+            references: fallback_refs.into_iter().map(Segment::unnumbered).collect(),
         });
     }
 
@@ -373,6 +408,22 @@ pub(crate) fn segment_references_with_config(
     ref_text: &str,
     config: &ParsingConfig,
 ) -> Vec<String> {
+    segment_references_numbered_with_config(ref_text, config)
+        .into_iter()
+        .map(|s| s.text)
+        .collect()
+}
+
+/// Like [`segment_references_with_config`], but preserves each segment's
+/// explicit list number (`[N]` / `N.`) when the winning strategy provides one.
+///
+/// Callers use the carried number as the reference's `original_number` so the
+/// reported number matches the paper rather than the segment's position — the
+/// latter drifts whenever a segment is dropped or merged.
+pub(crate) fn segment_references_numbered_with_config(
+    ref_text: &str,
+    config: &ParsingConfig,
+) -> Vec<Segment> {
     use crate::scoring::select_best_segmentation;
 
     let all_results = segment_references_all_strategies(ref_text, config);
@@ -387,12 +438,29 @@ pub(crate) fn segment_references_with_config(
     // Strip headers for scoring (same preprocessing as in segment_references_all_strategies)
     let preprocessed = strip_page_headers(ref_text);
 
-    let chosen = select_best_segmentation(all_results, &preprocessed, config, &weights)
-        .map(|r| r.references)
-        .unwrap_or_default();
+    let Some(chosen) = select_best_segmentation(all_results, &preprocessed, config, &weights)
+    else {
+        return Vec::new();
+    };
+
+    // The prose-drop filter (`looks_like_reference`) exists to discard appendix
+    // text that leaked past the section-end detector and got chunked by the
+    // double-newline fallback. Explicitly-numbered strategies (IEEE, Numbered)
+    // split on a sequential `[N]`/`N.` run, so every segment between two
+    // consecutive markers is a real reference by construction. Running the
+    // heuristic filter over them only risks false-drops — e.g. a URL-only
+    // citation whose link got space-mangled in PDF extraction — and a dropped
+    // segment used to shift every later reference's position-based number by
+    // one. So we trust numbered strategies and only filter the rest.
+    let skip_prose_filter = matches!(
+        chosen.strategy,
+        SegmentationStrategy::Ieee | SegmentationStrategy::Numbered
+    );
+
     chosen
+        .references
         .into_iter()
-        .filter(|s| looks_like_reference(s))
+        .filter(|s| skip_prose_filter || looks_like_reference(&s.text))
         .collect()
 }
 
@@ -458,7 +526,7 @@ fn looks_like_reference(seg: &str) -> bool {
     ACADEMIC_RE.is_match(trimmed)
 }
 
-fn try_ieee_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<String>> {
+fn try_ieee_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<Segment>> {
     // Match [1], [2], etc. at start of string, after newline, period, or closing bracket
     // - Start/newline: standard IEEE format
     // - Period: handles PDFs where text extraction doesn't preserve newlines
@@ -468,15 +536,16 @@ fn try_ieee_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<St
         Lazy::new(|| Regex::new(r"(?m)(?:^|\n|[.\]0-9])\s*\[(\d+)\]\s*").unwrap());
 
     let re = config.ieee_segment_re.as_ref().unwrap_or(&RE);
-    let matches: Vec<_> = re.find_iter(ref_text).collect();
+    // Capture both the match span (for slicing) and group 1 (the `[N]` number,
+    // which we propagate so reported numbers track the paper, not list order).
+    let matches: Vec<_> = re.captures_iter(ref_text).collect();
     if matches.len() < 3 {
         return None;
     }
 
     // Extract the captured numbers to check sequentiality
     // This prevents matching years like [2017], [2020] in author-year citations
-    let caps: Vec<_> = re.captures_iter(ref_text).collect();
-    let first_nums: Vec<i64> = caps
+    let first_nums: Vec<i64> = matches
         .iter()
         .take(5)
         .filter_map(|c| c.get(1)?.as_str().parse().ok())
@@ -495,15 +564,16 @@ fn try_ieee_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<St
 
     let mut refs = Vec::new();
     for i in 0..matches.len() {
-        let start = matches[i].end();
+        let cur = matches[i].get(0).unwrap();
+        let start = cur.end();
         let end = if i + 1 < matches.len() {
             // Check if the next match starts with a digit (from prev ref's DOI)
             // If so, include that digit in the current reference
-            let next_start = matches[i + 1].start();
-            let next_match_str = matches[i + 1].as_str();
+            let next = matches[i + 1].get(0).unwrap();
+            let next_start = next.start();
             // If match starts with a digit (e.g., "0[3]" from DOI ending in ...0),
             // the digit belongs to the current reference
-            if let Some(first_char) = next_match_str.chars().next() {
+            if let Some(first_char) = next.as_str().chars().next() {
                 if first_char.is_ascii_digit() {
                     next_start + 1 // Include the digit in current ref
                 } else {
@@ -517,27 +587,34 @@ fn try_ieee_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<St
         };
         let content = ref_text[start..end].trim();
         if !content.is_empty() {
-            refs.push(content.to_string());
+            // Propagate the explicit `[N]` so the reference reports its true
+            // paper number even if it is later filtered or merged.
+            let number = matches[i].get(1).and_then(|m| m.as_str().parse().ok());
+            refs.push(match number {
+                Some(n) => Segment::numbered(content.to_string(), n),
+                None => Segment::unnumbered(content.to_string()),
+            });
         }
     }
     Some(refs)
 }
 
-fn try_numbered_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<String>> {
+fn try_numbered_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Vec<Segment>> {
     // Match 1-3 digit numbers only (not 4-digit years like 2018, 2024)
     // Papers rarely have 1000+ references, so this is a safe constraint
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)(?:^|\n)\s*(\d{1,3})\.\s+").unwrap());
 
     let re = config.numbered_segment_re.as_ref().unwrap_or(&RE);
-    let matches: Vec<_> = re.find_iter(ref_text).collect();
+    // Capture both the match span and group 1 (the `N.` number) so we can
+    // propagate the explicit list number alongside each segment.
+    let matches: Vec<_> = re.captures_iter(ref_text).collect();
     if matches.len() < 3 {
         return None;
     }
 
     // Extract the captured numbers to check sequentiality
     // When using a custom regex, we still need capture group 1 for numbers
-    let caps: Vec<_> = re.captures_iter(ref_text).collect();
-    let first_nums: Vec<i64> = caps
+    let first_nums: Vec<i64> = matches
         .iter()
         .take(5)
         .filter_map(|c| c.get(1)?.as_str().parse().ok())
@@ -555,15 +632,20 @@ fn try_numbered_with_config(ref_text: &str, config: &ParsingConfig) -> Option<Ve
 
     let mut refs = Vec::new();
     for i in 0..matches.len() {
-        let start = matches[i].end();
+        let cur = matches[i].get(0).unwrap();
+        let start = cur.end();
         let end = if i + 1 < matches.len() {
-            matches[i + 1].start()
+            matches[i + 1].get(0).unwrap().start()
         } else {
             ref_text.len()
         };
         let content = ref_text[start..end].trim();
         if !content.is_empty() {
-            refs.push(content.to_string());
+            let number = matches[i].get(1).and_then(|m| m.as_str().parse().ok());
+            refs.push(match number {
+                Some(n) => Segment::numbered(content.to_string(), n),
+                None => Segment::unnumbered(content.to_string()),
+            });
         }
     }
     Some(refs)
@@ -818,6 +900,81 @@ fn fallback_double_newline_with_config(ref_text: &str, config: &ParsingConfig) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ieee_segments_carry_their_bracket_number() {
+        // IEEE segments must report the `[N]` parsed from the text, so the
+        // number is correct even if the list isn't contiguous in our output.
+        let text = "[1] A. Author. First paper title here. 2021.\n\
+                    [2] B. Author. Second paper title here. 2022.\n\
+                    [3] C. Author. Third paper title here. 2023.";
+        let cfg = ParsingConfig::default();
+        let segs = segment_references_numbered_with_config(text, &cfg);
+        let nums: Vec<Option<usize>> = segs.iter().map(|s| s.number).collect();
+        assert_eq!(nums, vec![Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn test_ieee_offbyone_filter_does_not_renumber() {
+        // Regression for the TUI off-by-one bug. Reference [3] here is a
+        // URL-only citation whose link is space-mangled by PDF extraction, so
+        // the prose-drop heuristic (`looks_like_reference`) used to discard it.
+        // Dropping a middle segment then shifted every later reference's
+        // position-based number down by one ([4] reported as [3], etc.).
+        //
+        // Explicitly-numbered IEEE segments must (a) survive — the filter is
+        // skipped for numbered strategies — and (b) keep their true `[N]`.
+        let mangled_url_ref = "SecurityWeek. News Vulnerabilities. \
+            https : / / www . securityweek . com / category / vulnerabilities / \
+            with extra padding text to push this segment past one hundred chars.";
+        assert!(
+            mangled_url_ref.chars().count() >= 100 && !looks_like_reference(mangled_url_ref),
+            "test fixture must be a segment the prose filter would drop",
+        );
+
+        let text = format!(
+            "[1] A. Author. Some real paper title. In Proc. IEEE Conf., 2021.\n\
+             [2] B. Author. Another real paper title. In Proc. ACM Conf., 2022.\n\
+             [3] {mangled_url_ref}\n\
+             [4] D. Author. Fourth real paper title. In Proc. USENIX, 2024.\n\
+             [5] E. Author. Fifth real paper title. In Proc. NDSS, 2025."
+        );
+        let cfg = ParsingConfig::default();
+        let segs = segment_references_numbered_with_config(&text, &cfg);
+
+        // All five references kept, each reporting its true bracket number.
+        let nums: Vec<Option<usize>> = segs.iter().map(|s| s.number).collect();
+        assert_eq!(nums, vec![Some(1), Some(2), Some(3), Some(4), Some(5)]);
+    }
+
+    #[test]
+    fn test_ieee_merge_keeps_downstream_numbers_aligned() {
+        // When a boundary is missed and two refs merge into one segment, the
+        // merged segment keeps the first ref's number and every later segment
+        // still reports its true `[N]` — no cascading off-by-one. (The IEEE
+        // sequentiality guard only inspects the first five numbers, so the
+        // missed boundary must come later, exactly as it does in real PDFs.)
+        //
+        // Here the `[6]` boundary is preceded by a letter ("text [6]") so it
+        // lacks an accepted anchor char and merges into [5]; [7] must still
+        // report 7, not the segment count (6).
+        let text = "[1] A. Author. First paper title here, 2021.\n\
+                    [2] B. Author. Second paper title here, 2022.\n\
+                    [3] C. Author. Third paper title here, 2023.\n\
+                    [4] D. Author. Fourth paper title here, 2024.\n\
+                    [5] E. Author. Fifth paper title here, 2025 trailing text [6] F. Author. Sixth merged, 2025.\n\
+                    [7] G. Author. Seventh paper title here, 2026.";
+        let cfg = ParsingConfig::default();
+        let segs = segment_references_numbered_with_config(text, &cfg);
+        let nums: Vec<usize> = segs.iter().filter_map(|s| s.number).collect();
+        // The last reported number must be the real last bracket, [7],
+        // never the segment count (6 after the merge).
+        assert_eq!(segs.len(), 6, "expected one merged segment");
+        assert_eq!(nums.last(), Some(&7));
+        // Numbers strictly increasing and within the real bracket range.
+        assert!(nums.windows(2).all(|w| w[1] > w[0]));
+        assert!(nums.iter().all(|&n| n <= 7));
+    }
 
     #[test]
     fn test_find_references_section_basic() {

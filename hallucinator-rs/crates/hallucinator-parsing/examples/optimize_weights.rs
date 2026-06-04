@@ -197,16 +197,17 @@ fn load_paper_data(
 
     let mut strategy_metrics = Vec::new();
     for result in all_results {
-        let (_, _, f1) = compute_f1(&result.references, &ground_truth, config);
+        let ref_texts: Vec<String> = result.references.iter().map(|r| r.text.clone()).collect();
+        let (_, _, f1) = compute_f1(&ref_texts, &ground_truth, config);
 
         // Compute raw metrics
-        let total_ref_len: usize = result.references.iter().map(|r| r.len()).sum();
+        let total_ref_len: usize = result.references.iter().map(|r| r.text.len()).sum();
         let coverage = (total_ref_len as f64 / ref_section.len().max(1) as f64).min(1.0);
 
         let complete_count = result
             .references
             .iter()
-            .filter(|r| has_extractable_content(r, config))
+            .filter(|r| has_extractable_content(&r.text, config))
             .count();
         let completeness = if result.references.is_empty() {
             0.0
@@ -214,7 +215,8 @@ fn load_paper_data(
             complete_count as f64 / result.references.len() as f64
         };
 
-        let consistency = 1.0 - coefficient_of_variation(result.references.iter().map(|r| r.len()));
+        let consistency =
+            1.0 - coefficient_of_variation(result.references.iter().map(|r| r.text.len()));
 
         strategy_metrics.push(StrategyMetrics {
             strategy: result.strategy,

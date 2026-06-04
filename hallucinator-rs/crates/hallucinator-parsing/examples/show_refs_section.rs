@@ -36,7 +36,7 @@ fn main() -> Result<()> {
         if let Some(best) = results.iter().max_by_key(|r| r.references.len()) {
             println!("\n=== First 3 refs from {:?} ===", best.strategy);
             for (i, r) in best.references.iter().take(3).enumerate() {
-                println!("\n[{}] {}", i + 1, r);
+                println!("\n[{}] {}", r.number.unwrap_or(i + 1), r.text);
             }
         }
     } else {

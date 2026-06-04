@@ -16,7 +16,7 @@ pub use config::{ListOverride, ParsingConfig, ParsingConfigBuilder};
 pub use dictionary::Dictionary;
 pub use extractor::ReferenceExtractor;
 pub use scoring::{ScoringWeights, score_segmentation, select_best_segmentation};
-pub use section::{SegmentationResult, SegmentationStrategy};
+pub use section::{Segment, SegmentationResult, SegmentationStrategy};
 // Re-export domain types from core (canonical definitions live there)
 pub use hallucinator_core::{BackendError, ExtractionResult, PdfBackend, Reference, SkipStats};
 
