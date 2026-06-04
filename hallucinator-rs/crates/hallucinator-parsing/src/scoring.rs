@@ -57,18 +57,18 @@ pub fn score_segmentation(
     }
 
     // 1. Coverage: fraction of text captured
-    let total_ref_len: usize = refs.iter().map(|r| r.len()).sum();
+    let total_ref_len: usize = refs.iter().map(|r| r.text.len()).sum();
     let coverage = (total_ref_len as f64 / ref_section_text.len().max(1) as f64).min(1.0);
 
     // 2. Completeness: fraction with extractable title + authors
     let complete_count = refs
         .iter()
-        .filter(|r| has_extractable_content(r, config))
+        .filter(|r| has_extractable_content(&r.text, config))
         .count();
     let completeness = complete_count as f64 / refs.len() as f64;
 
     // 3. Consistency: inverse coefficient of variation of lengths
-    let consistency = 1.0 - coefficient_of_variation(refs.iter().map(|r| r.len()));
+    let consistency = 1.0 - coefficient_of_variation(refs.iter().map(|r| r.text.len()));
 
     // 4. Specificity: strategy-specific score
     let specificity = result.strategy.specificity_score();
@@ -150,7 +150,18 @@ pub fn select_best_segmentation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::section::SegmentationStrategy;
+    use crate::section::{Segment, SegmentationStrategy};
+
+    /// Wrap plain strings as unnumbered segments for test construction.
+    fn segs(items: &[&str]) -> Vec<Segment> {
+        items
+            .iter()
+            .map(|s| Segment {
+                text: s.to_string(),
+                number: None,
+            })
+            .collect()
+    }
 
     #[test]
     fn test_coefficient_of_variation_empty() {
@@ -204,10 +215,10 @@ mod tests {
         // Create a simple segmentation result
         let result = SegmentationResult {
             strategy: SegmentationStrategy::Ieee,
-            references: vec![
-                "Smith, J., Jones, A., \"A paper about something\", IEEE, 2023.".to_string(),
-                "Doe, J., \"Another paper here\", ACM, 2022.".to_string(),
-            ],
+            references: segs(&[
+                "Smith, J., Jones, A., \"A paper about something\", IEEE, 2023.",
+                "Doe, J., \"Another paper here\", ACM, 2022.",
+            ]),
         };
         let ref_text = concat!(
             "[1] Smith, J., Jones, A., \"A paper about something\", IEEE, 2023.\n",
@@ -225,14 +236,14 @@ mod tests {
         let results = vec![
             SegmentationResult {
                 strategy: SegmentationStrategy::Fallback,
-                references: vec!["short".to_string()],
+                references: segs(&["short"]),
             },
             SegmentationResult {
                 strategy: SegmentationStrategy::Ieee,
-                references: vec![
-                    "Smith, J., \"A proper paper title here\", IEEE, 2023.".to_string(),
-                    "Jones, A., \"Another paper title\", ACM, 2022.".to_string(),
-                ],
+                references: segs(&[
+                    "Smith, J., \"A proper paper title here\", IEEE, 2023.",
+                    "Jones, A., \"Another paper title\", ACM, 2022.",
+                ]),
             },
         ];
         let ref_text = "Some reference text here";

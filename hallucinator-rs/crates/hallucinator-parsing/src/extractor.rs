@@ -112,7 +112,7 @@ impl ReferenceExtractor {
             .find_references_section(&text)
             .ok_or(ParsingError::NoReferencesSection)?;
 
-        let raw_refs = self.segment_references(&ref_section);
+        let raw_refs = section::segment_references_numbered_with_config(&ref_section, &self.config);
 
         let mut stats = SkipStats {
             total_raw: raw_refs.len(),
@@ -122,7 +122,13 @@ impl ReferenceExtractor {
         let mut references = Vec::new();
         let mut previous_authors: Vec<String> = Vec::new();
 
-        for (raw_idx, ref_text) in raw_refs.iter().enumerate() {
+        for (raw_idx, segment) in raw_refs.iter().enumerate() {
+            let ref_text = &segment.text;
+            // Prefer the explicit list number (`[N]`/`N.`) parsed from the
+            // text; fall back to position only when the strategy didn't carry
+            // one. This keeps the reported number aligned with the paper even
+            // when an earlier segment is dropped or merged.
+            let original_number = segment.number.unwrap_or(raw_idx + 1);
             let parsed = parse_single_reference(
                 ref_text,
                 &previous_authors,
@@ -141,14 +147,14 @@ impl ReferenceExtractor {
                         doi: None,
                         arxiv_id: None,
                         urls: vec![],
-                        original_number: raw_idx + 1,
+                        original_number,
                         skip_reason: Some(match reason {
                             SkipReason::ShortTitle => "short_title".to_string(),
                         }),
                     });
                 }
                 ParsedRef::Ref(mut r) => {
-                    r.original_number = raw_idx + 1; // 1-based
+                    r.original_number = original_number;
                     if r.authors.is_empty() {
                         stats.no_authors += 1;
                     } else {

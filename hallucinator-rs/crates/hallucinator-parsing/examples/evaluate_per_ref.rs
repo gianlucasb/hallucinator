@@ -147,6 +147,7 @@ fn evaluate_paper(
         .references
         .iter()
         .filter_map(|r| {
+            let r = &r.text;
             let (title, from_quotes) = hallucinator_parsing::title::extract_title_from_reference(r);
             if title.is_empty() {
                 return None;

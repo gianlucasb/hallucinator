@@ -123,7 +123,8 @@ fn evaluate_paper(pdf_path: &Path, tarball_path: &Path) -> Result<PaperEvaluatio
     let mut strategy_results = Vec::new();
     for result in all_results {
         let score = score_segmentation(&result, &ref_section, &config, &weights);
-        let (precision, recall, f1) = compute_f1(&result.references, &ground_truth, &config);
+        let ref_texts: Vec<String> = result.references.iter().map(|r| r.text.clone()).collect();
+        let (precision, recall, f1) = compute_f1(&ref_texts, &ground_truth, &config);
 
         strategy_results.push(StrategyEval {
             strategy: result.strategy,

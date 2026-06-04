@@ -69,6 +69,7 @@ fn check_paper(pdf_path: &Path, tarball_path: &Path, config: &ParsingConfig) -> 
             .references
             .iter()
             .filter_map(|r| {
+                let r = &r.text;
                 let (title, _) = hallucinator_parsing::title::extract_title_from_reference(r);
                 if title.is_empty() || title.split_whitespace().count() < config.min_title_words() {
                     None
