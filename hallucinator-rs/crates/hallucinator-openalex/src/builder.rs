@@ -46,11 +46,10 @@ enum FileResult {
 }
 
 /// Extract a short display name from an S3 key.
-/// `"data/works/updated_date=2026-01-15/part_003.gz"` → `"2026-01-15/part_003.gz"`
+/// `"data/jsonl/works/updated_date=2026-01-15/part_003.gz"` → `"2026-01-15/part_003.gz"`
 fn short_filename(key: &str) -> String {
-    key.strip_prefix("data/works/updated_date=")
-        .unwrap_or(key)
-        .to_string()
+    let full_prefix = format!("{}updated_date=", crate::s3::WORKS_PREFIX);
+    key.strip_prefix(&full_prefix).unwrap_or(key).to_string()
 }
 
 /// Build or incrementally update the OpenAlex Tantivy index.
@@ -561,6 +560,25 @@ fn extract_numeric_id(id_str: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn works_prefix_points_at_live_jsonl_path() {
+        // Regression: the old `data/works/` prefix was retired in the 2026
+        // bucket restructure (moved to `legacy-data/works/`), which silently
+        // returned zero partitions and made every update a no-op. The live
+        // snapshot is under `data/jsonl/works/`.
+        assert_eq!(crate::s3::WORKS_PREFIX, "data/jsonl/works/");
+    }
+
+    #[test]
+    fn short_filename_strips_current_prefix() {
+        assert_eq!(
+            short_filename("data/jsonl/works/updated_date=2026-06-26/part_0003.gz"),
+            "2026-06-26/part_0003.gz"
+        );
+        // Unknown keys pass through unchanged.
+        assert_eq!(short_filename("something/else.gz"), "something/else.gz");
+    }
 
     #[test]
     fn test_parse_work_json_article() {
