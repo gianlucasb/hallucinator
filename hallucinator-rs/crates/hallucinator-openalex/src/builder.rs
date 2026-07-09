@@ -1,6 +1,6 @@
 //! S3 download + JSON parsing + Tantivy indexing for OpenAlex works.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -29,10 +29,16 @@ const ALLOWED_TYPES: &[&str] = &[
 ];
 
 /// Number of files to download and parse concurrently.
-const DOWNLOAD_CONCURRENCY: usize = 8;
+///
+/// Kept modest: the S3 endpoint starts refusing connections
+/// ("error sending request for url") under heavier fan-out, and each
+/// dropped file leaves a hole in the index (see watermark handling in
+/// [`build`]). Fewer parallel streams trade a little throughput for a
+/// much lower skip rate.
+const DOWNLOAD_CONCURRENCY: usize = 4;
 
 /// Number of retry attempts per file before skipping.
-const MAX_RETRIES: u32 = 3;
+const MAX_RETRIES: u32 = 6;
 
 /// Result from downloading and parsing a single gz file.
 enum FileResult {
@@ -41,8 +47,14 @@ enum FileResult {
         filename: String,
         records: Vec<(u64, String, Vec<String>)>,
     },
-    /// All retries exhausted — skip this file.
-    Failed { filename: String, error: String },
+    /// All retries exhausted — skip this file. Carries the partition date
+    /// so the caller can hold the sync watermark below the failed
+    /// partition and re-fetch it next run.
+    Failed {
+        partition_date: String,
+        filename: String,
+        error: String,
+    },
 }
 
 /// Extract a short display name from an S3 key.
@@ -50,6 +62,34 @@ enum FileResult {
 fn short_filename(key: &str) -> String {
     let full_prefix = format!("{}updated_date=", crate::s3::WORKS_PREFIX);
     key.strip_prefix(&full_prefix).unwrap_or(key).to_string()
+}
+
+/// Choose the sync watermark to persist after a run.
+///
+/// The watermark must only advance across the *contiguous fully-successful
+/// prefix* of partitions. If any partition had a skipped file, we cap the
+/// watermark just below the earliest such partition, so the next run
+/// re-fetches that partition (and everything after) instead of stepping over
+/// the hole forever — the next incremental only pulls partitions strictly
+/// newer than the stored watermark. Later partitions that happened to succeed
+/// get re-downloaded and upserted (deduped by work id), so no data is lost.
+///
+/// With no failures, the watermark is simply the newest partition seen.
+fn safe_watermark(
+    ok_partition_dates: &HashSet<String>,
+    failed_partition_dates: &HashSet<String>,
+    newest_date: &str,
+    prev_watermark: &str,
+) -> String {
+    match failed_partition_dates.iter().min() {
+        Some(earliest_failed) => ok_partition_dates
+            .iter()
+            .filter(|d| d.as_str() < earliest_failed.as_str())
+            .max()
+            .cloned()
+            .unwrap_or_else(|| prev_watermark.to_string()),
+        None => newest_date.to_string(),
+    }
 }
 
 /// Build or incrementally update the OpenAlex Tantivy index.
@@ -247,6 +287,12 @@ pub async fn build(
 
     let mut files_done: u64 = 0;
     let mut failed_files: Vec<String> = Vec::new();
+    // Track which partitions fully succeeded vs. had any skipped file, so the
+    // sync watermark only advances across the contiguous fully-downloaded
+    // prefix. A partition with even one dropped file must be re-fetched next
+    // run, so we never let the watermark move to or past it.
+    let mut ok_partition_dates: HashSet<String> = HashSet::new();
+    let mut failed_partition_dates: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -274,16 +320,22 @@ pub async fn build(
 
                         files_done += 1;
                         if partition_date > newest_date {
-                            newest_date = partition_date;
+                            newest_date = partition_date.clone();
                         }
+                        ok_partition_dates.insert(partition_date);
                     }
-                    FileResult::Failed { filename, error } => {
+                    FileResult::Failed {
+                        partition_date,
+                        filename,
+                        error,
+                    } => {
                         file_counters.remove(&filename);
                         progress(BuildProgress::FileSkipped {
                             filename: filename.clone(),
                             error,
                         });
                         failed_files.push(filename);
+                        failed_partition_dates.insert(partition_date);
                         files_done += 1;
                     }
                 }
@@ -353,13 +405,20 @@ pub async fn build(
     let total_in_index =
         existing_meta.and_then(|m| m.publication_count).unwrap_or(0) + total_records;
 
+    let sync_watermark = safe_watermark(
+        &ok_partition_dates,
+        &failed_partition_dates,
+        &newest_date,
+        &last_sync_date.clone().unwrap_or_default(),
+    );
+
     metadata::write_metadata(
         db_path,
         &IndexMetadata {
             schema_version: "1".to_string(),
             build_date: Some(now.to_string()),
             publication_count: Some(total_in_index),
-            last_sync_date: Some(newest_date),
+            last_sync_date: Some(sync_watermark),
         },
     )?;
 
@@ -392,7 +451,9 @@ fn make_download_future(
             if attempt > 0 {
                 // Reset per-file counter for the retry
                 file_bytes.store(0, Ordering::Relaxed);
-                let backoff = Duration::from_secs(2u64.pow(attempt));
+                // Exponential backoff, capped so a late retry doesn't stall
+                // for minutes on a flaky connection.
+                let backoff = Duration::from_secs(2u64.pow(attempt).min(30));
                 tokio::time::sleep(backoff).await;
             }
             match download_and_parse(&client, &key, min_year, &total_bytes, &file_bytes).await {
@@ -412,6 +473,7 @@ fn make_download_future(
             }
         }
         FileResult::Failed {
+            partition_date,
             filename,
             error: last_err,
         }
@@ -560,6 +622,44 @@ fn extract_numeric_id(id_str: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dates(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn watermark_advances_to_newest_when_all_succeed() {
+        let ok = dates(&["2026-04-01", "2026-04-02", "2026-06-26"]);
+        let failed = dates(&[]);
+        assert_eq!(
+            safe_watermark(&ok, &failed, "2026-06-26", "2026-03-30"),
+            "2026-06-26"
+        );
+    }
+
+    #[test]
+    fn watermark_holds_below_earliest_failure() {
+        // Later partitions succeeded, but 2026-04-03 had a dropped file:
+        // the watermark must not pass it, so the next run re-fetches from there.
+        let ok = dates(&["2026-04-01", "2026-04-02", "2026-05-10", "2026-06-26"]);
+        let failed = dates(&["2026-04-03", "2026-05-11"]);
+        assert_eq!(
+            safe_watermark(&ok, &failed, "2026-06-26", "2026-03-30"),
+            "2026-04-02"
+        );
+    }
+
+    #[test]
+    fn watermark_stays_at_prev_when_first_partition_fails() {
+        // No fully-successful partition precedes the earliest failure, so the
+        // watermark can't advance at all — the whole range re-runs next time.
+        let ok = dates(&["2026-04-05", "2026-06-26"]);
+        let failed = dates(&["2026-04-01"]);
+        assert_eq!(
+            safe_watermark(&ok, &failed, "2026-06-26", "2026-03-30"),
+            "2026-03-30"
+        );
+    }
 
     #[test]
     fn works_prefix_points_at_live_jsonl_path() {
