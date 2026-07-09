@@ -219,7 +219,10 @@ fn iso_date_age_days(s: &str) -> Option<u64> {
         .ok()?
         .as_secs();
     let now_days = (now_secs / 86_400) as i64;
-    let epoch_days_to_then = then - 719_162;
+    // ymd_to_days returns era*146097 + doe = days-since-1970 + 719_468
+    // (Hinnant's constant), so subtract 719_468 to put `then` on the same
+    // Unix-epoch basis as now_days.
+    let epoch_days_to_then = then - 719_468;
     Some((now_days - epoch_days_to_then).max(0) as u64)
 }
 
@@ -243,6 +246,47 @@ fn ymd_to_days(year: i32, month: u32, day: u32) -> Option<i64> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn ymd_to_days_matches_hinnant_anchors() {
+        // ymd_to_days returns era*146097 + doe, i.e. days-since-1970 plus
+        // Hinnant's 719_468 offset. Pin that with known anchors so the
+        // constant can't silently drift again.
+        assert_eq!(ymd_to_days(1970, 1, 1), Some(719_468)); // days-since-1970 = 0
+        assert_eq!(ymd_to_days(2000, 1, 1), Some(730_425)); // 10_957 days later
+        assert_eq!(ymd_to_days(2026, 7, 9), Some(719_468 + 20_643));
+    }
+
+    #[test]
+    fn iso_date_age_days_zero_for_today() {
+        // Regression: a build_date equal to today must read as 0 days old,
+        // not ~60 (the symptom of the mismatched epoch constants). Derive
+        // "today" from the same clock the function uses.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let now_days = (now_secs / 86_400) as i64;
+        // Rebuild the ISO string for `now_days` via a fixed reference date.
+        // 2026-07-09 is day 20_643; offset from there keeps this stable.
+        let today = day_number_to_iso(now_days);
+        assert_eq!(iso_date_age_days(&today), Some(0));
+    }
+
+    // Test-only inverse of ymd_to_days for the day-since-1970 count.
+    fn day_number_to_iso(days_since_1970: i64) -> String {
+        let mut z = days_since_1970 + 719_468;
+        let era = if z >= 0 { z } else { z - 146096 } / 146097;
+        let doe = z - era * 146097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        z = if m <= 2 { y + 1 } else { y };
+        format!("{:04}-{:02}-{:02}", z, m, d)
+    }
 
     #[test]
     fn create_then_open_roundtrip() {
