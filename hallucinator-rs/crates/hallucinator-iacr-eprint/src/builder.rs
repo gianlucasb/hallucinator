@@ -374,9 +374,11 @@ fn today_iso_date() -> Option<String> {
         .ok()?
         .as_secs();
     let days = now_secs / 86_400;
-    // Inverse of ymd_to_days in lib.rs. Epoch days from year 0 to
-    // 1970 is 719_162. Add that and convert back.
-    let mut z = days as i64 + 719_162 - 60; // shift origin to 0000-03-01
+    // Howard Hinnant's civil_from_days: shift the Unix-epoch day count by
+    // 719_468 (days from 0000-03-01 to 1970-01-01) before the era math.
+    // This is the exact inverse of ymd_to_days in lib.rs, which returns
+    // era*146097 + doe (i.e. days-since-1970 + 719_468).
+    let mut z = days as i64 + 719_468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -393,6 +395,28 @@ fn today_iso_date() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn today_iso_date_inverts_ymd_to_days() {
+        // today_iso_date must be the exact inverse of lib::ymd_to_days on the
+        // current Unix day. If the epoch constants disagree (the 60-days-stale
+        // bug), the parsed date lands on a different day than the clock.
+        let s = today_iso_date().expect("clock after epoch");
+        let parts: Vec<&str> = s.split('-').collect();
+        let (y, m, d): (i32, u32, u32) = (
+            parts[0].parse().unwrap(),
+            parts[1].parse().unwrap(),
+            parts[2].parse().unwrap(),
+        );
+        let then = crate::ymd_to_days(y, m, d).unwrap();
+        let now_days = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 86_400) as i64;
+        // ymd_to_days returns days-since-1970 + 719_468.
+        assert_eq!(then - 719_468, now_days, "today_iso_date drifted: {s}");
+    }
 
     const SAMPLE_PAGE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
