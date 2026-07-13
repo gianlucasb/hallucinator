@@ -9,7 +9,16 @@ use crate::OpenAlexError;
 
 pub(crate) const BUCKET_URL: &str = "https://openalex.s3.us-east-1.amazonaws.com";
 
-/// A date partition in the OpenAlex S3 bucket (e.g., `data/works/updated_date=2025-01-15/`).
+/// S3 prefix for the works snapshot.
+///
+/// OpenAlex restructured the bucket in 2026: the live gzipped-JSONL works
+/// snapshot now lives under `data/jsonl/works/` (the old `data/works/` path
+/// was retired and its frozen copy moved to `legacy-data/works/`). The
+/// `updated_date=YYYY-MM-DD/part_NNNN.gz` partition layout and record schema
+/// are unchanged, so only the prefix needed updating.
+pub(crate) const WORKS_PREFIX: &str = "data/jsonl/works/";
+
+/// A date partition in the OpenAlex S3 bucket (e.g., `data/jsonl/works/updated_date=2025-01-15/`).
 #[derive(Debug, Clone)]
 pub struct DatePartition {
     pub prefix: String,
@@ -24,7 +33,7 @@ pub struct PartitionFile {
     pub size: u64,
 }
 
-/// List all date partitions under `data/works/`.
+/// List all date partitions under [`WORKS_PREFIX`].
 pub async fn list_date_partitions(
     client: &reqwest::Client,
 ) -> Result<Vec<DatePartition>, OpenAlexError> {
@@ -32,7 +41,10 @@ pub async fn list_date_partitions(
     let mut continuation_token: Option<String> = None;
 
     loop {
-        let mut url = format!("{}/?list-type=2&prefix=data/works/&delimiter=/", BUCKET_URL);
+        let mut url = format!(
+            "{}/?list-type=2&prefix={}&delimiter=/",
+            BUCKET_URL, WORKS_PREFIX
+        );
         if let Some(ref token) = continuation_token {
             url.push_str(&format!(
                 "&continuation-token={}",
