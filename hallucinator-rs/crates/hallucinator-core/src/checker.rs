@@ -60,7 +60,24 @@ pub async fn check_references(
     // Collect results
     let mut results: Vec<Option<ValidationResult>> = vec![None; total];
     for (i, rx) in receivers {
-        if let Ok(result) = rx.await {
+        if let Ok(mut result) = rx.await {
+            // Authoritative phantom-author override: if a complete-author
+            // database (arXiv, CrossRef, OpenAlex, …) reported an author
+            // mismatch whose full roster is a strict subset of the citation's
+            // authors (a padded/fake co-author), the paper may still have been
+            // marked Verified by a truncating index (DBLP) that indexes the same
+            // work. Trust the complete source and flag the mismatch. Applied
+            // here, at the single result chokepoint, so it covers every pool
+            // path (local fast-path, cache hit, remote drainers).
+            if result.status == Status::Verified
+                && let Some(m) =
+                    crate::pool::find_phantom_mismatch(&result.db_results, &result.ref_authors)
+            {
+                result.status = Status::Mismatch(MismatchKind::AUTHOR);
+                result.source = Some(m.source);
+                result.found_authors = m.found_authors;
+                result.paper_url = m.paper_url;
+            }
             results[i] = Some(result);
         }
     }

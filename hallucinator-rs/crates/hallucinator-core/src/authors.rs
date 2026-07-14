@@ -68,6 +68,24 @@ static ORG_AUTHOR_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     .collect()
 });
 
+/// Whether a source's author lists are complete enough that a citation author
+/// absent from the record signals a genuine phantom (an added/fake author).
+///
+/// DBLP truncates or omits authors (long rosters, handbook chapters,
+/// organisational entries), so it is the sole lenient exception; every other
+/// backend (CrossRef, arXiv, OpenAlex, Semantic Scholar, PubMed, …) carries the
+/// full author list.
+pub fn db_has_complete_authors(db_name: &str) -> bool {
+    db_name != "DBLP"
+}
+
+/// Backwards-compatible entry point that assumes the source may omit authors
+/// (DBLP-style leniency). Prefer [`validate_authors_with_source`] from the
+/// checker so complete-author databases get the stricter phantom rule.
+pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> bool {
+    validate_authors_with_source(ref_authors, found_authors, false)
+}
+
 /// Validate that at least one author in `ref_authors` matches one in `found_authors`.
 ///
 /// Uses three modes:
@@ -76,7 +94,17 @@ static ORG_AUTHOR_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 /// - **Last-name-only mode**: If most PDF-extracted authors lack first names/initials,
 ///   compare only surnames (with partial suffix matching for multi-word surnames).
 /// - **Full mode**: Normalize to "FirstInitial surname" and check for set intersection.
-pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> bool {
+///
+/// `complete_authors` = the matching database lists every author. When `true`,
+/// a single citation author absent from the record is treated as a genuine
+/// phantom (padded/fake author) and flagged as a mismatch; when `false` (DBLP
+/// and other truncating indexes) the lenient "3+ phantoms and >25% of the
+/// citation" floor is used to avoid false positives on incomplete records.
+pub fn validate_authors_with_source(
+    ref_authors: &[String],
+    found_authors: &[String],
+    complete_authors: bool,
+) -> bool {
     if ref_authors.is_empty() || found_authors.is_empty() {
         return false;
     }
@@ -197,12 +225,20 @@ pub fn validate_authors(ref_authors: &[String], found_authors: &[String]) -> boo
                     crate::cache::author_fingerprint(a).is_some_and(|fp| !found_fps.contains(&fp))
                 })
                 .count();
-            // Trip the guard when there are 3+ phantom surnames AND
-            // they make up >25% of the citation. The absolute floor
-            // keeps the check quiet for short citations with one or
-            // two unmatched names; the percentage floor keeps it from
-            // firing on long-but-mostly-correct rosters.
-            if phantom_count >= 3 && phantom_count * 4 > ref_authors.len() {
+            // Complete-author databases (CrossRef, arXiv, OpenAlex, …) list
+            // every author, so any citation author absent from the record is a
+            // genuine phantom — flag even a single added name. DBLP and other
+            // truncating indexes may legitimately omit authors, so there we keep
+            // the conservative floor: 3+ phantoms that also make up >25% of the
+            // citation (the absolute floor ignores one or two unmatched names
+            // from typos/transliterations; the percentage floor keeps it from
+            // firing on long-but-mostly-correct rosters).
+            let phantom_flagged = if complete_authors {
+                phantom_count >= 1
+            } else {
+                phantom_count >= 3 && phantom_count * 4 > ref_authors.len()
+            };
+            if phantom_flagged {
                 return false;
             }
         }
@@ -511,6 +547,51 @@ mod tests {
             &s(&["John Smith", "Alice Jones"]),
             &s(&["John Smith", "Bob Brown"]),
         ));
+    }
+
+    #[test]
+    fn added_author_flagged_for_complete_source_only() {
+        // Citation = real authors + one fabricated co-author.
+        let cited = s(&[
+            "Weihao Ye",
+            "Qiong Wu",
+            "Zhiyuan Chen",
+            "Wenhao Lin",
+            "Yiyi Zhou",
+        ]);
+        let real = s(&["Weihao Ye", "Qiong Wu", "Wenhao Lin", "Yiyi Zhou"]);
+
+        // Complete source (arXiv/CrossRef/…): a single phantom is a real
+        // added author → mismatch.
+        assert!(!validate_authors_with_source(&cited, &real, true));
+        // DBLP-style incomplete source: tolerate it (may just be a truncated
+        // record) → still a match.
+        assert!(validate_authors_with_source(&cited, &real, false));
+        // Backwards-compatible entry point stays lenient.
+        assert!(validate_authors(&cited, &real));
+    }
+
+    #[test]
+    fn matching_authors_pass_on_complete_source() {
+        // No phantom: identical roster (order-independent) must still verify
+        // under the strict complete-source rule.
+        let a = s(&["Jane Roe", "John Doe"]);
+        let b = s(&["John Doe", "Jane Roe"]);
+        assert!(validate_authors_with_source(&a, &b, true));
+    }
+
+    #[test]
+    fn db_completeness_flags_only_dblp() {
+        assert!(!db_has_complete_authors("DBLP"));
+        for db in [
+            "arXiv",
+            "CrossRef",
+            "OpenAlex",
+            "Semantic Scholar",
+            "PubMed",
+        ] {
+            assert!(db_has_complete_authors(db), "{db} should be complete");
+        }
     }
 
     #[test]

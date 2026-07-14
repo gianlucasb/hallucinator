@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::authors::validate_authors;
+use crate::authors::{db_has_complete_authors, validate_authors_with_source};
 use crate::db::DatabaseBackend;
 use crate::db::searxng::Searxng;
 use crate::db::url_check::{UrlChecker, expand_url_variants};
@@ -206,6 +206,87 @@ struct AggState {
     retraction: Option<crate::retraction::RetractionResult>,
 }
 
+/// Scan finished DB results for a *phantom* author mismatch: a complete-author
+/// database (arXiv, CrossRef, OpenAlex, …) that matched the title but whose
+/// full author list is a strict subset of the citation's authors (the citation
+/// padded on an extra/fake co-author).
+///
+/// This is authoritative — it overrides a lenient verify from a truncating
+/// index (DBLP) that indexes the same paper, because the complete source's full
+/// roster contradicts the citation. The strict-subset shape rules out a
+/// same-title-different-paper collision (that shows disjoint, not extra,
+/// authors), so it stays quiet on real citations.
+pub(crate) fn find_phantom_mismatch(
+    db_results: &[DbResult],
+    ref_authors: &[String],
+) -> Option<PhantomMismatch> {
+    // A citation that carries an "et al." (or "and others") marker is an
+    // explicitly *truncated* author list, so extra names in the record — or a
+    // shorter record — are expected, not phantoms. Skip the check entirely
+    // rather than count the marker itself as an added author.
+    let is_truncation_marker = |a: &str| {
+        let t = a.trim().to_lowercase();
+        let t = t.trim_end_matches('.').trim();
+        t == "et al" || t == "et.al" || t == "others" || t == "and others" || t.ends_with(" et al")
+    };
+    if ref_authors.iter().any(|a| is_truncation_marker(a)) {
+        return None;
+    }
+
+    let ref_fps: std::collections::HashSet<String> = ref_authors
+        .iter()
+        .filter_map(|a| crate::cache::author_fingerprint(a))
+        .collect();
+    if ref_fps.is_empty() {
+        return None;
+    }
+
+    // Every author corroborated by *any* database that returned a roster. Used
+    // to tell a fabricated author (appears in no source) apart from a real one
+    // that a complete index merely omitted for this paper — e.g. an arXiv
+    // record whose version predates a co-author that DBLP/CrossRef still list.
+    let corroborated_fps: std::collections::HashSet<String> = db_results
+        .iter()
+        .flat_map(|r| r.found_authors.iter())
+        .filter_map(|a| crate::cache::author_fingerprint(a))
+        .collect();
+
+    db_results.iter().find_map(|r| {
+        if r.status != DbStatus::AuthorMismatch || !db_has_complete_authors(&r.db_name) {
+            return None;
+        }
+        let found_fps: std::collections::HashSet<String> = r
+            .found_authors
+            .iter()
+            .filter_map(|a| crate::cache::author_fingerprint(a))
+            .collect();
+        if found_fps.is_empty() || !found_fps.is_subset(&ref_fps) {
+            return None;
+        }
+        // The citation's extra authors (present in the citation, absent from
+        // this complete source). Flag only when *every* extra is corroborated
+        // by no other database — a genuine phantom rather than a co-author this
+        // source happened to miss.
+        let phantoms: Vec<&String> = ref_fps.difference(&found_fps).collect();
+        if !phantoms.is_empty() && phantoms.iter().all(|fp| !corroborated_fps.contains(*fp)) {
+            Some(PhantomMismatch {
+                source: r.db_name.clone(),
+                found_authors: r.found_authors.clone(),
+                paper_url: r.paper_url.clone(),
+            })
+        } else {
+            None
+        }
+    })
+}
+
+/// An authoritative phantom author mismatch surfaced by [`find_phantom_mismatch`].
+pub(crate) struct PhantomMismatch {
+    pub source: String,
+    pub found_authors: Vec<String>,
+    pub paper_url: Option<String>,
+}
+
 struct VerifiedInfo {
     source: String,
     found_authors: Vec<String>,
@@ -345,7 +426,13 @@ async fn report_result(
             let found_authors = &qr.authors;
             let paper_url = &qr.paper_url;
             let ref_authors = &collector.reference.authors;
-            if ref_authors.is_empty() || validate_authors(ref_authors, found_authors) {
+            if ref_authors.is_empty()
+                || validate_authors_with_source(
+                    ref_authors,
+                    found_authors,
+                    db_has_complete_authors(db_name),
+                )
+            {
                 // Verified — set flag so other drainers can skip
                 collector.verified.store(true, Ordering::Release);
 
@@ -997,7 +1084,13 @@ fn pre_check_remote_cache(
                     retraction = Some(r.clone());
                 }
 
-                if ref_authors.is_empty() || validate_authors(ref_authors, &qr.authors) {
+                if ref_authors.is_empty()
+                    || validate_authors_with_source(
+                        ref_authors,
+                        &qr.authors,
+                        db_has_complete_authors(&db_name),
+                    )
+                {
                     db_results.push(DbResult {
                         db_name: db_name.clone(),
                         status: DbStatus::Match,
@@ -1499,5 +1592,78 @@ fn build_validation_result(
         // Callers that reach this helper feed pre-fallback status,
         // so they haven't made a URL-check decision yet.
         url_check_skipped: false,
+    }
+}
+
+#[cfg(test)]
+mod phantom_tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    fn amismatch(db: &str, authors: &[&str]) -> DbResult {
+        DbResult {
+            db_name: db.to_string(),
+            status: DbStatus::AuthorMismatch,
+            elapsed: None,
+            found_authors: s(authors),
+            paper_url: None,
+            error_message: None,
+        }
+    }
+
+    fn matched(db: &str, authors: &[&str]) -> DbResult {
+        DbResult {
+            db_name: db.to_string(),
+            status: DbStatus::Match,
+            elapsed: None,
+            found_authors: s(authors),
+            paper_url: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn flags_uncorroborated_added_author() {
+        // arXiv (complete) rejects: citation has an extra "Zhiyuan Chen" that
+        // appears in no roster → fabricated → flag.
+        let cited = s(&["Weihao Ye", "Qiong Wu", "Zhiyuan Chen", "Wenhao Lin"]);
+        let dbr = vec![
+            amismatch("arXiv", &["Weihao Ye", "Qiong Wu", "Wenhao Lin"]),
+            matched("DBLP", &["Weihao Ye", "Qiong Wu", "Wenhao Lin"]),
+        ];
+        assert!(find_phantom_mismatch(&dbr, &cited).is_some());
+    }
+
+    #[test]
+    fn ignores_author_corroborated_by_another_db() {
+        // arXiv is missing "Nanning Zheng", but DBLP lists it → real author the
+        // arXiv version omitted, not a phantom → no flag.
+        let cited = s(&["Weitao Du", "Wei Chen", "Nanning Zheng", "Bin Shao"]);
+        let dbr = vec![
+            amismatch("arXiv", &["Weitao Du", "Wei Chen", "Bin Shao"]),
+            matched(
+                "DBLP",
+                &["Weitao Du", "Wei Chen", "Nanning Zheng", "Bin Shao"],
+            ),
+        ];
+        assert!(find_phantom_mismatch(&dbr, &cited).is_none());
+    }
+
+    #[test]
+    fn ignores_et_al_truncation() {
+        let cited = s(&["Burak Uzkent", "Stefano Ermon", "et al."]);
+        let dbr = vec![amismatch("arXiv", &["Burak Uzkent", "Stefano Ermon"])];
+        assert!(find_phantom_mismatch(&dbr, &cited).is_none());
+    }
+
+    #[test]
+    fn ignores_incomplete_source_dblp() {
+        // A DBLP mismatch is never authoritative (it truncates authors).
+        let cited = s(&["A. One", "B. Two", "C. Three"]);
+        let dbr = vec![amismatch("DBLP", &["A. One", "B. Two"])];
+        assert!(find_phantom_mismatch(&dbr, &cited).is_none());
     }
 }

@@ -1,4 +1,4 @@
-use crate::authors::validate_authors;
+use crate::authors::{db_has_complete_authors, validate_authors_with_source};
 use crate::db::DatabaseBackend;
 use crate::rate_limit;
 use crate::{Config, DbResult, DbStatus, MismatchKind, Status};
@@ -414,7 +414,11 @@ fn process_query_result(
                 (name == "Web Search" || name == "DBLP") && found_authors.is_empty();
             if ref_authors.is_empty()
                 || skip_author_check
-                || validate_authors(ref_authors, &found_authors)
+                || validate_authors_with_source(
+                    ref_authors,
+                    &found_authors,
+                    db_has_complete_authors(&name),
+                )
             {
                 let db_result = DbResult {
                     db_name: name.clone(),
