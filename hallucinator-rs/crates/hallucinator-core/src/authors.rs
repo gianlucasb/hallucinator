@@ -71,12 +71,17 @@ static ORG_AUTHOR_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 /// Whether a source's author lists are complete enough that a citation author
 /// absent from the record signals a genuine phantom (an added/fake author).
 ///
-/// DBLP truncates or omits authors (long rosters, handbook chapters,
-/// organisational entries), so it is the sole lenient exception; every other
-/// backend (CrossRef, arXiv, OpenAlex, Semantic Scholar, PubMed, …) carries the
-/// full author list.
+/// Two sources are excluded:
+/// - **DBLP** truncates or omits authors (long rosters, handbook chapters,
+///   organisational entries).
+/// - **OpenAlex** aggregates metadata and frequently carries partial author
+///   lists (e.g. tech reports credited to a single author) — the checker
+///   already distrusts its authors by default (`check_openalex_authors`).
+///
+/// Every other backend (CrossRef, arXiv, Semantic Scholar, PubMed, Europe PMC,
+/// …) carries a curated, full author list.
 pub fn db_has_complete_authors(db_name: &str) -> bool {
-    db_name != "DBLP"
+    db_name != "DBLP" && db_name != "OpenAlex"
 }
 
 /// Backwards-compatible entry point that assumes the source may omit authors
@@ -581,14 +586,15 @@ mod tests {
     }
 
     #[test]
-    fn db_completeness_flags_only_dblp() {
+    fn db_completeness_excludes_dblp_and_openalex() {
         assert!(!db_has_complete_authors("DBLP"));
+        assert!(!db_has_complete_authors("OpenAlex"));
         for db in [
             "arXiv",
             "CrossRef",
-            "OpenAlex",
             "Semantic Scholar",
             "PubMed",
+            "Europe PMC",
         ] {
             assert!(db_has_complete_authors(db), "{db} should be complete");
         }
