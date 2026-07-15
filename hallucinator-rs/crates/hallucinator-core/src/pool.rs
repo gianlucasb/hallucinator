@@ -1088,7 +1088,7 @@ fn pre_check_remote_cache(
                     || validate_authors_with_source(
                         ref_authors,
                         &qr.authors,
-                        db_has_complete_authors(&db_name),
+                        db_has_complete_authors(db_name),
                     )
                 {
                     db_results.push(DbResult {

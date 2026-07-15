@@ -122,6 +122,7 @@ impl App {
     /// with the query cache. For each ref:
     /// - Restore `fp_reason` from cache if present (cache wins over JSON).
     /// - Otherwise seed cache from the JSON's `fp_reason`.
+    ///
     /// Then re-walk the papers' stats to apply the `apply_fp_delta`
     /// adjustments for refs whose `fp_reason` flipped from None → Some
     /// during the cache-restore step. This keeps the queue table's

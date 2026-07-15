@@ -1652,9 +1652,9 @@ fn try_chinese_allcaps(ref_text: &str) -> Option<(String, bool)> {
             title_start_idx = Some(i);
             break;
         }
-        match title_start_idx {
-            Some(idx) => parts[idx..].join(", ").trim().to_string(),
-            None => return None,
+        {
+            let idx = title_start_idx?;
+            parts[idx..].join(", ").trim().to_string()
         }
     };
 
@@ -2024,10 +2024,9 @@ fn try_thesis_citation(ref_text: &str) -> Option<(String, bool)> {
 
     let title_start = if let Some(m) = AUTHOR_END.find(ref_text) {
         m.end()
-    } else if let Some(m) = AUTHOR_INVERTED.find(ref_text) {
-        m.end()
     } else {
-        return None;
+        let m = AUTHOR_INVERTED.find(ref_text)?;
+        m.end()
     };
 
     if title_start >= title_end {
@@ -2061,8 +2060,8 @@ fn try_thesis_citation(ref_text: &str) -> Option<(String, bool)> {
 ///                    virtual machine., May. 2025. [Online]. Available:
 ///                    https://...` — period separators, `[Online]` marker.
 ///   * f93 ref 21:   `Ethereum. Proposer builder separation (pbs)
-///                    ethereum, May. 2024. [Online]. Available: https://`
-///                    — mixed separators.
+///     ethereum, May. 2024. [Online]. Available: https://` — mixed
+///     separators.
 ///
 /// All quoted-title and structured-format extractors fail on these
 /// shapes because the title isn't delimited by quotes and there's no
