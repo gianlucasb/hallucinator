@@ -198,6 +198,7 @@ impl PaperState {
     ///     cache during extraction,
     ///   * `load.rs` after loading a JSON export whose refs carry
     ///     persisted fp_reason fields.
+    ///
     /// Adjust paper-level stat counters for a false-positive override
     /// on a single reference. Callers must pass the same
     /// `url_check_skipped` flag that was used on `record_status`:

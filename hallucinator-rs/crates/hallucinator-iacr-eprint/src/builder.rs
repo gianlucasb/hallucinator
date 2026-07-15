@@ -236,12 +236,11 @@ fn parse_list_records(xml: &str) -> Result<ListRecordsResponse, IacrError> {
                     "title" if in_metadata => cur_text_target = Some(TextTarget::Title),
                     "creator" if in_metadata => cur_text_target = Some(TextTarget::Creator),
                     "subject" if in_metadata => cur_text_target = Some(TextTarget::Subject),
-                    "date" if in_metadata => {
-                        // Only keep the first `<dc:date>` if multiple are
-                        // present (the feed sometimes emits create + modify).
-                        if cur_date.is_none() {
-                            cur_text_target = Some(TextTarget::Date);
-                        }
+                    // Only keep the first `<dc:date>` if multiple are present
+                    // (the feed sometimes emits create + modify); a later one
+                    // falls through to the no-op arm below.
+                    "date" if in_metadata && cur_date.is_none() => {
+                        cur_text_target = Some(TextTarget::Date);
                     }
                     "resumptionToken" => cur_text_target = Some(TextTarget::Token),
                     "error" => {
@@ -271,17 +270,15 @@ fn parse_list_records(xml: &str) -> Result<ListRecordsResponse, IacrError> {
                     }
                     Some(TextTarget::Title) => cur_title = Some(text),
                     Some(TextTarget::Creator) => cur_authors.push(text),
-                    Some(TextTarget::Subject) => {
-                        // First subject wins; later ones are usually
-                        // secondary categories and the archive UI
-                        // displays only the first.
-                        if cur_category.is_none() {
-                            cur_category = Some(text);
-                        }
+                    // First subject wins; later ones are usually secondary
+                    // categories and the archive UI displays only the first.
+                    // Repeat subjects (and `None`) fall through to the no-op arm.
+                    Some(TextTarget::Subject) if cur_category.is_none() => {
+                        cur_category = Some(text);
                     }
                     Some(TextTarget::Date) => cur_date = Some(text),
                     Some(TextTarget::Token) => next_token = Some(text),
-                    None => {}
+                    _ => {}
                 }
             }
             Ok(Event::End(e)) => {

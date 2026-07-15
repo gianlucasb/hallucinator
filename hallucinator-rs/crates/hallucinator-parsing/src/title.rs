@@ -2061,8 +2061,8 @@ fn try_thesis_citation(ref_text: &str) -> Option<(String, bool)> {
 ///                    virtual machine., May. 2025. [Online]. Available:
 ///                    https://...` — period separators, `[Online]` marker.
 ///   * f93 ref 21:   `Ethereum. Proposer builder separation (pbs)
-///                    ethereum, May. 2024. [Online]. Available: https://`
-///                    — mixed separators.
+///     ethereum, May. 2024. [Online]. Available: https://` — mixed
+///     separators.
 ///
 /// All quoted-title and structured-format extractors fail on these
 /// shapes because the title isn't delimited by quotes and there's no

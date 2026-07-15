@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
@@ -1795,7 +1795,7 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
 /// ~25–30k papers currently in the archive. Subsequent runs send
 /// `from=<last_harvest>` and only receive records that changed
 /// since, so day-to-day updates are near-instant.
-async fn update_iacr_eprint(db_path: &PathBuf) -> anyhow::Result<()> {
+async fn update_iacr_eprint(db_path: &Path) -> anyhow::Result<()> {
     use indicatif::{HumanCount, ProgressBar, ProgressStyle};
     use std::time::{Duration, Instant};
 
