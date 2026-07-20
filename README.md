@@ -4,10 +4,6 @@
 
 Created by Gianluca Stringhini with Claude Code and ChatGPT.
 
-> **Why this exists:** Academia is under attack from AI-generated slop—fake citations, fabricated papers, LLM-written reviews. We observed several papers with hallucinated citations submitted to ACSAC 2025, but the [November 2025 OpenReview incident](https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/) exposed how deep the rot goes: 21% of ICLR reviews were likely AI-generated, 199 papers were likely completely written by an AI. In March 2026, [ICML caught 506 reviewers](https://www.nature.com/articles/d41586-026-00893-2) using LLMs in violation of review policies and [desk-rejected 497 papers](https://blog.icml.cc/2026/03/18/on-violations-of-llm-review-policies/). This tool is one line of defense. It's not perfect—that's the point. We use AI to fight misuse of AI, openly and honestly. **[Read the full manifesto.](MANIFESTO.md)**
->
-> (See those em dashes? They're a known tell of AI-generated text. This README was written with Claude. We're not hiding it—we're proving a point. **[Read why this matters, even if you're an AI absolutist.](MANIFESTO.md#why-ai-should-care)**)
-
 ---
 
 > [!IMPORTANT]
@@ -16,6 +12,12 @@ Created by Gianluca Stringhini with Claude Code and ChatGPT.
 > **Confirm every detection by hand before drawing conclusions.** Verify the reference yourself—search the Web, the publisher, Google Scholar, or the authors' own pages—before treating a flag as a problem.
 
 ---
+
+> **Why this exists:** Academia is under attack from AI-generated slop—fake citations, fabricated papers, LLM-written reviews. We observed several papers with hallucinated citations submitted to ACSAC 2025, but the [November 2025 OpenReview incident](https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/) exposed how deep the rot goes: 21% of ICLR reviews were likely AI-generated, 199 papers were likely completely written by an AI. In March 2026, [ICML caught 506 reviewers](https://www.nature.com/articles/d41586-026-00893-2) using LLMs in violation of review policies and [desk-rejected 497 papers](https://blog.icml.cc/2026/03/18/on-violations-of-llm-review-policies/). This tool is one line of defense. It's not perfect—that's the point. We use AI to fight misuse of AI, openly and honestly. **[Read the full manifesto.](MANIFESTO.md)**
+>
+> (See those em dashes? They're a known tell of AI-generated text. This README was written with Claude. We're not hiding it—we're proving a point. **[Read why this matters, even if you're an AI absolutist.](MANIFESTO.md#why-ai-should-care)**)
+
+
 
 
 
