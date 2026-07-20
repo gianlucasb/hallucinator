@@ -6,6 +6,11 @@ Same validation engine as the Python version — queries 14 databases in paralle
 
 ---
 
+> [!IMPORTANT]
+> **This tool surfaces suspicion, not proof.** A "Not Found" or "Author Mismatch" result means only that a reference could not be found in—or its authors did not match—the bibliographic databases it checks. It **does not** mean the reference is fake or that it does not exist elsewhere: databases are incomplete (tech reports, books, workshop papers, new or non-English work, software/websites are often missing or partially indexed), and title/author matching is fuzzy and imperfect. Every flagged reference is a lead to check, not a verdict. **Confirm every detection by hand before drawing conclusions.**
+
+---
+
 ## Python Bindings
 
 Pre-compiled wheels are available — no Rust toolchain needed:
