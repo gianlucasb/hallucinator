@@ -7,7 +7,7 @@ Created by Gianluca Stringhini with Claude Code and ChatGPT.
 ---
 
 > [!IMPORTANT]
-> **This tool surfaces suspicion, not proof.** It flags references that it could not find in—or whose authors did not match—the bibliographic databases it checks (CrossRef, arXiv, DBLP, OpenAlex, and the others). A "Not Found" or "Author Mismatch" result **does not mean the reference is fake or that it does not exist elsewhere.** Databases are incomplete: technical reports, books, workshop papers, brand-new work, non-English venues, and software/websites are often missing or indexed with partial metadata, and title/author matching is fuzzy and imperfect. Every flagged reference is a lead to check, not a verdict.
+> **This tool surfaces suspicion, not proof.** It flags references that it could not find (or whose authors did not match) in the bibliographic databases it checks (CrossRef, arXiv, DBLP, OpenAlex, and others). A "Not Found" or "Author Mismatch" result **does not mean the reference is fake or that it does not exist elsewhere.** Databases are incomplete: technical reports, books, workshop papers, brand-new work, non-English venues, and software/websites are often missing or indexed with partial metadata, and title/author matching is fuzzy and imperfect. Every flagged reference is a lead to check, not a verdict.
 >
 > **Confirm every detection by hand before drawing conclusions.** Verify the reference yourself (search the Web, the publisher, Google Scholar, or the authors' own pages) before treating a flag as a problem.
 
