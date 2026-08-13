@@ -635,6 +635,15 @@ async fn check(
         Box::new(std::io::stdout())
     };
 
+    // Resolved before opening offline DBs so their read-connection pools can
+    // be sized to match — otherwise a user-raised worker count queues behind
+    // a fixed-size pool, inflating the DB's reported average latency (each
+    // worker waits for a free connection on top of that connection's own
+    // query time).
+    let num_workers = num_workers
+        .or_else(|| file_config.concurrency.as_ref().and_then(|c| c.num_workers))
+        .unwrap_or(4);
+
     // Open offline DBLP database if configured
     let dblp_offline_db = if let Some(ref path) = dblp_offline_path {
         if !path.exists() {
@@ -644,10 +653,10 @@ async fn check(
                 path.display()
             );
         }
-        let db = hallucinator_dblp::DblpDatabase::open(path)?;
+        let pool = hallucinator_dblp::DblpPool::open_with_size(path, num_workers)?;
 
         // Check staleness
-        if let Ok(staleness) = db.check_staleness(30)
+        if let Ok(staleness) = pool.check_staleness(30)
             && staleness.is_stale
         {
             let msg = if let Some(days) = staleness.age_days {
@@ -671,7 +680,7 @@ async fn check(
             writeln!(writer)?;
         }
 
-        Some(Arc::new(Mutex::new(db)))
+        Some(Arc::new(pool))
     } else {
         None
     };
@@ -685,7 +694,7 @@ async fn check(
                 path.display()
             );
         }
-        let db = hallucinator_acl::AclDatabase::open(path)?;
+        let db = hallucinator_acl::AclPool::open_with_size(path, num_workers)?;
 
         if let Ok(staleness) = db.check_staleness(30)
             && staleness.is_stale
@@ -711,7 +720,7 @@ async fn check(
             writeln!(writer)?;
         }
 
-        Some(Arc::new(Mutex::new(db)))
+        Some(Arc::new(db))
     } else {
         None
     };
@@ -725,7 +734,7 @@ async fn check(
                 path.display()
             );
         }
-        let db = hallucinator_arxiv_offline::ArxivDatabase::open(path)
+        let db = hallucinator_arxiv_offline::ArxivPool::open_with_size(path, num_workers)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         if let Ok(staleness) = db.staleness(30)
@@ -752,7 +761,7 @@ async fn check(
             writeln!(writer)?;
         }
 
-        Some(Arc::new(Mutex::new(db)))
+        Some(Arc::new(db))
     } else {
         None
     };
@@ -768,7 +777,7 @@ async fn check(
                 path.display()
             );
         }
-        let db = hallucinator_iacr_eprint::IacrDatabase::open(path)
+        let db = hallucinator_iacr_eprint::IacrPool::open_with_size(path, num_workers)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         if let Ok(staleness) = db.staleness(30)
@@ -795,7 +804,7 @@ async fn check(
             writeln!(writer)?;
         }
 
-        Some(Arc::new(Mutex::new(db)))
+        Some(Arc::new(db))
     } else {
         None
     };
@@ -836,7 +845,7 @@ async fn check(
             writeln!(writer)?;
         }
 
-        Some(Arc::new(Mutex::new(db)))
+        Some(Arc::new(db))
     } else {
         None
     };
@@ -867,9 +876,6 @@ async fn check(
     };
 
     // Build config: CLI flags > env vars > config file > defaults
-    let num_workers = num_workers
-        .or_else(|| file_config.concurrency.as_ref().and_then(|c| c.num_workers))
-        .unwrap_or(4);
     let max_rate_limit_retries = max_rate_limit_retries
         .or_else(|| {
             file_config

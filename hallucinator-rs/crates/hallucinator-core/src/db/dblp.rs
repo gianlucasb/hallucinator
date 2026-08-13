@@ -4,7 +4,7 @@ use crate::rate_limit::check_rate_limit_response;
 use crate::text_utils::get_query_words;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Strip DBLP disambiguation suffixes from author names.
@@ -27,8 +27,12 @@ fn strip_dblp_suffix(name: &str) -> String {
 pub struct DblpOnline;
 
 /// Offline DBLP backend backed by a local SQLite database with FTS5.
+///
+/// Uses a small connection pool (see [`hallucinator_dblp::DblpPool`]) rather
+/// than a single mutex-guarded connection, so concurrent reference checks can
+/// query DBLP in parallel instead of serializing on one lock.
 pub struct DblpOffline {
-    pub db: Arc<Mutex<hallucinator_dblp::DblpDatabase>>,
+    pub db: Arc<hallucinator_dblp::DblpPool>,
 }
 
 impl DatabaseBackend for DblpOffline {
@@ -63,7 +67,6 @@ impl DatabaseBackend for DblpOffline {
         let ref_authors = ref_authors.to_vec();
         Box::pin(async move {
             let result = tokio::task::spawn_blocking(move || {
-                let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
                 db.query_with_authors(&title, &ref_authors)
                     .map_err(|e| DbQueryError::Other(e.to_string()))
             })

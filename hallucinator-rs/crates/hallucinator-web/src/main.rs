@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 mod handlers;
 mod models;
@@ -22,10 +22,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref path_str) = dblp_offline_path {
         let path = std::path::PathBuf::from(path_str);
         if path.exists() {
-            match hallucinator_dblp::DblpDatabase::open(&path) {
-                Ok(db) => {
+            match hallucinator_dblp::DblpPool::open(&path) {
+                Ok(pool) => {
                     // Check staleness (30 days)
-                    if let Ok(staleness) = db.check_staleness(30)
+                    if let Ok(staleness) = pool.check_staleness(30)
                         && staleness.is_stale
                     {
                         eprintln!(
@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                     dblp_offline_path_display = path_str.clone();
-                    dblp_offline_db = Some(Arc::new(Mutex::new(db)));
+                    dblp_offline_db = Some(Arc::new(pool));
                     println!("DBLP offline database loaded: {}", path_str);
                 }
                 Err(e) => {

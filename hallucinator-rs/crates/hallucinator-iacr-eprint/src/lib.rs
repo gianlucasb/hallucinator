@@ -26,6 +26,8 @@ pub mod builder;
 pub mod db;
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rusqlite::Connection;
 use thiserror::Error;
@@ -85,6 +87,26 @@ pub enum BuildProgress {
     Complete { records: u64, skipped: bool },
 }
 
+/// Open a connection to `path` and verify it is a built offline IACR
+/// ePrint database, applying read-heavy pragmas (matches dblp/acl/arxiv
+/// setup, plus `mmap_size` for large-database read performance).
+fn open_and_verify(path: &Path) -> Result<Connection, IacrError> {
+    let conn = Connection::open(path)?;
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='papers'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(IacrError::Database(rusqlite::Error::QueryReturnedNoRows));
+    }
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -64000;",
+    )?;
+    let _ = conn.pragma_update(None, "mmap_size", 268_435_456i64);
+    Ok(conn)
+}
+
 /// Handle to an opened offline IACR ePrint database.
 pub struct IacrDatabase {
     conn: Connection,
@@ -97,18 +119,7 @@ impl IacrDatabase {
     /// been initialized — callers get a clear error rather than
     /// silent empty results.
     pub fn open(path: &Path) -> Result<Self, IacrError> {
-        let conn = Connection::open(path)?;
-        let exists: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='papers'",
-            [],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Err(IacrError::Database(rusqlite::Error::QueryReturnedNoRows));
-        }
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -64000;",
-        )?;
+        let conn = open_and_verify(path)?;
         Ok(Self {
             conn,
             path: path.to_path_buf(),
@@ -199,6 +210,95 @@ impl IacrDatabase {
             age_days,
             build_date,
         })
+    }
+}
+
+/// Default number of read connections held by [`IacrPool`]. See
+/// `hallucinator_dblp::DEFAULT_POOL_SIZE` for the rationale.
+pub const DEFAULT_POOL_SIZE: usize = 4;
+
+/// A small fixed pool of read connections to an offline IACR ePrint
+/// database. Mirrors `hallucinator_dblp::DblpPool` — only wraps the read
+/// path used by the runtime backend (lookup/search/staleness); the
+/// harvester keeps using [`IacrDatabase`] directly, not through this pool.
+pub struct IacrPool {
+    conns: Vec<Mutex<Connection>>,
+    next: AtomicUsize,
+    path: PathBuf,
+}
+
+impl IacrPool {
+    /// Open a pool of [`DEFAULT_POOL_SIZE`] read connections.
+    pub fn open(path: &Path) -> Result<Self, IacrError> {
+        Self::open_with_size(path, DEFAULT_POOL_SIZE)
+    }
+
+    /// Open a pool of `size` read connections (minimum 1).
+    pub fn open_with_size(path: &Path, size: usize) -> Result<Self, IacrError> {
+        let size = size.max(1);
+        let mut conns = Vec::with_capacity(size);
+        for _ in 0..size {
+            conns.push(Mutex::new(open_and_verify(path)?));
+        }
+        Ok(Self {
+            conns,
+            next: AtomicUsize::new(0),
+            path: path.to_path_buf(),
+        })
+    }
+
+    fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, IacrError>,
+    ) -> Result<T, IacrError> {
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.conns.len();
+        let conn = self.conns[idx]
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&conn)
+    }
+
+    /// Exact-ID lookup. See [`IacrDatabase::lookup_by_id`].
+    pub fn lookup_by_id(&self, id: &str) -> Result<Option<IacrRecord>, IacrError> {
+        self.with_conn(|conn| db::lookup_by_id(conn, id))
+    }
+
+    /// Title search. See [`IacrDatabase::search_by_title`].
+    pub fn search_by_title(&self, query: &str, limit: usize) -> Result<Vec<IacrRecord>, IacrError> {
+        self.with_conn(|conn| db::search_by_title(conn, query, limit))
+    }
+
+    /// Number of papers in the database.
+    pub fn paper_count(&self) -> Result<u64, IacrError> {
+        self.with_conn(|conn| {
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM papers", [], |row| row.get(0))?;
+            Ok(n as u64)
+        })
+    }
+
+    /// Whether the database is older than `threshold_days`.
+    pub fn staleness(&self, threshold_days: u64) -> Result<StalenessCheck, IacrError> {
+        self.with_conn(|conn| {
+            let build_date = db::get_metadata(conn, "build_date")?;
+            let Some(date) = &build_date else {
+                return Ok(StalenessCheck {
+                    is_stale: false,
+                    age_days: None,
+                    build_date: None,
+                });
+            };
+            let age_days = iso_date_age_days(date);
+            Ok(StalenessCheck {
+                is_stale: age_days.is_some_and(|d| d >= threshold_days),
+                age_days,
+                build_date,
+            })
+        })
+    }
+
+    /// Get the path to the database file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -334,38 +334,47 @@ pub async fn retry_references(
     }
 }
 
-/// Open offline DBLP database if a path is configured, returning the Arc<Mutex<..>> handle.
+/// Open offline DBLP database if a path is configured, returning the Arc<DblpPool> handle.
+///
+/// `pool_size` should match the caller's configured `num_workers` — a
+/// pool smaller than the actual worker count makes workers queue for a
+/// free connection on top of that connection's own query time, which
+/// shows up as inflated per-query averages in the activity panel even
+/// though nothing individually got slower.
 pub fn open_dblp_db(
     path: &std::path::Path,
-) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
+    pool_size: usize,
+) -> anyhow::Result<Arc<hallucinator_dblp::DblpPool>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline DBLP database not found at {}. Build from Config > Databases (b) or run 'hallucinator-tui update-dblp'.",
             path.display()
         );
     }
-    let db = hallucinator_dblp::DblpDatabase::open(path)?;
-    Ok(Arc::new(Mutex::new(db)))
+    let pool = hallucinator_dblp::DblpPool::open_with_size(path, pool_size)?;
+    Ok(Arc::new(pool))
 }
 
-/// Open offline ACL Anthology database if a path is configured, returning the Arc<Mutex<..>> handle.
+/// Open offline ACL Anthology database if a path is configured, returning the Arc<AclPool> handle.
 pub fn open_acl_db(
     path: &std::path::Path,
-) -> anyhow::Result<Arc<Mutex<hallucinator_acl::AclDatabase>>> {
+    pool_size: usize,
+) -> anyhow::Result<Arc<hallucinator_acl::AclPool>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline ACL database not found at {}. Build from Config > Databases (b) or run 'hallucinator-tui update-acl'.",
             path.display(),
         );
     }
-    let db = hallucinator_acl::AclDatabase::open(path)?;
-    Ok(Arc::new(Mutex::new(db)))
+    let pool = hallucinator_acl::AclPool::open_with_size(path, pool_size)?;
+    Ok(Arc::new(pool))
 }
 
-/// Open offline arXiv metadata database if a path is configured, returning the Arc<Mutex<..>> handle.
+/// Open offline arXiv metadata database if a path is configured, returning the Arc<ArxivPool> handle.
 pub fn open_arxiv_db(
     path: &std::path::Path,
-) -> anyhow::Result<Arc<Mutex<hallucinator_arxiv_offline::ArxivDatabase>>> {
+    pool_size: usize,
+) -> anyhow::Result<Arc<hallucinator_arxiv_offline::ArxivPool>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline arXiv database not found at {}. Build with `hallucinator-cli update-arxiv {}`.",
@@ -373,17 +382,18 @@ pub fn open_arxiv_db(
             path.display(),
         );
     }
-    let db = hallucinator_arxiv_offline::ArxivDatabase::open(path)
+    let pool = hallucinator_arxiv_offline::ArxivPool::open_with_size(path, pool_size)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    Ok(Arc::new(Mutex::new(db)))
+    Ok(Arc::new(pool))
 }
 
 /// Open offline IACR Cryptology ePrint Archive database, returning the
-/// `Arc<Mutex<..>>` handle. The archive has no online search API, so
+/// `Arc<IacrPool>` handle. The archive has no online search API, so
 /// without this local index the IACR backend never registers.
 pub fn open_iacr_eprint_db(
     path: &std::path::Path,
-) -> anyhow::Result<Arc<Mutex<hallucinator_iacr_eprint::IacrDatabase>>> {
+    pool_size: usize,
+) -> anyhow::Result<Arc<hallucinator_iacr_eprint::IacrPool>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline IACR ePrint database not found at {}. Build it with `hallucinator-cli update-iacr-eprint {}`.",
@@ -391,15 +401,15 @@ pub fn open_iacr_eprint_db(
             path.display(),
         );
     }
-    let db =
-        hallucinator_iacr_eprint::IacrDatabase::open(path).map_err(|e| anyhow::anyhow!("{}", e))?;
-    Ok(Arc::new(Mutex::new(db)))
+    let pool = hallucinator_iacr_eprint::IacrPool::open_with_size(path, pool_size)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(Arc::new(pool))
 }
 
-/// Open offline OpenAlex Tantivy index if a path is configured, returning the Arc<Mutex<..>> handle.
+/// Open offline OpenAlex Tantivy index if a path is configured, returning the Arc<OpenAlexDatabase> handle.
 pub fn open_openalex_db(
     path: &std::path::Path,
-) -> anyhow::Result<Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>> {
+) -> anyhow::Result<Arc<hallucinator_openalex::OpenAlexDatabase>> {
     if !path.exists() {
         anyhow::bail!(
             "Offline OpenAlex index not found at {}. Build from Config > Databases (b) or run 'hallucinator-tui update-openalex'.",
@@ -408,5 +418,5 @@ pub fn open_openalex_db(
     }
     let db = hallucinator_openalex::OpenAlexDatabase::open(path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    Ok(Arc::new(Mutex::new(db)))
+    Ok(Arc::new(db))
 }

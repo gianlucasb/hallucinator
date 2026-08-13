@@ -511,7 +511,7 @@ pub fn query_fts_with_authors(
         }
     }
 
-    // Fallback B: OR-join the strongest 4 words when both AND queries
+    // Fallback B: OR-join the 4 most selective words when both AND queries
     // returned nothing. The AND requirement misses titles where the
     // citation lists a slightly-truncated form (e.g. citation says
     // "Software bills of materials are required" while DBLP indexes
@@ -522,7 +522,8 @@ pub fn query_fts_with_authors(
     // before being accepted.
     if words.len() >= 2 {
         let take = words.len().min(4);
-        let or_query = words[..take].join(" OR ");
+        let or_words = select_or_fallback_words(conn, &words, take);
+        let or_query = or_words.join(" OR ");
         return fts_match(
             conn,
             &or_query,
@@ -534,6 +535,56 @@ pub fn query_fts_with_authors(
     }
 
     Ok(None)
+}
+
+/// Pick the `take` most selective (lowest document-frequency) words from
+/// `words` for the OR-fallback query.
+///
+/// On an 8M+ row database, OR-ing in a high-frequency word (e.g.
+/// "learning": ~600K/8.4M titles) forces FTS5 to merge and BM25-rank a huge
+/// posting list before `ORDER BY rank LIMIT 50` can truncate it — measured
+/// up to ~1.2s for a single query, vs ~5-10ms for the same query with that
+/// one word swapped out. Preferring rare/specific words is also *more*
+/// likely to surface a genuine match: an OR clause dominated by a common
+/// word mostly returns noise unrelated to the cited paper.
+///
+/// Falls back to `words`' original extraction order (today's behavior)
+/// when frequency data isn't available (e.g. `ensure_vocab_table` failed
+/// on this connection).
+fn select_or_fallback_words(conn: &Connection, words: &[String], take: usize) -> Vec<String> {
+    let freqs = term_doc_frequencies(conn, words);
+    if freqs.is_empty() {
+        return words[..take].to_vec();
+    }
+    let mut ranked: Vec<&String> = words.iter().collect();
+    ranked.sort_by_key(|w| freqs.get(&w.to_lowercase()).copied().unwrap_or(0));
+    ranked.into_iter().take(take).cloned().collect()
+}
+
+/// Look up FTS5 document frequency (`fts5vocab` 'row' mode's `doc` column —
+/// number of rows containing the term at least once) for each of `words`,
+/// via the session-local vocab table `ensure_vocab_table` creates. Returns
+/// an empty map if that table doesn't exist on this connection; a missing
+/// entry for an individual word (not in the vocab, i.e. absent from the
+/// corpus entirely) is treated by the caller as frequency 0 — cheapest to
+/// include, since it contributes no rows to the OR merge.
+fn term_doc_frequencies(
+    conn: &Connection,
+    words: &[String],
+) -> std::collections::HashMap<String, i64> {
+    let mut freqs = std::collections::HashMap::new();
+    let Ok(mut stmt) =
+        conn.prepare_cached("SELECT doc FROM temp.publications_vocab WHERE term = ?1")
+    else {
+        return freqs;
+    };
+    for w in words {
+        let lower = w.to_lowercase();
+        if let Ok(doc) = stmt.query_row(params![lower], |row| row.get::<_, i64>(0)) {
+            freqs.insert(lower, doc);
+        }
+    }
+    freqs
 }
 
 #[cfg(test)]

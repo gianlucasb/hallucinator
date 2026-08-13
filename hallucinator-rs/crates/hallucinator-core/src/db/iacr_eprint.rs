@@ -15,25 +15,24 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use hallucinator_iacr_eprint::IacrDatabase;
+use hallucinator_iacr_eprint::IacrPool;
 
 use super::{DatabaseBackend, DbQueryError, DbQueryResult};
 use crate::matching::titles_match;
 
-/// Offline IACR ePrint backend. Wraps the shared `IacrDatabase`
-/// handle under an `Arc<Mutex<_>>` so the orchestrator can clone
-/// it cheaply per ref without sharing the underlying SQLite
-/// connection across threads directly (rusqlite connections aren't
-/// `Sync`).
+/// Offline IACR ePrint backend. Wraps a small pool of read connections
+/// (see [`IacrPool`]) rather than a single mutex-guarded connection, so
+/// concurrent reference checks can query the offline index in parallel
+/// instead of serializing on one lock.
 pub struct IacrEprintOffline {
-    pub db: Arc<Mutex<IacrDatabase>>,
+    pub db: Arc<IacrPool>,
 }
 
 impl IacrEprintOffline {
-    pub fn new(db: Arc<Mutex<IacrDatabase>>) -> Self {
+    pub fn new(db: Arc<IacrPool>) -> Self {
         Self { db }
     }
 }
@@ -72,11 +71,9 @@ impl DatabaseBackend for IacrEprintOffline {
             // SQLite work off the async runtime — `spawn_blocking`
             // keeps the executor free for other backends.
             let maybe_record = tokio::task::spawn_blocking(move || {
-                let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
                 let candidates = db
                     .search_by_title(&title, 5)
                     .map_err(|e| DbQueryError::Other(e.to_string()))?;
-                drop(db);
                 for rec in candidates {
                     if titles_match(&title, &rec.title) {
                         return Ok::<_, DbQueryError>(Some(rec));

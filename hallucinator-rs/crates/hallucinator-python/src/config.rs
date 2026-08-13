@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -44,50 +44,66 @@ impl PyValidatorConfig {
     ///
     /// Opens offline databases if paths are provided.
     pub(crate) fn to_core_config(&self) -> PyResult<Config> {
+        // Size each offline DB's read-connection pool to match num_workers —
+        // a smaller pool makes workers queue for a free connection on top of
+        // that connection's own query time, inflating reported latency.
+        let pool_size = self.num_workers.max(1);
+
         let dblp_offline_db = match &self.dblp_offline_path {
             Some(path) => {
-                let db = hallucinator_dblp::DblpDatabase::open(std::path::Path::new(path))
-                    .map_err(|e| {
-                        PyRuntimeError::new_err(format!("Failed to open DBLP database: {}", e))
-                    })?;
-                Some(Arc::new(Mutex::new(db)))
+                let pool = hallucinator_dblp::DblpPool::open_with_size(
+                    std::path::Path::new(path),
+                    pool_size,
+                )
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to open DBLP database: {}", e))
+                })?;
+                Some(Arc::new(pool))
             }
             None => None,
         };
 
         let acl_offline_db = match &self.acl_offline_path {
             Some(path) => {
-                let db = hallucinator_acl::AclDatabase::open(std::path::Path::new(path)).map_err(
-                    |e| PyRuntimeError::new_err(format!("Failed to open ACL database: {}", e)),
-                )?;
-                Some(Arc::new(Mutex::new(db)))
+                let pool = hallucinator_acl::AclPool::open_with_size(
+                    std::path::Path::new(path),
+                    pool_size,
+                )
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to open ACL database: {}", e))
+                })?;
+                Some(Arc::new(pool))
             }
             None => None,
         };
 
         let arxiv_offline_db = match &self.arxiv_offline_path {
             Some(path) => {
-                let db = hallucinator_arxiv_offline::ArxivDatabase::open(std::path::Path::new(
-                    path,
-                ))
+                let pool = hallucinator_arxiv_offline::ArxivPool::open_with_size(
+                    std::path::Path::new(path),
+                    pool_size,
+                )
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to open arXiv database: {}", e))
                 })?;
-                Some(Arc::new(Mutex::new(db)))
+                Some(Arc::new(pool))
             }
             None => None,
         };
 
         let iacr_eprint_offline_db = match &self.iacr_eprint_offline_path {
             Some(path) => {
-                let db = hallucinator_iacr_eprint::IacrDatabase::open(std::path::Path::new(path))
-                    .map_err(|e| {
-                        PyRuntimeError::new_err(format!(
-                            "Failed to open IACR ePrint database: {}",
-                            e
-                        ))
-                    })?;
-                Some(Arc::new(Mutex::new(db)))
+                let pool = hallucinator_iacr_eprint::IacrPool::open_with_size(
+                    std::path::Path::new(path),
+                    pool_size,
+                )
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "Failed to open IACR ePrint database: {}",
+                        e
+                    ))
+                })?;
+                Some(Arc::new(pool))
             }
             None => None,
         };
@@ -101,7 +117,7 @@ impl PyValidatorConfig {
                             e
                         ))
                     })?;
-                Some(Arc::new(Mutex::new(db)))
+                Some(Arc::new(db))
             }
             None => None,
         };

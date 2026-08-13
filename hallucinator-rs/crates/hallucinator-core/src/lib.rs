@@ -1,7 +1,7 @@
 // Licensed under either AGPL-3.0-or-later or MIT license, at your option.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -285,15 +285,15 @@ pub struct Config {
     pub govinfo_key: Option<String>,
     pub patentsview_key: Option<String>,
     pub dblp_offline_path: Option<PathBuf>,
-    pub dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>>,
+    pub dblp_offline_db: Option<Arc<hallucinator_dblp::DblpPool>>,
     pub acl_offline_path: Option<PathBuf>,
-    pub acl_offline_db: Option<Arc<Mutex<hallucinator_acl::AclDatabase>>>,
+    pub acl_offline_db: Option<Arc<hallucinator_acl::AclPool>>,
     pub arxiv_offline_path: Option<PathBuf>,
-    pub arxiv_offline_db: Option<Arc<Mutex<hallucinator_arxiv_offline::ArxivDatabase>>>,
+    pub arxiv_offline_db: Option<Arc<hallucinator_arxiv_offline::ArxivPool>>,
     pub iacr_eprint_offline_path: Option<PathBuf>,
-    pub iacr_eprint_offline_db: Option<Arc<Mutex<hallucinator_iacr_eprint::IacrDatabase>>>,
+    pub iacr_eprint_offline_db: Option<Arc<hallucinator_iacr_eprint::IacrPool>>,
     pub openalex_offline_path: Option<PathBuf>,
-    pub openalex_offline_db: Option<Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>>,
+    pub openalex_offline_db: Option<Arc<hallucinator_openalex::OpenAlexDatabase>>,
     pub num_workers: usize,
     pub db_timeout_secs: u64,
     pub db_timeout_short_secs: u64,

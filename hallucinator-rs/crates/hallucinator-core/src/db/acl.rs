@@ -3,14 +3,18 @@ use crate::matching::titles_match;
 use crate::rate_limit::check_rate_limit_response;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub struct AclAnthology;
 
 /// Offline ACL Anthology backend backed by a local SQLite database with FTS5.
+///
+/// Uses a small connection pool (see [`hallucinator_acl::AclPool`]) rather
+/// than a single mutex-guarded connection, so concurrent reference checks
+/// can query ACL Anthology in parallel instead of serializing on one lock.
 pub struct AclOffline {
-    pub db: Arc<Mutex<hallucinator_acl::AclDatabase>>,
+    pub db: Arc<hallucinator_acl::AclPool>,
 }
 
 impl DatabaseBackend for AclOffline {
@@ -32,7 +36,6 @@ impl DatabaseBackend for AclOffline {
         let title = title.to_string();
         Box::pin(async move {
             let result = tokio::task::spawn_blocking(move || {
-                let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
                 db.query(&title)
                     .map_err(|e| DbQueryError::Other(e.to_string()))
             })

@@ -1,12 +1,18 @@
 use super::{DatabaseBackend, DbQueryError, DbQueryResult};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Offline OpenAlex backend backed by a local Tantivy index.
+///
+/// Unlike the SQLite-backed offline DBs, `OpenAlexDatabase` needs no mutex:
+/// Tantivy's `Index` and `IndexReader` are both `Send + Sync` and designed
+/// for concurrent reads (`IndexReader::searcher()` hands out a cheap,
+/// independently-usable snapshot), so sharing a plain `Arc` here already
+/// lets concurrent reference checks query OpenAlex in parallel.
 pub struct OpenAlexOffline {
-    pub db: Arc<Mutex<hallucinator_openalex::OpenAlexDatabase>>,
+    pub db: Arc<hallucinator_openalex::OpenAlexDatabase>,
 }
 
 impl DatabaseBackend for OpenAlexOffline {
@@ -28,7 +34,6 @@ impl DatabaseBackend for OpenAlexOffline {
         let title = title.to_string();
         Box::pin(async move {
             let result = tokio::task::spawn_blocking(move || {
-                let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
                 db.query(&title)
                     .map_err(|e| DbQueryError::Other(e.to_string()))
             })

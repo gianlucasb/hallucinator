@@ -17,21 +17,25 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use hallucinator_arxiv_offline::ArxivDatabase;
+use hallucinator_arxiv_offline::ArxivPool;
 
 use super::{ArxivIdQueryResult, DatabaseBackend, DbQueryError, DbQueryResult};
 use crate::matching::titles_match;
 
 /// Offline arXiv backend backed by a local SQLite database.
+///
+/// Uses a small connection pool (see [`ArxivPool`]) rather than a single
+/// mutex-guarded connection, so concurrent reference checks can query the
+/// offline index in parallel instead of serializing on one lock.
 pub struct ArxivOffline {
-    pub db: Arc<Mutex<ArxivDatabase>>,
+    pub db: Arc<ArxivPool>,
 }
 
 impl ArxivOffline {
-    pub fn new(db: Arc<Mutex<ArxivDatabase>>) -> Self {
+    pub fn new(db: Arc<ArxivPool>) -> Self {
         Self { db }
     }
 }
@@ -69,19 +73,14 @@ impl DatabaseBackend for ArxivOffline {
         let title = title.to_string();
         Box::pin(async move {
             let maybe_record = tokio::task::spawn_blocking(move || {
-                let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
-                // Batch-hydrate in a single mutex hold. The older
+                // Batch-hydrate in a single round trip. The older
                 // `search_by_title` + per-ID `lookup_by_id` loop
-                // issued up to 1 + 5×3 = 16 sequential SQL queries
-                // inside the lock — 4 concurrent workers queued
-                // behind each other's arxiv mutex hold and slowed
-                // the local phase noticeably. This variant always
-                // does exactly 3 round-trips regardless of how
+                // issued up to 1 + 5×3 = 16 sequential SQL queries —
+                // this variant always does exactly 3 regardless of how
                 // many candidates match.
                 let candidates = db
                     .search_by_title_hydrated(&title, 5)
                     .map_err(|e| DbQueryError::Other(e.to_string()))?;
-                drop(db); // release mutex before the (in-memory) title match
                 for rec in candidates {
                     if titles_match(&title, &rec.title) {
                         return Ok::<_, DbQueryError>(Some(rec));
@@ -116,7 +115,6 @@ impl DatabaseBackend for ArxivOffline {
         let title = title.to_string();
         Box::pin(async move {
             let lookup = tokio::task::spawn_blocking(move || {
-                let db = db.lock().map_err(|e| DbQueryError::Other(e.to_string()))?;
                 db.lookup_by_id(&arxiv_id)
                     .map_err(|e| DbQueryError::Other(e.to_string()))
             })

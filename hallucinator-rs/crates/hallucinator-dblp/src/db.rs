@@ -48,6 +48,26 @@ pub fn init_database(conn: &Connection) -> Result<(), DblpError> {
     Ok(())
 }
 
+/// Create a session-local (temp-schema) `fts5vocab` table exposing
+/// per-term document frequency for `publications_fts`, so query-time code
+/// can pick the most *selective* words for expensive OR queries instead of
+/// arbitrary extraction order.
+///
+/// 'row' mode reports one row per term with a `doc` column (number of rows
+/// containing the term at least once). Common terms in an 8M+ row corpus
+/// (e.g. "learning") have `doc` in the hundreds of thousands — OR-ing one
+/// into an FTS5 query forces a huge posting-list merge before `ORDER BY
+/// rank LIMIT` can truncate it, which is the dominant cost of the
+/// OR-fallback query on large databases. `temp.` keeps this out of the
+/// on-disk schema — it's rebuilt per connection, not persisted.
+pub fn ensure_vocab_table(conn: &Connection) -> Result<(), DblpError> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS temp.publications_vocab \
+         USING fts5vocab('main', 'publications_fts', 'row');",
+    )?;
+    Ok(())
+}
+
 /// Configure pragmas for fast bulk loading.
 /// Uses `synchronous = OFF` to skip fsync on periodic commits — safe because a
 /// crashed build just needs to be re-run from scratch.
