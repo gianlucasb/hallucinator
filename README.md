@@ -167,9 +167,17 @@ hallucinator-cli update-arxiv arxiv.db
 **First-time setup:** Kaggle requires authentication to download datasets. You'll need a free Kaggle account and an API token:
 
 1. Sign up at https://www.kaggle.com and go to https://www.kaggle.com/settings
-2. Click **Create New Token** — this downloads `kaggle.json`
-3. Place it at `~/.kaggle/kaggle.json` (the standard Kaggle CLI location), or export the credentials as env vars: `export KAGGLE_USERNAME=… KAGGLE_KEY=…`
+2. In the **API** section, create a new token. Kaggle shows it once, as a single `KGAT_…` string — copy it before closing the dialog
+3. Hand it to Hallucinator either way — export it, or save it to the file the Kaggle client reads automatically:
+   ```bash
+   export KAGGLE_API_TOKEN=KGAT_your_token_here
+   ```
+   ```bash
+   mkdir -p ~/.kaggle && printf '%s' 'KGAT_your_token_here' > ~/.kaggle/access_token && chmod 600 ~/.kaggle/access_token
+   ```
 4. Open https://www.kaggle.com/datasets/Cornell-University/arxiv **once in a browser** and accept the dataset license (Kaggle returns 403 on first download otherwise)
+
+Already set up with the older credentials? They still work — `~/.kaggle/kaggle.json` and `KAGGLE_USERNAME` + `KAGGLE_KEY` are both still accepted, and Kaggle still issues them under **Legacy API Credentials**. Tokens win when both are present, so if a token is rejected, clear it to fall back. `update-arxiv` prints which credential it picked up before the download starts.
 
 The full build takes ~10-20 minutes (download + ingest). If you already have the Kaggle zip or extracted JSON, point at it directly and skip the download:
 

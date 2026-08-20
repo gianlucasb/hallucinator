@@ -102,9 +102,11 @@ hallucinator-cli update-dblp dblp.db
 # ACL Anthology
 hallucinator-cli update-acl acl.db
 
-# arXiv (~4GB download from Kaggle — needs ~/.kaggle/kaggle.json or
-# KAGGLE_USERNAME+KAGGLE_KEY env vars; accept the dataset license once
-# at https://www.kaggle.com/datasets/Cornell-University/arxiv)
+# arXiv (~4GB download from Kaggle — needs a Kaggle API token in
+# KAGGLE_API_TOKEN or ~/.kaggle/access_token, or legacy
+# KAGGLE_USERNAME+KAGGLE_KEY / ~/.kaggle/kaggle.json credentials;
+# accept the dataset license once at
+# https://www.kaggle.com/datasets/Cornell-University/arxiv)
 hallucinator-cli update-arxiv arxiv.db
 
 # Alternative: skip the download and point at an already-downloaded

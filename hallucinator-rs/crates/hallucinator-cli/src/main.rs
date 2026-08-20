@@ -148,9 +148,10 @@ enum Command {
 
     /// Ingest the Kaggle arXiv metadata snapshot into a local SQLite database.
     ///
-    /// By default downloads the ~4 GB Kaggle dump (Cornell-University/arxiv)
-    /// using credentials from KAGGLE_USERNAME+KAGGLE_KEY env vars or
-    /// ~/.kaggle/kaggle.json, then streams it into the SQLite schema.
+    /// By default downloads the ~4 GB Kaggle dump (Cornell-University/arxiv),
+    /// then streams it into the SQLite schema. Credentials come from the
+    /// KAGGLE_API_TOKEN env var or ~/.kaggle/access_token, falling back to
+    /// legacy KAGGLE_USERNAME+KAGGLE_KEY or ~/.kaggle/kaggle.json.
     /// Use --dump to point at an already-downloaded zip or JSON file.
     UpdateArxiv {
         /// Path to store the arXiv SQLite database
@@ -2077,6 +2078,13 @@ async fn update_arxiv(
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("arxiv-kaggle.zip");
+            // Resolve credentials up front: a missing token should fail
+            // in a second, not after the progress bar is on screen. The
+            // kind is worth echoing during the token migration, when a
+            // stale kaggle.json and a fresh access_token can both be
+            // sitting in ~/.kaggle.
+            let auth = download::load_credentials()?;
+            println!("Authenticating to Kaggle with your {}", auth.kind());
             println!("Downloading Kaggle arxiv snapshot to: {}", dest.display());
             println!(
                 "(If this is your first run, open https://www.kaggle.com/datasets/Cornell-University/arxiv\n\
