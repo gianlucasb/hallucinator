@@ -15,6 +15,12 @@ pub struct ResultSummary {
     /// rather than "not_found"; the display layer renders them the
     /// same way.
     pub url_check_skipped: bool,
+    /// Mirrors [`ValidationResult::is_inconclusive`]: the ref finished
+    /// `Status::NotFound` while a database was still failing after the
+    /// retry pass, so the lookup proved nothing. Paper-level stats bucket
+    /// these under `inconclusive` rather than `not_found` so a network
+    /// outage can never inflate the hallucination count.
+    pub inconclusive: bool,
 }
 
 /// Processing phase of a paper in the queue.
@@ -103,6 +109,7 @@ impl PaperState {
         index: usize,
         status: Status,
         url_check_skipped: bool,
+        inconclusive: bool,
         is_retracted: bool,
     ) {
         // Grow if needed (shouldn't happen after init_results, but be safe)
@@ -119,6 +126,8 @@ impl PaperState {
                 Status::NotFound => {
                     if old.url_check_skipped {
                         self.stats.skipped = self.stats.skipped.saturating_sub(1);
+                    } else if old.inconclusive {
+                        self.stats.inconclusive = self.stats.inconclusive.saturating_sub(1);
                     } else {
                         self.stats.not_found = self.stats.not_found.saturating_sub(1);
                     }
@@ -150,6 +159,8 @@ impl PaperState {
             Status::NotFound => {
                 if url_check_skipped {
                     self.stats.skipped += 1;
+                } else if inconclusive {
+                    self.stats.inconclusive += 1;
                 } else {
                     self.stats.not_found += 1;
                 }
@@ -175,6 +186,7 @@ impl PaperState {
             status,
             is_retracted,
             url_check_skipped,
+            inconclusive,
         });
     }
 
@@ -209,6 +221,7 @@ impl PaperState {
         &mut self,
         status: &Status,
         url_check_skipped: bool,
+        inconclusive: bool,
         is_retracted: bool,
         dir: i32,
     ) {
@@ -228,6 +241,10 @@ impl PaperState {
                     // not `not_found`. Decrement the bucket it actually
                     // lives in so the per-paper sum stays consistent.
                     add(&mut self.stats.skipped, -dir);
+                } else if inconclusive {
+                    // Same reasoning: record_status put this one in
+                    // `inconclusive`, so that is the bucket to move it out of.
+                    add(&mut self.stats.inconclusive, -dir);
                 } else {
                     add(&mut self.stats.not_found, -dir);
                 }
@@ -404,7 +421,7 @@ mod tests {
             // Test helper leaves url_check_skipped=false because the
             // existing cases exercise the pre-flag NotFound path. URL-
             // gated cases have their own dedicated test below.
-            p.record_status(i, status.clone(), false, *is_retracted);
+            p.record_status(i, status.clone(), false, false, *is_retracted);
         }
         p.stats.total = statuses.len();
         p.total_refs = statuses.len();
@@ -418,7 +435,7 @@ mod tests {
         let mut p = paper_with_recorded(&[(Status::NotFound, false)]);
         assert_eq!(p.stats.not_found, 1);
         assert_eq!(p.stats.verified, 0);
-        p.apply_fp_delta(&Status::NotFound, false, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, false, 1);
         assert_eq!(p.stats.not_found, 0);
         assert_eq!(p.stats.verified, 1);
     }
@@ -427,8 +444,8 @@ mod tests {
     fn apply_fp_delta_not_found_is_reversible() {
         // Mark safe then un-mark → back to original raw counts.
         let mut p = paper_with_recorded(&[(Status::NotFound, false)]);
-        p.apply_fp_delta(&Status::NotFound, false, false, 1);
-        p.apply_fp_delta(&Status::NotFound, false, false, -1);
+        p.apply_fp_delta(&Status::NotFound, false, false, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, false, -1);
         assert_eq!(p.stats.not_found, 1);
         assert_eq!(p.stats.verified, 0);
     }
@@ -441,7 +458,7 @@ mod tests {
         assert_eq!(p.stats.author_mismatch, 1);
         assert_eq!(p.stats.doi_mismatch, 1);
         assert_eq!(p.stats.arxiv_mismatch, 0);
-        p.apply_fp_delta(&Status::Mismatch(kind), false, false, 1);
+        p.apply_fp_delta(&Status::Mismatch(kind), false, false, false, 1);
         assert_eq!(p.stats.mismatch, 0);
         assert_eq!(p.stats.author_mismatch, 0);
         assert_eq!(p.stats.doi_mismatch, 0);
@@ -456,7 +473,7 @@ mod tests {
         let mut p = paper_with_recorded(&[(Status::Verified, true)]);
         assert_eq!(p.stats.verified, 1);
         assert_eq!(p.stats.retracted, 1);
-        p.apply_fp_delta(&Status::Verified, false, true, 1);
+        p.apply_fp_delta(&Status::Verified, false, false, true, 1);
         // Status::Verified: verified unchanged. Retracted decrements.
         assert_eq!(p.stats.verified, 1);
         assert_eq!(p.stats.retracted, 0);
@@ -466,7 +483,7 @@ mod tests {
     fn apply_fp_delta_verified_status_only_retracted_flips() {
         let mut p = paper_with_recorded(&[(Status::Verified, false)]);
         let before = p.stats.clone();
-        p.apply_fp_delta(&Status::Verified, false, false, 1);
+        p.apply_fp_delta(&Status::Verified, false, false, false, 1);
         // Status::Verified + not_retracted → nothing to move.
         assert_eq!(p.stats.verified, before.verified);
         assert_eq!(p.stats.not_found, before.not_found);
@@ -484,11 +501,86 @@ mod tests {
         let mut p = PaperState::new("t".into());
         p.init_results(2);
         // Real NotFound (no URL in the ref) — the hallucination bucket.
-        p.record_status(0, Status::NotFound, false, false);
+        p.record_status(0, Status::NotFound, false, false, false);
         // URL-gated NotFound — was URL-bearing, `--url-match` was off.
-        p.record_status(1, Status::NotFound, true, false);
+        p.record_status(1, Status::NotFound, true, false, false);
         assert_eq!(p.stats.not_found, 1, "got {:?}", p.stats);
         assert_eq!(p.stats.skipped, 1, "got {:?}", p.stats);
+    }
+
+    #[test]
+    fn record_status_inconclusive_not_found_stays_out_of_hallucination_bucket() {
+        // Regression guard for the "works on my machine" report: a user on
+        // a filtered network saw refs flagged as hallucinations that came
+        // back clean when we re-ran the same PDF. Every database had timed
+        // out, but `record_status` counted the resulting NotFound into
+        // `stats.not_found` all the same. A ref we failed to look up must
+        // land in `inconclusive`, never in the bucket that drives the
+        // "potential hallucination" headline.
+        let mut p = PaperState::new("t".into());
+        p.init_results(2);
+        // Genuine miss: every database answered, none had the paper.
+        p.record_status(0, Status::NotFound, false, false, false);
+        // Lookup failed after retries — proves nothing either way.
+        p.record_status(1, Status::NotFound, false, true, false);
+        assert_eq!(p.stats.not_found, 1, "got {:?}", p.stats);
+        assert_eq!(p.stats.inconclusive, 1, "got {:?}", p.stats);
+        assert_eq!(
+            p.problems(),
+            1,
+            "an unreachable database must not count as a problem: {:?}",
+            p.stats
+        );
+    }
+
+    #[test]
+    fn total_outage_reports_zero_problems() {
+        // The end-to-end shape of the bug report: nothing reachable, so
+        // every ref comes back NotFound. The paper must read as
+        // "could not check", not "10 potential hallucinations".
+        let mut p = PaperState::new("t".into());
+        p.init_results(10);
+        for i in 0..10 {
+            p.record_status(i, Status::NotFound, false, true, false);
+        }
+        assert_eq!(p.stats.not_found, 0, "got {:?}", p.stats);
+        assert_eq!(p.stats.inconclusive, 10, "got {:?}", p.stats);
+        assert_eq!(p.problems(), 0, "got {:?}", p.stats);
+    }
+
+    #[test]
+    fn retry_replacing_an_inconclusive_result_decrements_the_right_bucket() {
+        // `record_status` is called again on the retry pass. If the
+        // decrement side didn't know about the inconclusive bucket, the
+        // retry would leave a stale count behind and the buckets would
+        // stop summing to the ref total.
+        let mut p = PaperState::new("t".into());
+        p.init_results(1);
+        p.record_status(0, Status::NotFound, false, true, false);
+        assert_eq!(p.stats.inconclusive, 1);
+        // Retry succeeds: databases came back, the paper is real.
+        p.record_status(0, Status::Verified, false, false, false);
+        assert_eq!(p.stats.inconclusive, 0, "stale count: {:?}", p.stats);
+        assert_eq!(p.stats.verified, 1, "got {:?}", p.stats);
+        assert_eq!(p.stats.not_found, 0, "got {:?}", p.stats);
+    }
+
+    #[test]
+    fn fp_delta_moves_an_inconclusive_ref_out_of_its_own_bucket() {
+        // Marking an inconclusive ref safe has to decrement `inconclusive`,
+        // not `not_found` — otherwise `not_found` saturates at 0 while
+        // `inconclusive` keeps its count and the totals drift apart.
+        let mut p = PaperState::new("t".into());
+        p.init_results(1);
+        p.record_status(0, Status::NotFound, false, true, false);
+        p.apply_fp_delta(&Status::NotFound, false, true, false, 1);
+        assert_eq!(p.stats.inconclusive, 0, "got {:?}", p.stats);
+        assert_eq!(p.stats.verified, 1, "got {:?}", p.stats);
+        assert_eq!(p.stats.not_found, 0, "must not underflow: {:?}", p.stats);
+        // And undoing the mark restores it.
+        p.apply_fp_delta(&Status::NotFound, false, true, false, -1);
+        assert_eq!(p.stats.inconclusive, 1, "got {:?}", p.stats);
+        assert_eq!(p.stats.verified, 0, "got {:?}", p.stats);
     }
 
     #[test]
@@ -512,12 +604,12 @@ mod tests {
         // Simulate validation for the 52 non-parse-skipped refs:
         // 40 verified, 11 URL-gated skips, 1 real not_found.
         for i in 0..40 {
-            p.record_status(i, Status::Verified, false, false);
+            p.record_status(i, Status::Verified, false, false, false);
         }
         for i in 40..51 {
-            p.record_status(i, Status::NotFound, /*url_gated=*/ true, false);
+            p.record_status(i, Status::NotFound, /*url_gated=*/ true, false, false);
         }
-        p.record_status(51, Status::NotFound, false, false);
+        p.record_status(51, Status::NotFound, false, false, false);
         // `stats.skipped` reflects combined (parse + URL-gated) = 12,
         // but `parse_skipped` stays at 1 so `checkable` stays at 52.
         assert_eq!(p.stats.skipped, 12);
@@ -542,11 +634,11 @@ mod tests {
         // `skipped` count and add to `not_found`.
         let mut p = PaperState::new("t".into());
         p.init_results(1);
-        p.record_status(0, Status::NotFound, true, false);
+        p.record_status(0, Status::NotFound, true, false, false);
         assert_eq!(p.stats.skipped, 1);
         assert_eq!(p.stats.not_found, 0);
         // Retry: URL check now ran, still NotFound (dead link).
-        p.record_status(0, Status::NotFound, false, false);
+        p.record_status(0, Status::NotFound, false, false, false);
         assert_eq!(p.stats.skipped, 0, "got {:?}", p.stats);
         assert_eq!(p.stats.not_found, 1, "got {:?}", p.stats);
     }
@@ -561,8 +653,8 @@ mod tests {
             (Status::Verified, false),
         ]);
         assert_eq!(p.problems(), 2);
-        p.apply_fp_delta(&Status::NotFound, false, false, 1);
-        p.apply_fp_delta(&Status::NotFound, false, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, false, 1);
+        p.apply_fp_delta(&Status::NotFound, false, false, false, 1);
         assert_eq!(p.problems(), 0);
         assert_eq!(p.stats.verified, 3);
     }

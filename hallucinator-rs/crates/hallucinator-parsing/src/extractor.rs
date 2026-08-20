@@ -108,6 +108,16 @@ impl ReferenceExtractor {
         // Expand typographic ligatures (ﬁ → fi, ﬂ → fl, etc.) early in the pipeline
         // so all downstream steps see clean ASCII text.
         let text = text_processing::expand_ligatures(text);
+
+        // TODO(#309): fullwidth CJK punctuation is not folded here. PDFs
+        // authored with a CJK input method carry `［1］` / `，` / `。`
+        // (U+FF01–FF5E, U+3000–3002) even in English papers, and every
+        // delimiter below is an ASCII literal — so segmentation, author
+        // splitting and title-boundary detection all miss. The matching
+        // layer is already immune (`normalize_title` uses NFKD, which
+        // folds fullwidth to ASCII), so this choke point is the place to
+        // fix it. Deliberately not folded yet: see the issue for the
+        // interactions to check first.
         let ref_section = self
             .find_references_section(&text)
             .ok_or(ParsingError::NoReferencesSection)?;

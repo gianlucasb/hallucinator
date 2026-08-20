@@ -182,6 +182,12 @@ pub fn print_hallucination_report(
         if result.url_check_skipped {
             continue;
         }
+        // Same reasoning as the summary: an unverifiable ref must not get
+        // the "potential hallucination" write-up.
+        if result.is_inconclusive() {
+            print_inconclusive_block(w, result, color)?;
+            continue;
+        }
         match &result.status {
             Status::NotFound => {
                 print_not_found_block(w, result, searched_openalex, color)?;
@@ -192,6 +198,34 @@ pub fn print_hallucination_report(
             Status::Verified => {}
         }
     }
+    Ok(())
+}
+
+/// Render a reference whose lookup failed rather than came back empty.
+///
+/// Deliberately phrased as a tooling problem, not a citation problem: the
+/// user should reach for their network config, not for the author.
+fn print_inconclusive_block(
+    w: &mut dyn Write,
+    result: &ValidationResult,
+    color: ColorMode,
+) -> std::io::Result<()> {
+    let header = format!("[?] INCONCLUSIVE: {}", result.title);
+    if color.enabled() {
+        writeln!(w, "{}", header.yellow())?;
+    } else {
+        writeln!(w, "{}", header)?;
+    }
+    writeln!(
+        w,
+        "    Could not check \u{2014} these databases failed after retries: {}",
+        result.failed_dbs.join(", ")
+    )?;
+    writeln!(
+        w,
+        "    This is NOT evidence the reference is wrong. Re-run when the databases are reachable."
+    )?;
+    writeln!(w)?;
     Ok(())
 }
 
@@ -524,9 +558,18 @@ pub fn print_summary(
     // toward the hallucination total — otherwise the summary would
     // double-count URL-bearing misses against the user who explicitly
     // chose not to URL-verify them.
+    // Refs where a database failed after retries prove nothing, so they
+    // are excluded here and reported on their own line below. Without
+    // this a network outage renders as a wall of "potential
+    // hallucinations" — the exact false accusation this bucket exists to
+    // prevent.
     let not_found = results
         .iter()
-        .filter(|r| r.status == Status::NotFound && !r.url_check_skipped)
+        .filter(|r| r.status == Status::NotFound && !r.url_check_skipped && !r.is_inconclusive())
+        .count();
+    let inconclusive = results
+        .iter()
+        .filter(|r| !r.url_check_skipped && r.is_inconclusive())
         .count();
     let skipped_url_match_gate = results.iter().filter(|r| r.url_check_skipped).count();
     let mismatched = results.iter().filter(|r| r.status.is_mismatch()).count();
@@ -659,6 +702,17 @@ pub fn print_summary(
             writeln!(w, "  Not found (potential hallucinations): {}", not_found)?;
         }
     }
+    if inconclusive > 0 {
+        let msg = format!(
+            "Inconclusive (database lookup failed): {} \u{2014} re-run when reachable",
+            inconclusive
+        );
+        if color.enabled() {
+            writeln!(w, "  {}", msg.yellow())?;
+        } else {
+            writeln!(w, "  {}", msg)?;
+        }
+    }
     if retracted > 0 {
         if color.enabled() {
             writeln!(w, "  {} {}", "Retracted papers:".red(), retracted)?;
@@ -692,5 +746,125 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}...", &s[..max])
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod inconclusive_tests {
+    //! Regression guards for the CLI summary, the surface a user actually
+    //! reads. Reported symptom: a user on a filtered network saw a wall of
+    //! "potential hallucinations" for a paper that came back clean when the
+    //! same PDF was re-run elsewhere — every database had timed out, and a
+    //! NotFound produced with zero successful lookups printed identically
+    //! to one where every database answered.
+
+    use super::*;
+
+    fn result(title: &str, status: Status, failed_dbs: &[&str]) -> ValidationResult {
+        ValidationResult {
+            title: title.to_string(),
+            raw_citation: String::new(),
+            ref_authors: vec![],
+            status,
+            source: None,
+            found_authors: vec![],
+            paper_url: None,
+            failed_dbs: failed_dbs.iter().map(|s| s.to_string()).collect(),
+            db_results: vec![],
+            doi_info: None,
+            arxiv_info: None,
+            retraction_info: None,
+            url_check_skipped: false,
+        }
+    }
+
+    fn summary(results: &[ValidationResult]) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        print_summary(&mut buf, results, &SkipStats::default(), ColorMode(false)).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn total_outage_reports_zero_hallucinations() {
+        // The reported bug end to end: nothing reachable, ten refs, and the
+        // summary must not accuse a single one of them.
+        let results: Vec<_> = (0..10)
+            .map(|i| {
+                result(
+                    &format!("Paper {}", i),
+                    Status::NotFound,
+                    &["CrossRef", "arXiv", "Semantic Scholar"],
+                )
+            })
+            .collect();
+        let out = summary(&results);
+        assert!(
+            !out.contains("Not found (potential hallucinations)"),
+            "a network outage must never print the hallucination line:\n{}",
+            out
+        );
+        assert!(
+            out.contains("Inconclusive (database lookup failed): 10"),
+            "missing inconclusive line:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn genuine_misses_are_still_reported() {
+        // The other half of the contract: suppressing real findings would
+        // make the tool useless. A NotFound with every database answering
+        // must still be called out.
+        let results = vec![result("Fabricated Paper", Status::NotFound, &[])];
+        let out = summary(&results);
+        assert!(
+            out.contains("Not found (potential hallucinations): 1"),
+            "a clean not-found must still be reported:\n{}",
+            out
+        );
+        assert!(!out.contains("Inconclusive"), "{}", out);
+    }
+
+    #[test]
+    fn mixed_run_splits_the_two_buckets() {
+        let results = vec![
+            result("Fabricated Paper", Status::NotFound, &[]),
+            result("Unreachable Paper", Status::NotFound, &["CrossRef"]),
+            result("Real Paper", Status::Verified, &[]),
+        ];
+        let out = summary(&results);
+        assert!(
+            out.contains("Not found (potential hallucinations): 1"),
+            "{}",
+            out
+        );
+        assert!(
+            out.contains("Inconclusive (database lookup failed): 1"),
+            "{}",
+            out
+        );
+    }
+
+    #[test]
+    fn inconclusive_ref_gets_a_non_accusatory_detail_block() {
+        // Wording matters here: the block has to point at the network, not
+        // at the citation, and it must name the databases that failed so
+        // the user can act on it.
+        let results = vec![result(
+            "Unreachable Paper",
+            Status::NotFound,
+            &["CrossRef", "PubMed"],
+        )];
+        let mut buf: Vec<u8> = Vec::new();
+        print_hallucination_report(&mut buf, &results, false, ColorMode(false)).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("INCONCLUSIVE"), "{}", out);
+        assert!(out.contains("CrossRef"), "must name what failed:\n{}", out);
+        assert!(out.contains("PubMed"), "{}", out);
+        assert!(
+            out.contains("NOT evidence"),
+            "must say plainly this is not a finding:\n{}",
+            out
+        );
     }
 }

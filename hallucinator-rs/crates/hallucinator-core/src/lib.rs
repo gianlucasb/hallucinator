@@ -210,6 +210,32 @@ pub struct ValidationResult {
     pub url_check_skipped: bool,
 }
 
+impl ValidationResult {
+    /// True iff this ref finished as `Status::NotFound` while at least one
+    /// database failed outright (timeout, transport error, or 429) *after*
+    /// the retry pass.
+    ///
+    /// A `NotFound` verdict is an accusation: it says "no database has this
+    /// reference, so it may be fabricated". That claim is only sound when
+    /// every database actually answered. When a source times out it returns
+    /// no evidence at all — not evidence of absence — so a `NotFound` built
+    /// on top of a failed query is *inconclusive*, not incriminating.
+    ///
+    /// This is the automatic counterpart to the user-applied
+    /// `FpReason::AllTimedOut` mark: same judgement, made by the tool
+    /// instead of by hand.
+    ///
+    /// Why `failed_dbs` rather than counting `DbStatus::Error` in
+    /// `db_results`: on the retry path (`check_single_reference_retry`)
+    /// `db_results` holds only the retried subset, so it cannot be used to
+    /// reason about the run as a whole. `failed_dbs` is rebuilt by the
+    /// retry and therefore always reflects what is *still* failing once
+    /// retries are exhausted.
+    pub fn is_inconclusive(&self) -> bool {
+        self.status == Status::NotFound && !self.failed_dbs.is_empty()
+    }
+}
+
 /// Progress events emitted during validation.
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
@@ -275,6 +301,12 @@ pub struct CheckStats {
     pub arxiv_mismatch: usize,
     pub retracted: usize,
     pub skipped: usize,
+    /// References that came back `NotFound` but had at least one database
+    /// fail after retries. Counted here *instead of* in `not_found`, so the
+    /// headline "potential hallucination" number never includes a reference
+    /// we simply failed to look up. See
+    /// [`ValidationResult::is_inconclusive`].
+    pub inconclusive: usize,
 }
 
 /// Configuration for the reference checker.

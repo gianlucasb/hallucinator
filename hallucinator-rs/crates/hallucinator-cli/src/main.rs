@@ -431,6 +431,13 @@ fn build_report_data(
             stats.skipped += 1;
             continue;
         }
+        // A NotFound ref where a database failed after retries is
+        // "we could not check", not "potentially fabricated". Bucket it
+        // separately so it never lands in the hallucination count.
+        if result.is_inconclusive() {
+            stats.inconclusive += 1;
+            continue;
+        }
         match &result.status {
             hallucinator_core::Status::Verified => stats.verified += 1,
             hallucinator_core::Status::NotFound => stats.not_found += 1,
