@@ -54,6 +54,7 @@ for pdf in "${PDFS[@]}"; do
       --arxiv-offline=./arxiv.db \
       --iacr-eprint-offline=./iacr.db \
       --url-match \
+      --disable-dbs="Semantic Scholar" \
       --output="$out_dir/$stem.results.txt" \
       --json="$out_dir/$stem.results.json" \
       "$pdf" || rc=$?
