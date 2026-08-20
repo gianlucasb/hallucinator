@@ -638,6 +638,16 @@ impl PyCheckStats {
             ..Default::default()
         };
         for r in results {
+            // Mirrors the CLI/TUI bucketing: an inconclusive ref (NotFound
+            // with a database still failing after retries) is counted on
+            // its own and kept out of `not_found`.
+            if r.is_inconclusive() {
+                stats.inconclusive += 1;
+                if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
+                    stats.retracted += 1;
+                }
+                continue;
+            }
             match &r.status {
                 Status::Verified => stats.verified += 1,
                 Status::NotFound => stats.not_found += 1,

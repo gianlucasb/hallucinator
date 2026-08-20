@@ -49,6 +49,14 @@ fn effective_status_str(r: &ValidationResult) -> &'static str {
     if r.url_check_skipped {
         return "skipped";
     }
+    // A NotFound built on top of a failed lookup is "we could not check",
+    // not "this looks fabricated". Checked after the `url_check_skipped`
+    // gate so the existing gate semantics are untouched: that gate is a
+    // deliberate user opt-out, which is a stronger statement than a
+    // transient failure.
+    if r.is_inconclusive() {
+        return "inconclusive";
+    }
     status_str(&r.status)
 }
 
@@ -75,13 +83,21 @@ fn has_doi_arxiv_issue(r: &ValidationResult) -> bool {
 ///
 /// 0 = Retracted, 1 = Not Found, 2 = Author Mismatch,
 /// 3 = DOI/arXiv issues (verified but invalid DOI/arXiv),
-/// 4 = FP-overridden, 5 = Clean verified, 6 = Skipped.
+/// 4 = FP-overridden, 5 = Clean verified, 6 = Skipped,
+/// 7 = Inconclusive (NotFound with a failed lookup).
+///
+/// Inconclusive sorts below clean verified deliberately: it is not a
+/// finding, and putting it in the problems area is exactly the
+/// false-accusation behaviour this bucket exists to prevent.
 fn export_sort_key(r: &ValidationResult, fp: Option<FpReason>) -> u8 {
     if fp.is_some() {
         return 4;
     }
     if is_retracted(r) {
         return 0;
+    }
+    if r.is_inconclusive() {
+        return 7;
     }
     // URL-gated NotFound refs are effectively skipped; group them with
     // clean verified (5) rather than with the not-found bucket so they
@@ -224,10 +240,11 @@ pub fn export_json(
             None => "null".to_string(),
         };
         out.push_str(&format!(
-            "  {{\n    \"filename\": {},\n    \"verdict\": {},\n    \"stats\": {{\n      \"total\": {},\n      \"verified\": {},\n      \"not_found\": {},\n      \"author_mismatch\": {},\n      \"retracted\": {},\n      \"skipped\": {},\n      \"problematic_pct\": {:.1}\n    }},\n    \"references\": [\n",
+            "  {{\n    \"filename\": {},\n    \"verdict\": {},\n    \"stats\": {{\n      \"total\": {},\n      \"verified\": {},\n      \"not_found\": {},\n      \"author_mismatch\": {},\n      \"retracted\": {},\n      \"skipped\": {},\n      \"inconclusive\": {},\n      \"problematic_pct\": {:.1}\n    }},\n    \"references\": [\n",
             json_str(paper.filename),
             verdict_json,
             s.total, s.verified, s.not_found, s.author_mismatch, s.retracted, s.skipped,
+            s.inconclusive,
             problematic_pct(&s),
         ));
 
@@ -253,6 +270,8 @@ pub fn export_json(
                 // to "skipped" in the effective view, matching the
                 // "status" field.
                 "\"skipped\""
+            } else if r.is_inconclusive() {
+                "\"inconclusive\""
             } else {
                 match &r.status {
                     Status::Verified => "\"verified\"",
@@ -280,6 +299,12 @@ pub fn export_json(
             entry.push_str(&format!(
                 "        \"url_check_skipped\": {},\n",
                 r.url_check_skipped
+            ));
+            // Derived from status + failed_dbs, but emitted explicitly so
+            // JSON consumers don't have to re-implement the rule.
+            entry.push_str(&format!(
+                "        \"inconclusive\": {},\n",
+                r.is_inconclusive()
             ));
             entry.push_str(&format!("        \"fp_reason\": {},\n", fp_json));
             entry.push_str(&format!(
@@ -542,11 +567,16 @@ fn export_markdown(
         let mut doi_arxiv_issues: Vec<&SortedRef> = Vec::new();
         let mut fp_overrides: Vec<&SortedRef> = Vec::new();
         let mut verified: Vec<&SortedRef> = Vec::new();
+        let mut inconclusive: Vec<&SortedRef> = Vec::new();
         for sref in &sorted {
             match export_sort_key(sref.result, sref.fp) {
                 0..=2 => problems.push(sref),
                 3 => doi_arxiv_issues.push(sref),
                 4 => fp_overrides.push(sref),
+                // Bucket 7 must not fall into the `verified` catch-all:
+                // an unverifiable ref listed under "Verified References"
+                // is the opposite lie from listing it as a hallucination.
+                7 => inconclusive.push(sref),
                 _ => verified.push(sref),
             }
         }
@@ -561,6 +591,19 @@ fn export_markdown(
         if !doi_arxiv_issues.is_empty() {
             out.push_str("### DOI/arXiv Issues\n\n");
             for sref in &doi_arxiv_issues {
+                write_md_ref(&mut out, sref.ref_num, sref.result);
+            }
+        }
+
+        if !inconclusive.is_empty() {
+            out.push_str("### Inconclusive (Lookup Failed)\n\n");
+            out.push_str(
+                "These references could not be checked: one or more databases \
+                 failed after retries. This is **not** evidence of a problem \
+                 with the reference \u{2014} re-run them once the databases \
+                 are reachable.\n\n",
+            );
+            for sref in &inconclusive {
                 write_md_ref(&mut out, sref.ref_num, sref.result);
             }
         }
@@ -653,6 +696,11 @@ fn export_markdown(
 fn write_md_ref(out: &mut String, ref_num: usize, r: &ValidationResult) {
     let status_icon = if is_retracted(r) {
         "\u{2620}\u{fe0f} RETRACTED".to_string()
+    } else if r.is_inconclusive() {
+        format!(
+            "\u{2049}\u{fe0f} Inconclusive (lookup failed: {})",
+            r.failed_dbs.join(", ")
+        )
     } else {
         match &r.status {
             Status::NotFound => "\u{2717} Not Found".to_string(),
@@ -781,6 +829,8 @@ fn export_text(
                 format!("Verified (FP: {})", fp.short_label())
             } else if is_retracted(r) {
                 "RETRACTED".to_string()
+            } else if r.is_inconclusive() {
+                "INCONCLUSIVE".to_string()
             } else {
                 match &r.status {
                     Status::Verified => "Verified".to_string(),
@@ -913,6 +963,7 @@ fn export_html(
         total_stats.author_mismatch += adj.author_mismatch;
         total_stats.retracted += adj.retracted;
         total_stats.skipped += adj.skipped;
+        total_stats.inconclusive += adj.inconclusive;
     }
 
     out.push_str(
@@ -977,6 +1028,7 @@ h2 { color: var(--text); margin: 1.5rem 0 1rem; font-size: 1.3rem; }
 .stat-card.mismatch .number { color: var(--yellow); }
 .stat-card.retracted .number { color: var(--dark-red); }
 .stat-card.skipped .number { color: var(--dim); }
+.stat-card.inconclusive .number { color: var(--blue); }
 .stat-card.safe .number { color: var(--green); }
 .stat-card.total .number { color: var(--text); }
 .stat-card.pct .number { color: var(--red); }
@@ -1032,6 +1084,7 @@ summary:hover { background: var(--card); border-radius: 8px; }
 .badge.mismatch { background: var(--yellow); color: #000; }
 .badge.retracted { background: var(--dark-red); color: #fff; }
 .badge.skipped { background: var(--dim); color: #fff; }
+.badge.inconclusive { background: var(--blue); color: #000; }
 .ref-detail {
   font-size: 0.9rem;
   color: var(--dim);
@@ -1164,6 +1217,15 @@ body.hide-verified .ref-card[data-status="verified"] { display: none; }
     }
     if total_stats.skipped > 0 {
         write_stat_card(&mut out, "skipped", total_stats.skipped, "Skipped");
+    }
+    if total_stats.inconclusive > 0 {
+        write_stat_card_with_sublabel(
+            &mut out,
+            "inconclusive",
+            total_stats.inconclusive,
+            "Inconclusive",
+            Some("lookup failed".to_string()),
+        );
     }
     let pct = problematic_pct(&total_stats);
     out.push_str(&format!(
@@ -1341,6 +1403,11 @@ fn write_html_ref(out: &mut String, ref_num: usize, r: &ValidationResult, fp: Op
         // suit so users don't see hundreds of bogus "Not Found" badges
         // for URL-only references they explicitly opted out of probing.
         ("skipped".to_string(), "Skipped".to_string())
+    } else if r.is_inconclusive() {
+        // NotFound on top of a failed lookup. Rendering this as "Not
+        // Found" is the false accusation this bucket exists to stop, so
+        // it gets its own badge and its own filter state.
+        ("inconclusive".to_string(), "Inconclusive".to_string())
     } else {
         match &r.status {
             Status::Verified => ("verified".to_string(), "Verified".to_string()),
@@ -2535,5 +2602,201 @@ mod tests {
             !out.contains("Short"),
             "Skipped refs should be excluded from HTML with problematic_only=true"
         );
+    }
+
+    // ── inconclusive (NotFound + failed lookup) ──────────────────────
+    //
+    // Regression guards for the "works on my machine" report: a user on a
+    // filtered network saw references flagged as hallucinations that came
+    // back clean when the same PDF was re-run elsewhere. Every database had
+    // timed out, and a NotFound built on zero successful lookups rendered
+    // exactly like a NotFound where every database answered. These tests
+    // pin the split across every export format, because the whole point is
+    // that a network outage can never inflate the hallucination count.
+
+    fn make_inconclusive(title: &str) -> ValidationResult {
+        let mut r = make_result(title, Status::NotFound);
+        r.failed_dbs = vec!["CrossRef".to_string(), "Semantic Scholar".to_string()];
+        r
+    }
+
+    #[test]
+    fn effective_status_reports_inconclusive() {
+        assert_eq!(
+            effective_status_str(&make_inconclusive("Timed Out Paper")),
+            "inconclusive"
+        );
+        // The clean case must be untouched.
+        assert_eq!(
+            effective_status_str(&make_result("Real Miss", Status::NotFound)),
+            "not_found"
+        );
+    }
+
+    #[test]
+    fn url_check_gate_still_wins_over_inconclusive() {
+        // Ordering is deliberate: `url_check_skipped` is an explicit user
+        // opt-out, a stronger statement than a transient failure. Pinning
+        // it guarantees adding the inconclusive branch didn't reclassify
+        // refs that the --url-match gate already accounted for.
+        let mut r = make_inconclusive("URL Only Ref");
+        r.url_check_skipped = true;
+        assert_eq!(effective_status_str(&r), "skipped");
+    }
+
+    #[test]
+    fn inconclusive_sorts_out_of_the_problems_area() {
+        // Bucket 7 sits below clean verified (5). An inconclusive ref is
+        // not a finding and must not head the report.
+        let inc = make_inconclusive("Timed Out Paper");
+        let miss = make_result("Real Miss", Status::NotFound);
+        assert_eq!(export_sort_key(&miss, None), 1);
+        assert_eq!(export_sort_key(&inc, None), 7);
+        assert!(
+            export_sort_key(&inc, None) > export_sort_key(&miss, None),
+            "inconclusive must never outrank a genuine not-found"
+        );
+    }
+
+    #[test]
+    fn problematic_only_exports_drop_inconclusive_refs() {
+        // `problematic_only` keeps buckets < 3. Bucket 7 is excluded, so a
+        // "problems only" export never accuses a ref we failed to look up.
+        let inc = make_inconclusive("Timed Out Paper");
+        assert!(export_sort_key(&inc, None) >= 3);
+    }
+
+    #[test]
+    fn json_marks_inconclusive_and_keeps_it_out_of_not_found() {
+        let results = vec![
+            Some(make_inconclusive("Timed Out Paper")),
+            Some(make_result("Real Miss", Status::NotFound)),
+        ];
+        // Stats as the CLI/TUI would compute them: one in each bucket.
+        let stats = CheckStats {
+            total: 2,
+            not_found: 1,
+            inconclusive: 1,
+            ..Default::default()
+        };
+        let paper = make_paper("paper.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "Timed Out Paper"), make_ref(1, "Real Miss")];
+        let ref_states: Vec<&[ReportRef]> = vec![&refs];
+        let json = export_json(&[paper], &ref_states, false);
+
+        assert!(
+            json.contains("\"inconclusive\": 1"),
+            "stats block: {}",
+            json
+        );
+        assert!(json.contains("\"not_found\": 1"), "stats block: {}", json);
+        assert!(
+            json.contains("\"status\": \"inconclusive\""),
+            "per-ref status: {}",
+            json
+        );
+        assert!(
+            json.contains("\"effective_status\": \"inconclusive\""),
+            "per-ref effective_status: {}",
+            json
+        );
+        assert!(
+            json.contains("\"inconclusive\": true"),
+            "per-ref raw signal: {}",
+            json
+        );
+        // The genuine miss must still be reported as such.
+        assert!(json.contains("\"status\": \"not_found\""), "{}", json);
+    }
+
+    #[test]
+    fn problematic_pct_excludes_inconclusive() {
+        // The headline percentage is the number users react to. An outage
+        // must not move it.
+        let outage = CheckStats {
+            total: 10,
+            inconclusive: 8,
+            ..Default::default()
+        };
+        assert_eq!(
+            problematic_pct(&outage),
+            0.0,
+            "a total network outage must report 0% problematic, not 80%"
+        );
+
+        let real = CheckStats {
+            total: 10,
+            not_found: 8,
+            ..Default::default()
+        };
+        assert_eq!(problematic_pct(&real), 80.0);
+    }
+
+    #[test]
+    fn html_renders_an_inconclusive_badge_not_a_not_found_badge() {
+        let results = vec![Some(make_inconclusive("Timed Out Paper"))];
+        let stats = CheckStats {
+            total: 1,
+            inconclusive: 1,
+            ..Default::default()
+        };
+        let paper = make_paper("paper.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "Timed Out Paper")];
+        let ref_states: Vec<&[ReportRef]> = vec![&refs];
+        let html = export_html(&[paper], &ref_states, false);
+
+        assert!(
+            html.contains("data-status=\"inconclusive\""),
+            "ref card must carry its own status"
+        );
+        assert!(
+            !html.contains("<div class=\"ref-card\" data-status=\"not-found\">"),
+            "an inconclusive ref must never render a Not Found card"
+        );
+        assert!(html.contains("Inconclusive"), "badge text missing");
+        assert!(
+            html.contains("lookup failed"),
+            "stat card sublabel should say why"
+        );
+    }
+
+    #[test]
+    fn text_and_markdown_name_the_failed_databases() {
+        // The report has to be actionable: seeing *which* source failed is
+        // what turns "suspected hallucination" into "check your network".
+        let results = vec![Some(make_inconclusive("Timed Out Paper"))];
+        let stats = CheckStats {
+            total: 1,
+            inconclusive: 1,
+            ..Default::default()
+        };
+        let refs = vec![make_ref(0, "Timed Out Paper")];
+        let ref_states: Vec<&[ReportRef]> = vec![&refs];
+
+        let text = export_text(&[make_paper("p.pdf", &stats, &results)], &ref_states, false);
+        assert!(text.contains("INCONCLUSIVE"), "{}", text);
+        assert!(!text.contains("NOT FOUND"), "{}", text);
+
+        let md = export_markdown(&[make_paper("p.pdf", &stats, &results)], &ref_states, false);
+        assert!(md.contains("Inconclusive"), "{}", md);
+        assert!(
+            md.contains("CrossRef"),
+            "failed DBs should be named: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn csv_effective_status_matches_json() {
+        let results = vec![Some(make_inconclusive("Timed Out Paper"))];
+        let stats = CheckStats {
+            total: 1,
+            inconclusive: 1,
+            ..Default::default()
+        };
+        let refs = vec![make_ref(0, "Timed Out Paper")];
+        let ref_states: Vec<&[ReportRef]> = vec![&refs];
+        let csv = export_csv(&[make_paper("p.pdf", &stats, &results)], &ref_states, false);
+        assert!(csv.contains("inconclusive"), "{}", csv);
     }
 }

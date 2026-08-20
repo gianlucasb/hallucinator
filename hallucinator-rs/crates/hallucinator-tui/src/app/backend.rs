@@ -295,12 +295,14 @@ impl App {
                         index,
                         result.status.clone(),
                         result.url_check_skipped,
+                        result.is_inconclusive(),
                         is_retracted,
                     );
                     if fp_preexisting {
                         paper.apply_fp_delta(
                             &result.status,
                             result.url_check_skipped,
+                            result.is_inconclusive(),
                             is_retracted,
                             1,
                         );

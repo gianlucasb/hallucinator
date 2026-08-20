@@ -158,6 +158,7 @@ impl App {
                     paper.apply_fp_delta(
                         &result.status,
                         result.url_check_skipped,
+                        result.is_inconclusive(),
                         is_retracted,
                         dir,
                     );
