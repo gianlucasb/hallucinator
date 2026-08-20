@@ -325,7 +325,7 @@ impl App {
     /// (one per tick) so the UI can show progress. JSON result files are loaded
     /// and their papers added as already-complete entries.
     pub fn add_files_from_picker(&mut self) {
-        let new_files: Vec<PathBuf> = self.file_picker.selected.drain(..).collect();
+        let new_files: Vec<PathBuf> = std::mem::take(&mut self.file_picker.selected);
         if new_files.is_empty() {
             return;
         }
