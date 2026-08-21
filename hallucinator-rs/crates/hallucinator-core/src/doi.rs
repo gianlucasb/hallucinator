@@ -1,4 +1,4 @@
-use crate::authors::validate_authors_with_source;
+use crate::authors::{has_real_authors, validate_authors_with_source};
 use crate::matching::normalize_title;
 use std::time::Duration;
 
@@ -172,8 +172,9 @@ pub fn check_doi_match(
     }
 
     // Check author match. A resolved DOI's metadata (CrossRef-quality) lists
-    // every author, so treat the source as complete.
-    if !ref_authors.is_empty() && !doi_authors.is_empty() {
+    // every author, so treat the source as complete. A placeholder-only ref
+    // author list ("Anonymous", "___") has nothing to compare, same as empty.
+    if has_real_authors(ref_authors) && !doi_authors.is_empty() {
         if validate_authors_with_source(ref_authors, doi_authors, true) {
             DoiMatchResult::Verified {
                 doi_title: doi_title.to_string(),

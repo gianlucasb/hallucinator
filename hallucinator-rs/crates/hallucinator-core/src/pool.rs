@@ -13,7 +13,10 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::authors::{db_has_complete_authors, validate_authors_with_source};
+use crate::authors::{
+    db_allows_empty_found_authors, db_has_complete_authors, has_real_authors,
+    validate_authors_with_source,
+};
 use crate::db::DatabaseBackend;
 use crate::db::searxng::Searxng;
 use crate::db::url_check::{UrlChecker, expand_url_variants};
@@ -426,7 +429,15 @@ async fn report_result(
             let found_authors = &qr.authors;
             let paper_url = &qr.paper_url;
             let ref_authors = &collector.reference.authors;
-            if ref_authors.is_empty()
+            // Same leniency as the single-reference path in orchestrator.rs:
+            // a placeholder-only ref author list ("Anonymous", "___") has
+            // nothing to compare, and some sources (Web Search, DBLP,
+            // Standards) legitimately return no authors at all — see
+            // `has_real_authors` / `db_allows_empty_found_authors`.
+            let skip_author_check =
+                db_allows_empty_found_authors(db_name) && found_authors.is_empty();
+            if !has_real_authors(ref_authors)
+                || skip_author_check
                 || validate_authors_with_source(
                     ref_authors,
                     found_authors,
@@ -1084,7 +1095,10 @@ fn pre_check_remote_cache(
                     retraction = Some(r.clone());
                 }
 
-                if ref_authors.is_empty()
+                let skip_author_check =
+                    db_allows_empty_found_authors(db_name) && qr.authors.is_empty();
+                if !has_real_authors(ref_authors)
+                    || skip_author_check
                     || validate_authors_with_source(
                         ref_authors,
                         &qr.authors,

@@ -1,4 +1,7 @@
-use crate::authors::{db_has_complete_authors, validate_authors_with_source};
+use crate::authors::{
+    db_allows_empty_found_authors, db_has_complete_authors, has_real_authors,
+    validate_authors_with_source,
+};
 use crate::db::DatabaseBackend;
 use crate::rate_limit;
 use crate::{Config, DbResult, DbStatus, MismatchKind, Status};
@@ -404,15 +407,17 @@ fn process_query_result(
             let paper_url = qr.paper_url.clone();
             let retraction = qr.retraction.clone();
 
-            // Some databases legitimately return a title match with no authors:
-            //   - Web Search (SearxNG) never provides author data.
-            //   - DBLP sometimes stores authorless records for handbook chapters
-            //     and anonymised/organisational entries (e.g. `journals/ccr/X12`).
-            // In both cases we accept the title-only verification rather than
+            // Some databases legitimately return a title match with no authors
+            // (Web Search never provides any; DBLP and Standards sometimes/
+            // always omit them — see `db_allows_empty_found_authors`). In
+            // that case we accept the title-only verification rather than
             // forcing an AuthorMismatch that would mask a real match.
             let skip_author_check =
-                (name == "Web Search" || name == "DBLP") && found_authors.is_empty();
-            if ref_authors.is_empty()
+                db_allows_empty_found_authors(&name) && found_authors.is_empty();
+            // A reference author list made entirely of placeholders
+            // ("Anonymous", "___") carries nothing to compare — see
+            // `has_real_authors`.
+            if !has_real_authors(ref_authors)
                 || skip_author_check
                 || validate_authors_with_source(
                     ref_authors,
