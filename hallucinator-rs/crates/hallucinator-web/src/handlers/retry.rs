@@ -40,6 +40,10 @@ pub async fn retry(
 
     let client = reqwest::Client::new();
 
+    // TODO: `RetryRequest` doesn't carry the reference's DOI/arXiv ID (the
+    // web UI never sent them), so this retry path can't use the fast
+    // ID-lookup fallback described in `query_local_databases`'s doc
+    // comment — same as before this parameter was added, not a regression.
     let result = hallucinator_core::query_all_databases(
         &req.title,
         &req.ref_authors,
@@ -47,6 +51,8 @@ pub async fn retry(
         &client,
         true, // longer timeout for retries
         Some(&req.failed_dbs),
+        None,
+        None,
         None,
     )
     .await;

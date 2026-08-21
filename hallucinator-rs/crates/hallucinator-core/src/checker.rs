@@ -250,6 +250,8 @@ pub async fn check_single_reference(
         longer_timeout,
         None,
         on_db_complete,
+        reference.doi.as_deref(),
+        reference.arxiv_id.as_deref(),
     )
     .await;
 
@@ -495,6 +497,8 @@ pub async fn check_single_reference_retry(
         true, // longer timeout for retries
         Some(failed_dbs),
         on_db_complete,
+        reference.doi.as_deref(),
+        reference.arxiv_id.as_deref(),
     )
     .await;
 

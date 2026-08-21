@@ -1243,6 +1243,8 @@ async fn coordinator_loop(
             false,
             None,
             Some(&db_complete_cb),
+            reference.doi.as_deref(),
+            reference.arxiv_id.as_deref(),
         )
         .await;
 

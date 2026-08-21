@@ -50,6 +50,22 @@ pub fn init_database(conn: &Connection) -> Result<(), AclError> {
     Ok(())
 }
 
+/// Create a session-local (temp-schema) `fts5vocab` table exposing
+/// per-term document frequency for `publications_fts`, so query-time code
+/// can pick the most *selective* words for an OR-fallback query instead of
+/// arbitrary extraction order. Mirrors `hallucinator_dblp::db::ensure_vocab_table`.
+///
+/// 'row' mode reports one row per term with a `doc` column (number of rows
+/// containing the term at least once). `temp.` keeps this out of the
+/// on-disk schema — it's rebuilt per connection, not persisted.
+pub fn ensure_vocab_table(conn: &Connection) -> Result<(), AclError> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS temp.publications_vocab \
+         USING fts5vocab('main', 'publications_fts', 'row');",
+    )?;
+    Ok(())
+}
+
 /// Configure pragmas for fast bulk loading.
 pub fn begin_bulk_load(conn: &Connection) -> Result<(), AclError> {
     conn.execute_batch(

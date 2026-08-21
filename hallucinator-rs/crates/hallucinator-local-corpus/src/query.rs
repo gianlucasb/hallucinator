@@ -51,6 +51,20 @@ fn get_query_words(title: &str) -> Vec<String> {
 }
 
 /// Query the FTS5 index for a title, returning the best match above the threshold.
+///
+/// Three-tier fallback (mirrors `hallucinator_dblp::query::query_fts_with_authors`):
+/// 1. All meaningful words AND-joined (most precise).
+/// 2. Top-3 words AND-joined, if (1) found no passing candidate.
+/// 3. OR-join of the 4 most selective (rarest) words, if (1) and (2) both
+///    missed. Catches citations where the indexed title omits or adds a
+///    word the AND queries required (a dropped subtitle, a paraphrase) —
+///    confirmed as a real, common cause of false NotFound results: an
+///    AND-only query returned zero candidates for the vast majority of a
+///    ~1000-reference sample even when the paper was genuinely indexed.
+///
+/// Each tier still has to clear `threshold` via fuzzy match — OR widens
+/// *candidate retrieval*, not acceptance criteria, so precision is
+/// unaffected.
 pub fn query_fts(
     conn: &Connection,
     title: &str,
@@ -60,9 +74,42 @@ pub fn query_fts(
     if words.is_empty() {
         return Ok(None);
     }
+    let norm_query = normalize_title(title);
+    if norm_query.is_empty() {
+        return Ok(None);
+    }
 
     let fts_query = words.join(" ");
+    let result = fts_match(conn, &fts_query, &norm_query, threshold)?;
+    if result.is_some() {
+        return Ok(result);
+    }
 
+    if words.len() > 3 {
+        let fallback_query = words[..3].join(" ");
+        let result = fts_match(conn, &fallback_query, &norm_query, threshold)?;
+        if result.is_some() {
+            return Ok(result);
+        }
+    }
+
+    if words.len() >= 2 {
+        let take = words.len().min(4);
+        let or_words = select_or_fallback_words(conn, &words, take);
+        let or_query = or_words.join(" OR ");
+        return fts_match(conn, &or_query, &norm_query, threshold);
+    }
+
+    Ok(None)
+}
+
+/// Run one FTS5 query and return the best fuzzy match above `threshold`.
+fn fts_match(
+    conn: &Connection,
+    fts_query: &str,
+    norm_query: &str,
+    threshold: f64,
+) -> Result<Option<CorpusQueryResult>, CorpusError> {
     let mut stmt = conn.prepare_cached(
         "SELECT p.id, p.title, p.url, p.source FROM publications p \
          WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?1) \
@@ -82,11 +129,6 @@ pub fn query_fts(
         .collect();
 
     if candidates.is_empty() {
-        return Ok(None);
-    }
-
-    let norm_query = normalize_title(title);
-    if norm_query.is_empty() {
         return Ok(None);
     }
 
@@ -130,6 +172,42 @@ pub fn query_fts(
         }
         None => Ok(None),
     }
+}
+
+/// Pick the `take` most selective (lowest document-frequency) words from
+/// `words` for the OR-fallback query. Falls back to extraction order when
+/// frequency data isn't available (`ensure_vocab_table` failed on this
+/// connection). See `hallucinator_dblp::query::select_or_fallback_words`.
+fn select_or_fallback_words(conn: &Connection, words: &[String], take: usize) -> Vec<String> {
+    let freqs = term_doc_frequencies(conn, words);
+    if freqs.is_empty() {
+        return words[..take].to_vec();
+    }
+    let mut ranked: Vec<&String> = words.iter().collect();
+    ranked.sort_by_key(|w| freqs.get(w.as_str()).copied().unwrap_or(0));
+    ranked.into_iter().take(take).cloned().collect()
+}
+
+/// Look up FTS5 document frequency (`fts5vocab` 'row' mode's `doc` column)
+/// for each of `words`, via the session-local vocab table
+/// `db::ensure_vocab_table` creates. Returns an empty map if that table
+/// doesn't exist on this connection.
+fn term_doc_frequencies(
+    conn: &Connection,
+    words: &[String],
+) -> std::collections::HashMap<String, i64> {
+    let mut freqs = std::collections::HashMap::new();
+    let Ok(mut stmt) =
+        conn.prepare_cached("SELECT doc FROM temp.publications_vocab WHERE term = ?1")
+    else {
+        return freqs;
+    };
+    for w in words {
+        if let Ok(doc) = stmt.query_row(params![w], |row| row.get::<_, i64>(0)) {
+            freqs.insert(w.clone(), doc);
+        }
+    }
+    freqs
 }
 
 #[cfg(test)]
@@ -254,5 +332,45 @@ mod tests {
         let conn = setup_db_with_data();
         let result = query_fts(&conn, "", DEFAULT_THRESHOLD).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_or_fallback_finds_when_one_citation_word_mismatches_db() {
+        // The OR fallback exists to handle citations where one of the
+        // meaningful query words isn't present in the DB title verbatim
+        // (typo, singular/plural drift, paraphrase). AND requires every
+        // word, so a single mismatch drops the whole candidate; OR still
+        // finds it via the other words, and the fuzzy-similarity gate
+        // then decides whether the candidate is actually the right paper.
+        //
+        // Here the citation says "Pattern" (singular) where the DB has
+        // "Patterns" (plural) — a one-character difference that breaks
+        // exact FTS5 token matching (AND requires the literal token
+        // "pattern", which the index doesn't have) but barely dents the
+        // fuzzy-similarity score once retrieved.
+        let conn = Connection::open_in_memory().unwrap();
+        db::init_database(&conn).unwrap();
+        db::insert_publication(
+            &conn,
+            &db::NewPublication {
+                title: "Attention Patterns Deep Transformer Networks For Sequence Classification"
+                    .to_string(),
+                authors: vec!["A. Researcher".to_string()],
+                url: None,
+                source: "ndss2026".to_string(),
+            },
+        )
+        .unwrap();
+
+        let result = query_fts(
+            &conn,
+            "Attention Pattern Deep Transformer Networks For Sequence Classification",
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(
+            result.is_some(),
+            "OR fallback should find a candidate when one citation word is absent from the DB title"
+        );
     }
 }
