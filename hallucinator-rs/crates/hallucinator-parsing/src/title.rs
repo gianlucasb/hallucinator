@@ -840,6 +840,20 @@ fn find_subtitle_end(text: &str) -> usize {
             Regex::new(r"\.\s*[Ii]n\s+").unwrap(),
             Regex::new(r"\.\s*(?:Proc|IEEE|ACM|USENIX|NDSS|CCS|AAAI|WWW|CHI|arXiv)").unwrap(),
             Regex::new(r",\s*[Ii]n\s+").unwrap(),
+            // "in Venue" with NO leading `.`/`,` at all — happens when the
+            // title itself ends in `?`/`!` (common for question-phrased
+            // titles) and the citation style drops the usual comma before
+            // "in" (`"...well?" in 2022 IEEE ...` rather than
+            // `"...well?," in 2022 IEEE ...`), so `text` (== `after_quote`,
+            // already trimmed) starts directly with "in". Requires an
+            // uppercase/digit next word (venue names/years) — the `regex`
+            // crate has no look-ahead, so that char is part of the match,
+            // but `m.start()` (what actually gets used below) is still
+            // the position of "in" either way, so this behaves the same
+            // as a lookahead would. A genuine subtitle that happens to
+            // start with lowercase "in" ("in the wild: a survey") isn't
+            // truncated, since "the" doesn't match `[A-Z0-9]`.
+            Regex::new(r"^[Ii]n\s+[A-Z0-9]").unwrap(),
             Regex::new(r"\.\s*\((?:19|20)\d{2}\)").unwrap(),
             Regex::new(r"[,.]\s*(?:19|20)\d{2}").unwrap(),
             Regex::new(r"\s+(?:19|20)\d{2}\.").unwrap(),
@@ -3000,6 +3014,30 @@ mod tests {
             cleaned.contains("With what effects?"),
             "Title should end with question mark: {}",
             cleaned,
+        );
+    }
+
+    #[test]
+    fn test_venue_directly_after_question_mark_quote_no_comma() {
+        // Regression test: found via a real NDSS submission whose citation
+        // to a genuinely-indexed arXiv paper was reported NotFound because
+        // the venue name leaked into the extracted title. The title ends
+        // in "?" and the citation style drops the usual comma before "in"
+        // (`"...well?" in 2022 IEEE ...` rather than `"...well?," in 2022
+        // IEEE ...`), so `after_quote` starts directly with "in" — none of
+        // the `.`/`,`-anchored END_PATTERNS in find_subtitle_end matched,
+        // so the whole venue name (and year, and page range) was kept as
+        // a bogus "subtitle".
+        let ref_text = "Y. Liu, C. Tantithamthavorn, L. Li, and Y. Liu, \u{201c}Explainable AI for Android malware detection: Towards understanding why the models perform so well?\u{201d} in 2022 IEEE 33rd International Symposium on Software Reliability Engineering, 2022, pp. 169\u{2013}180";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes);
+        assert_eq!(
+            title,
+            "Explainable AI for Android malware detection: Towards understanding why the models perform so well?"
+        );
+        assert!(
+            !title.contains("Symposium") && !title.contains("Reliability"),
+            "venue name leaked into title: {title}"
         );
     }
 
