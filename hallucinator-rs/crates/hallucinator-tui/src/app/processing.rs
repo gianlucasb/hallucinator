@@ -288,6 +288,14 @@ impl App {
                 ))
             },
             openalex_offline_db: None, // Populated from main.rs
+            local_corpus_path: if self.config_state.local_corpus_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(
+                    &self.config_state.local_corpus_path,
+                ))
+            },
+            local_corpus_db: None, // Populated from main.rs
             num_workers: self.config_state.num_workers,
             max_rate_limit_retries: self.config_state.max_rate_limit_retries,
             rate_limiters: std::sync::Arc::new(hallucinator_core::RateLimiters::new(

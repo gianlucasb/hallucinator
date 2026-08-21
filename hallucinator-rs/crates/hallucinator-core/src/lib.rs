@@ -294,6 +294,13 @@ pub struct Config {
     pub iacr_eprint_offline_db: Option<Arc<hallucinator_iacr_eprint::IacrPool>>,
     pub openalex_offline_path: Option<PathBuf>,
     pub openalex_offline_db: Option<Arc<hallucinator_openalex::OpenAlexDatabase>>,
+    /// Local corpus of manually-verified and not-yet-indexed papers (see
+    /// `hallucinator-local-corpus`): recent conference proceedings not yet
+    /// picked up by CrossRef/DBLP/etc., plus references marked safe during
+    /// review. Grown incrementally by `import-*` CLI subcommands, not
+    /// built once and pointed at like a downloaded dump.
+    pub local_corpus_path: Option<PathBuf>,
+    pub local_corpus_db: Option<Arc<hallucinator_local_corpus::CorpusPool>>,
     pub num_workers: usize,
     pub db_timeout_secs: u64,
     pub db_timeout_short_secs: u64,
@@ -364,6 +371,11 @@ impl std::fmt::Debug for Config {
                 "openalex_offline_db",
                 &self.openalex_offline_db.as_ref().map(|_| "<open>"),
             )
+            .field("local_corpus_path", &self.local_corpus_path)
+            .field(
+                "local_corpus_db",
+                &self.local_corpus_db.as_ref().map(|_| "<open>"),
+            )
             .field("num_workers", &self.num_workers)
             .field("db_timeout_secs", &self.db_timeout_secs)
             .field("db_timeout_short_secs", &self.db_timeout_short_secs)
@@ -404,6 +416,8 @@ impl Default for Config {
             iacr_eprint_offline_db: None,
             openalex_offline_path: None,
             openalex_offline_db: None,
+            local_corpus_path: None,
+            local_corpus_db: None,
             num_workers: 4,
             db_timeout_secs: 10,
             db_timeout_short_secs: 5,

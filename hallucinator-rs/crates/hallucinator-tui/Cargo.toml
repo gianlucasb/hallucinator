@@ -19,6 +19,7 @@ hallucinator-acl.workspace = true
 hallucinator-arxiv-offline.workspace = true
 hallucinator-iacr-eprint.workspace = true
 hallucinator-openalex.workspace = true
+hallucinator-local-corpus.workspace = true
 hallucinator-reporting.workspace = true
 reqwest.workspace = true
 tokio.workspace = true

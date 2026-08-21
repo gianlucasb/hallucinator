@@ -53,6 +53,11 @@ pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
         {
             state.openalex_offline_path = path.clone();
         }
+        if let Some(ref path) = db.local_corpus_path
+            && !path.is_empty()
+        {
+            state.local_corpus_path = path.clone();
+        }
         if let Some(ref path) = db.cache_path
             && !path.is_empty()
         {
@@ -162,6 +167,11 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
                 None
             } else {
                 Some(state.openalex_offline_path.clone())
+            },
+            local_corpus_path: if state.local_corpus_path.is_empty() {
+                None
+            } else {
+                Some(state.local_corpus_path.clone())
             },
             cache_path: if state.cache_path.is_empty() {
                 None
@@ -284,6 +294,32 @@ mod tests {
                 .and_then(|d| d.iacr_eprint_offline_path)
                 .as_deref(),
             Some("/data/iacr.db"),
+        );
+    }
+
+    #[test]
+    fn local_corpus_path_round_trip() {
+        // Same shape as `iacr_eprint_offline_path_round_trip` above —
+        // locks down that saving the TUI config doesn't silently drop
+        // this field.
+        let file_cfg = ConfigFile {
+            databases: Some(DatabasesConfig {
+                local_corpus_path: Some("/data/local-corpus.db".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut state = ConfigState::default();
+        apply_to_config_state(&file_cfg, &mut state);
+        assert_eq!(state.local_corpus_path, "/data/local-corpus.db");
+
+        let written = from_config_state(&state);
+        assert_eq!(
+            written
+                .databases
+                .and_then(|d| d.local_corpus_path)
+                .as_deref(),
+            Some("/data/local-corpus.db"),
         );
     }
 

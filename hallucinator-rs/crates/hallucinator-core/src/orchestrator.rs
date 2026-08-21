@@ -634,6 +634,17 @@ pub(crate) fn build_database_list(
             databases.push(Box::new(acl::AclAnthology));
         }
     }
+    // Local Corpus (offline only — no online counterpart; a hand-curated
+    // index of not-yet-indexed-elsewhere papers, not something to query
+    // over the network). Only registers when the user has built a corpus
+    // via the `import-*` CLI subcommands and passed `--local-corpus`.
+    if should_include("Local Corpus")
+        && let Some(ref db) = config.local_corpus_db
+    {
+        databases.push(Box::new(local_corpus::LocalCorpus {
+            db: std::sync::Arc::clone(db),
+        }));
+    }
     if should_include("Europe PMC") {
         databases.push(Box::new(europe_pmc::EuropePmc));
     }
