@@ -3,14 +3,19 @@
 //! records, deduped and inserted.
 
 pub mod aaai;
+pub mod acsac;
+pub mod asiaccs;
 pub(crate) mod author_parsing;
 pub mod blackhat;
 pub mod ccs;
 pub mod defcon;
+pub mod esorics;
+pub mod eurosp;
 pub mod icse;
 pub mod ieee_sp;
 pub mod ndss;
 pub mod neurips;
+pub mod raid;
 pub mod report_json;
 pub mod usenix;
 
@@ -221,6 +226,66 @@ pub async fn import_aaai(
 ) -> Result<ImportStats, CorpusError> {
     let html = fetch_html(&source).await?;
     let records = aaai::parse_issue_toc(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ACSAC accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"acsac2025"`.
+pub async fn import_acsac(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = acsac::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ESORICS accepted-papers page. `source_tag` is stored as
+/// each record's provenance, e.g. `"esorics2025"`.
+pub async fn import_esorics(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = esorics::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a RAID accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"raid2025"`.
+pub async fn import_raid(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = raid::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import one ASIACCS submission-cycle accepted-papers page. `source_tag`
+/// is stored as each record's provenance, e.g. `"asiaccs2026-cycle1"`.
+pub async fn import_asiaccs(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = asiaccs::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a EuroS&P accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"eurosp2026"`.
+pub async fn import_eurosp(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = eurosp::parse_accepted_papers(&html, source_tag);
     insert_all(conn, records)
 }
 

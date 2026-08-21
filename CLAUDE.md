@@ -74,7 +74,7 @@ docker run -p 5001:5001 hallucinator
 - OpenAlex (250M+ works; online with API key, or offline SQLite)
 - Open Library (books, technical reports, non-academic publications)
 - GovInfo (US federal laws, regulations, court opinions; optional, needs free API key)
-- Local Corpus (Rust only — `hallucinator-local-corpus`; offline SQLite+FTS5, fuzzy-matched. Recent conference proceedings not yet indexed elsewhere, plus references marked safe during review. Built incrementally via `import-ndss`/`import-usenix`/`import-corpus-reports` CLI subcommands, no online counterpart)
+- Local Corpus (Rust only — `hallucinator-local-corpus`; offline SQLite+FTS5, fuzzy-matched. Recent conference proceedings not yet indexed elsewhere, plus references marked safe during review. Built incrementally via `import-*` CLI subcommands — NDSS, USENIX, IEEE S&P, CCS, ACSAC, ESORICS, RAID, ASIACCS, EuroS&P, NeurIPS, ICSE, AAAI, DEF CON, Black Hat, plus `import-corpus-reports` for marked-safe JSON — no online counterpart)
 - ~~OpenReview~~ (disabled - API unreachable after Nov 2025 incident; see [MANIFESTO.md](MANIFESTO.md) for details)
 - URL Checker (liveness check for non-academic URLs; fallback only)
 - Web Search / SearXNG (self-hosted metasearch fallback; optional, no author verification)

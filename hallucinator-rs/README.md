@@ -126,6 +126,8 @@ When `--arxiv-offline` is configured, the online arXiv backend is replaced entir
 
 A small offline SQLite + FTS5 index for two things the other databases can't help with: recent conference proceedings not yet indexed anywhere (CrossRef/DBLP/etc. lag weeks to months behind an event), and references marked safe during manual review — matched by fuzzy title search rather than exact identity, so citation-style drift (a dropped subtitle, a truncated author list) doesn't cause a miss. Has no online counterpart; it only registers when `--local-corpus` points at a built database. Build it incrementally with:
 
+Supported venues, one `import-*` subcommand each (`hallucinator-cli --help` for the full flag list): NDSS, USENIX Security, IEEE S&P, ACM CCS, NeurIPS, ICSE, AAAI, DEF CON, and Black Hat have several years of historical backfill already imported; ACSAC, ESORICS, RAID, ASIACCS, and EuroS&P were added most recently and currently cover only the latest edition of each (2024-2025 for RAID, whose format was stable across those two years). Plus `import-corpus-reports` for marked-safe references from this tool's own report JSON.
+
 ```bash
 # Recent conference proceedings — no bulk export exists for either venue,
 # so these scrape the program/proceedings listing page directly.
@@ -278,7 +280,7 @@ If no path is specified, the tool checks:
 | Open Library | Books, technical reports, and non-academic publications | |
 | GovInfo | US federal laws, regulations, court opinions | Optional, needs free API key from api.data.gov |
 | IACR ePrint | Cryptology ePrint Archive | Offline-only — build the local index with `update-iacr-eprint` |
-| Local Corpus | Recent conference proceedings not yet indexed elsewhere, plus references marked safe during review | Offline-only, fuzzy-matched — build with `import-ndss` / `import-usenix` / `import-corpus-reports` |
+| Local Corpus | Recent conference proceedings not yet indexed elsewhere, plus references marked safe during review | Offline-only, fuzzy-matched — build with `import-ndss` / `import-usenix` / `import-corpus-reports` and 11 other venue `import-*` subcommands (see [Local Corpus](#local-corpus)) |
 | URL Checker | Liveness check for non-academic URLs (GitHub, blogs, etc.) | Weaker verification — confirms URL is reachable |
 | Web Search | SearxNG metasearch fallback (Google, Bing, Google Scholar) | Optional, self-hosted, no author verification |
 
