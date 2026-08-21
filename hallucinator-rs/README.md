@@ -126,7 +126,7 @@ When `--arxiv-offline` is configured, the online arXiv backend is replaced entir
 
 A small offline SQLite + FTS5 index for two things the other databases can't help with: recent conference proceedings not yet indexed anywhere (CrossRef/DBLP/etc. lag weeks to months behind an event), and references marked safe during manual review — matched by fuzzy title search rather than exact identity, so citation-style drift (a dropped subtitle, a truncated author list) doesn't cause a miss. Has no online counterpart; it only registers when `--local-corpus` points at a built database. Build it incrementally with:
 
-Supported venues, one `import-*` subcommand each (`hallucinator-cli --help` for the full flag list): NDSS, USENIX Security, IEEE S&P, ACM CCS, NeurIPS, ICSE, AAAI, DEF CON, and Black Hat have several years of historical backfill already imported; ACSAC, ESORICS, RAID, ASIACCS, and EuroS&P were added most recently and currently cover only the latest edition of each (2024-2025 for RAID, whose format was stable across those two years). NSDI and OSDI (2026 only) use `import-usenix` directly — same USENIX Drupal template as USENIX Security, no separate subcommand needed. Plus `import-corpus-reports` for marked-safe references from this tool's own report JSON.
+Supported venues, one `import-*` subcommand each (`hallucinator-cli --help` for the full flag list): NDSS, USENIX Security, IEEE S&P, ACM CCS, NeurIPS, ICSE, AAAI, DEF CON, and Black Hat have several years of historical backfill already imported; ACSAC, ESORICS, RAID, ASIACCS, and EuroS&P were added most recently and currently cover only the latest edition of each (2024-2025 for RAID, whose format was stable across those two years). NSDI and OSDI (2026 only) use `import-usenix` directly — same USENIX Drupal template as USENIX Security, no separate subcommand needed. `import-cvf` covers CVPR, ICCV, and WACV (2022-2026, or 2023/2025 for ICCV's biennial cadence) — one CVF Open Access page template shared across all three. Plus `import-corpus-reports` for marked-safe references from this tool's own report JSON.
 
 ```bash
 # Recent conference proceedings — no bulk export exists for either venue,
@@ -143,6 +143,11 @@ hallucinator-cli import-usenix --corpus=corpus.db --source-tag=nsdi2026 \
   --url=https://www.usenix.org/conference/nsdi26/technical-sessions
 hallucinator-cli import-usenix --corpus=corpus.db --source-tag=osdi2026 \
   --url=https://www.usenix.org/conference/osdi26/technical-sessions
+
+# CVF Open Access (CVPR / ICCV / WACV) — fetch the "All Papers" page
+# (?day=all) for the whole proceedings in one request.
+hallucinator-cli import-cvf --corpus=corpus.db --source-tag=cvpr2026 \
+  --url=https://openaccess.thecvf.com/CVPR2026?day=all
 
 # If a venue's site blocks automated requests, save the page from a real
 # browser and parse the local copy instead:

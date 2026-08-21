@@ -8,6 +8,7 @@ pub mod asiaccs;
 pub(crate) mod author_parsing;
 pub mod blackhat;
 pub mod ccs;
+pub mod cvf;
 pub mod defcon;
 pub mod esorics;
 pub mod eurosp;
@@ -189,6 +190,19 @@ pub async fn import_ccs(
 ) -> Result<ImportStats, CorpusError> {
     let html = fetch_html(&source).await?;
     let records = ccs::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a CVF Open Access (CVPR / ICCV / WACV) `?day=all` paper-listing
+/// page. `source_tag` is stored as each record's provenance, e.g.
+/// `"cvpr2026"`.
+pub async fn import_cvf(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = cvf::parse_accepted_papers(&html, source_tag);
     insert_all(conn, records)
 }
 

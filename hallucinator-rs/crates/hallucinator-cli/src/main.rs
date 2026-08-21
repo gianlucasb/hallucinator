@@ -316,6 +316,28 @@ enum Command {
         from_file: Option<PathBuf>,
     },
 
+    /// Import a CVF Open Access (CVPR / ICCV / WACV) `?day=all` paper
+    /// listing page into the local corpus.
+    ImportCvf {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "cvpr2026"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://openaccess.thecvf.com/CVPR2026?day=all)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
     /// Import a NeurIPS `papers.nips.cc` year-index page into the local
     /// corpus. A year's index only exists once its proceedings are
     /// published (weeks after the conference) — check
@@ -646,6 +668,12 @@ async fn main() -> anyhow::Result<()> {
             url,
             from_file,
         } => import_ccs(&corpus, &source_tag, url, from_file).await,
+        Command::ImportCvf {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_cvf(&corpus, &source_tag, url, from_file).await,
         Command::ImportNeurips {
             corpus,
             source_tag,
@@ -2932,6 +2960,27 @@ async fn import_ccs(
     let conn = hallucinator_local_corpus::open_or_create(corpus_path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let stats = hallucinator_local_corpus::ingest::import_ccs(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a CVF Open Access (CVPR / ICCV / WACV) paper-listing page into
+/// the local corpus.
+async fn import_cvf(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_cvf(&conn, source, source_tag)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     print_import_stats(&stats);
