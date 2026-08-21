@@ -207,6 +207,58 @@ async fn progress_events_emitted() {
     );
 }
 
+// ── author-mismatch leniency ─────────────────────────────────────────
+
+/// Build a reference with explicit authors (title-only `dummy_ref` always
+/// has `authors: vec![]`, which already short-circuits the mismatch path
+/// — these tests need real ref author strings to exercise it).
+fn ref_with_authors(title: &str, authors: &[&str]) -> Reference {
+    Reference {
+        raw_citation: format!("[1] {title}"),
+        title: Some(title.to_string()),
+        authors: authors.iter().map(|a| a.to_string()).collect(),
+        doi: None,
+        arxiv_id: None,
+        urls: vec![],
+        original_number: 1,
+        skip_reason: None,
+    }
+}
+
+#[tokio::test]
+async fn standards_match_with_empty_found_authors_is_verified_not_mismatched() {
+    // The Standards backend's Tier 1 (pattern-only, no network) matches
+    // return `authors: vec![]` — the "author" is the standards body
+    // itself, already captured in the title, not a per-author byline. A
+    // reference citing it with a real (unrelated) author name must
+    // still come back Verified, not AuthorMismatch, since there's
+    // nothing in `found_authors` to disagree with.
+    let config = Arc::new(config_no_network());
+    let cancel = CancellationToken::new();
+    let pool = ValidationPool::new(config, cancel, 2);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let job = RefJob {
+        // Matches the Standards backend's IEEE pattern (Tier 1,
+        // pattern-only — no network call, safe for this harness).
+        reference: ref_with_authors("IEEE 802.11-2020", &["John Smith"]),
+        result_tx: tx,
+        ref_index: 0,
+        total: 1,
+        progress: Arc::new(|_| {}),
+    };
+
+    pool.submit(job).await;
+    let result: ValidationResult = rx.await.expect("should receive result");
+    assert_eq!(
+        result.status,
+        Status::Verified,
+        "Standards' empty found_authors must not force a mismatch"
+    );
+
+    pool.shutdown().await;
+}
+
 // ── --url-match gate ─────────────────────────────────────────────────
 
 /// Build a reference that carries a non-academic URL (the shape that

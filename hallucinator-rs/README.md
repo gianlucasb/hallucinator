@@ -86,6 +86,7 @@ hallucinator-cli check --no-color paper.pdf
 | `--arxiv-offline=PATH` | Path to offline arXiv database (Kaggle snapshot) |
 | `--iacr-eprint-offline=PATH` | Path to offline IACR Cryptology ePrint Archive database |
 | `--openalex-offline=PATH` | Path to offline OpenAlex Tantivy index |
+| `--local-corpus=PATH` | Path to local corpus database (see below) |
 | `--output=PATH` | Write output to file |
 | `--no-color` | Disable colored output |
 | `--disable-dbs=CSV` | Comma-separated database names to skip |
@@ -122,6 +123,45 @@ hallucinator-cli update-openalex openalex.idx
 
 When `--arxiv-offline` is configured, the online arXiv backend is replaced entirely (same pattern as DBLP / ACL / OpenAlex). The IACR ePrint backend has no online counterpart — it only registers when a local index is provided.
 
+### Local Corpus
+
+A small offline SQLite + FTS5 index for two things the other databases can't help with: recent conference proceedings not yet indexed anywhere (CrossRef/DBLP/etc. lag weeks to months behind an event), and references marked safe during manual review — matched by fuzzy title search rather than exact identity, so citation-style drift (a dropped subtitle, a truncated author list) doesn't cause a miss. Has no online counterpart; it only registers when `--local-corpus` points at a built database. Build it incrementally with:
+
+Supported venues, one `import-*` subcommand each (`hallucinator-cli --help` for the full flag list): NDSS, USENIX Security, IEEE S&P, ACM CCS, NeurIPS, ICSE, AAAI, DEF CON, and Black Hat have several years of historical backfill already imported; ACSAC, ESORICS, RAID, ASIACCS, and EuroS&P were added most recently and currently cover only the latest edition of each (2024-2025 for RAID, whose format was stable across those two years). NSDI and OSDI (2026 only) use `import-usenix` directly — same USENIX Drupal template as USENIX Security, no separate subcommand needed. `import-cvf` covers CVPR, ICCV, and WACV (2022-2026, or 2023/2025 for ICCV's biennial cadence) — one CVF Open Access page template shared across all three. Plus `import-corpus-reports` for marked-safe references from this tool's own report JSON.
+
+```bash
+# Recent conference proceedings — no bulk export exists for either venue,
+# so these scrape the program/proceedings listing page directly.
+hallucinator-cli import-ndss --corpus=corpus.db --source-tag=ndss2026 \
+  --url=https://www.ndss-symposium.org/ndss2026/accepted-papers/
+
+hallucinator-cli import-usenix --corpus=corpus.db --source-tag=usenix2026 \
+  --url=https://www.usenix.org/conference/usenixsecurity26/technical-sessions
+
+# NSDI and OSDI use the exact same USENIX-hosted page template — just
+# point import-usenix at their technical-sessions page instead:
+hallucinator-cli import-usenix --corpus=corpus.db --source-tag=nsdi2026 \
+  --url=https://www.usenix.org/conference/nsdi26/technical-sessions
+hallucinator-cli import-usenix --corpus=corpus.db --source-tag=osdi2026 \
+  --url=https://www.usenix.org/conference/osdi26/technical-sessions
+
+# CVF Open Access (CVPR / ICCV / WACV) — fetch the "All Papers" page
+# (?day=all) for the whole proceedings in one request.
+hallucinator-cli import-cvf --corpus=corpus.db --source-tag=cvpr2026 \
+  --url=https://openaccess.thecvf.com/CVPR2026?day=all
+
+# If a venue's site blocks automated requests, save the page from a real
+# browser and parse the local copy instead:
+hallucinator-cli import-usenix --corpus=corpus.db --source-tag=usenix2026 \
+  --from-file=technical-sessions.html
+
+# References marked safe (fp_reason set) in this tool's own --json report
+# exports — re-run whenever you have new reports to fold in.
+hallucinator-cli import-corpus-reports --corpus=corpus.db report1.json report2.json
+```
+
+Each import is additive and dedupes against what's already in the corpus (a fuzzy title match skips re-inserting), so it's safe to re-run periodically as more submissions get reviewed or another conference publishes its program. Growing the corpus is CLI-only (the `import-*` subcommands) — but once built, both `hallucinator-cli check --local-corpus=PATH` and `hallucinator-tui --local-corpus=PATH` (or `LOCAL_CORPUS_PATH`/`local_corpus_path` in the config file) will query it.
+
 ---
 
 ## TUI
@@ -150,7 +190,7 @@ All CLI options above, plus:
 | `--mouse` | Enable mouse support |
 | `--fps N` | Target framerate, 1-120 (default: 30) |
 
-The TUI has `update-dblp`, `update-acl`, and `update-openalex` subcommands. `update-arxiv` and `update-iacr-eprint` are CLI-only — build those indexes with `hallucinator-cli` and point the TUI at them via `--arxiv-offline` / `--iacr-eprint-offline` (or the config file).
+The TUI has `update-dblp`, `update-acl`, and `update-openalex` subcommands. `update-arxiv`, `update-iacr-eprint`, and the local corpus `import-*` subcommands are CLI-only — build/grow those with `hallucinator-cli` and point the TUI at them via `--arxiv-offline` / `--iacr-eprint-offline` / `--local-corpus` (or the config file; all three are picked up on startup and hot-reload if the path changes mid-session, same as the other offline sources, but aren't shown in the interactive Config screen).
 
 ### Screens
 
@@ -214,6 +254,7 @@ acl_offline_path = "/path/to/acl.db"
 arxiv_offline_path = "/path/to/arxiv.db"
 iacr_eprint_offline_path = "/path/to/iacr.db"
 openalex_offline_path = "/path/to/openalex.idx"
+local_corpus_path = "/path/to/local-corpus.db"
 disabled = ["OpenAlex", "PubMed"]
 
 [concurrency]
@@ -252,6 +293,7 @@ If no path is specified, the tool checks:
 | Open Library | Books, technical reports, and non-academic publications | |
 | GovInfo | US federal laws, regulations, court opinions | Optional, needs free API key from api.data.gov |
 | IACR ePrint | Cryptology ePrint Archive | Offline-only — build the local index with `update-iacr-eprint` |
+| Local Corpus | Recent conference proceedings not yet indexed elsewhere, plus references marked safe during review | Offline-only, fuzzy-matched — build with `import-ndss` / `import-usenix` / `import-corpus-reports` and 11 other venue `import-*` subcommands (see [Local Corpus](#local-corpus)) |
 | URL Checker | Liveness check for non-academic URLs (GitHub, blogs, etc.) | Weaker verification — confirms URL is reachable |
 | Web Search | SearxNG metasearch fallback (Google, Bing, Google Scholar) | Optional, self-hosted, no author verification |
 

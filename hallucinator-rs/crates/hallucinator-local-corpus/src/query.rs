@@ -1,13 +1,20 @@
-//! FTS5 search and fuzzy matching for ACL Anthology queries.
+//! FTS5 search and fuzzy matching for the local corpus.
+//!
+//! Same approach as `hallucinator-acl`'s query module (word-based FTS5
+//! candidate retrieval, then rapidfuzz ratio scoring) — see that crate for
+//! the rationale. This is the fix for exact-key fp_override matching being
+//! too brittle: citations of the same paper that differ slightly in
+//! wording, punctuation, or author-list truncation still resolve here.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 use rusqlite::{Connection, params};
 
 use crate::db;
-use crate::{AclError, AclQueryResult, AclRecord};
+use crate::{CorpusError, CorpusQueryResult, CorpusRecord};
 
-/// Default similarity threshold for fuzzy title matching.
+/// Default similarity threshold for fuzzy title matching. Matches the
+/// threshold used throughout the rest of the pipeline (`matching::titles_match`).
 pub const DEFAULT_THRESHOLD: f64 = 0.95;
 
 /// Normalize a title for comparison: lowercase alphanumeric only.
@@ -18,11 +25,7 @@ fn normalize_title(title: &str) -> String {
 }
 
 /// Extract meaningful query words for FTS5 MATCH (4+ chars, no stop words).
-///
-/// Handles digits (`L2`, `3D`), hyphens (`Machine-Learning`), and apostrophes (`What's`).
-/// Also strips BibTeX braces (`{BERT}` → `BERT`).
 fn get_query_words(title: &str) -> Vec<String> {
-    // Strip BibTeX capitalization braces
     let title = title.replace(['{', '}'], "");
 
     static WORD_RE: Lazy<Regex> =
@@ -66,7 +69,7 @@ pub fn query_fts(
     conn: &Connection,
     title: &str,
     threshold: f64,
-) -> Result<Option<AclQueryResult>, AclError> {
+) -> Result<Option<CorpusQueryResult>, CorpusError> {
     let words = get_query_words(title);
     if words.is_empty() {
         return Ok(None);
@@ -106,19 +109,20 @@ fn fts_match(
     fts_query: &str,
     norm_query: &str,
     threshold: f64,
-) -> Result<Option<AclQueryResult>, AclError> {
+) -> Result<Option<CorpusQueryResult>, CorpusError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT p.anthology_id, p.title, p.url FROM publications p \
+        "SELECT p.id, p.title, p.url, p.source FROM publications p \
          WHERE p.id IN (SELECT rowid FROM publications_fts WHERE title MATCH ?1) \
          LIMIT 50",
     )?;
 
-    let candidates: Vec<(String, String, Option<String>)> = stmt
+    let candidates: Vec<(i64, String, Option<String>, String)> = stmt
         .query_map(params![fts_query], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -128,9 +132,9 @@ fn fts_match(
         return Ok(None);
     }
 
-    let mut best_match: Option<(f64, String, String, Option<String>)> = None;
+    let mut best_match: Option<(f64, i64, String, Option<String>, String)> = None;
 
-    for (anthology_id, candidate_title, url) in &candidates {
+    for (pub_id, candidate_title, url, source) in &candidates {
         let norm_candidate = normalize_title(candidate_title);
         if norm_candidate.is_empty() {
             continue;
@@ -141,25 +145,27 @@ fn fts_match(
         if score >= threshold
             && best_match
                 .as_ref()
-                .is_none_or(|(best, _, _, _)| score > *best)
+                .is_none_or(|(best, _, _, _, _)| score > *best)
         {
             best_match = Some((
                 score,
-                anthology_id.clone(),
+                *pub_id,
                 candidate_title.clone(),
                 url.clone(),
+                source.clone(),
             ));
         }
     }
 
     match best_match {
-        Some((score, anthology_id, matched_title, url)) => {
-            let authors = db::get_authors_for_publication(conn, &anthology_id)?;
-            Ok(Some(AclQueryResult {
-                record: AclRecord {
+        Some((score, pub_id, matched_title, url, source)) => {
+            let authors = db::get_authors_for_publication(conn, pub_id)?;
+            Ok(Some(CorpusQueryResult {
+                record: CorpusRecord {
                     title: matched_title,
                     authors,
                     url,
+                    source,
                 },
                 score,
             }))
@@ -207,37 +213,32 @@ fn term_doc_frequencies(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{InsertBatch, init_database, insert_batch, rebuild_fts_index};
+    use crate::db::{NewPublication, init_database, insert_publication};
 
     fn setup_db_with_data() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         init_database(&conn).unwrap();
 
-        let mut batch = InsertBatch::new();
-        batch.authors.push("Matt Post".to_string());
-        batch.authors.push("David Vilar".to_string());
-        batch.publications.push((
-            "2024.acl-long.1".to_string(),
-            "Attention Patterns in Transformer Models".to_string(),
-            Some("https://aclanthology.org/2024.acl-long.1".to_string()),
-            None,
-        ));
-        batch.publications.push((
-            "2023.emnlp-main.5".to_string(),
-            "BERT Revisited for Low-Resource Language Understanding".to_string(),
-            Some("https://aclanthology.org/2023.emnlp-main.5".to_string()),
-            None,
-        ));
-        batch
-            .publication_authors
-            .push(("2024.acl-long.1".to_string(), "Matt Post".to_string(), 0));
-        batch.publication_authors.push((
-            "2024.acl-long.1".to_string(),
-            "David Vilar".to_string(),
-            1,
-        ));
-        insert_batch(&conn, &batch).unwrap();
-        rebuild_fts_index(&conn).unwrap();
+        insert_publication(
+            &conn,
+            &NewPublication {
+                title: "Attention Patterns in Transformer Models".to_string(),
+                authors: vec!["Matt Post".to_string(), "David Vilar".to_string()],
+                url: Some("https://example.org/1".to_string()),
+                source: "ndss2026".to_string(),
+            },
+        )
+        .unwrap();
+        insert_publication(
+            &conn,
+            &NewPublication {
+                title: "BERT Revisited for Low-Resource Language Understanding".to_string(),
+                authors: vec!["Jane Doe".to_string()],
+                url: Some("https://example.org/2".to_string()),
+                source: "usenix2026".to_string(),
+            },
+        )
+        .unwrap();
 
         conn
     }
@@ -245,35 +246,6 @@ mod tests {
     #[test]
     fn test_normalize_title() {
         assert_eq!(normalize_title("Hello, World! 123"), "helloworld123");
-    }
-
-    #[test]
-    fn test_get_query_words() {
-        let words = get_query_words("Attention Patterns in Transformer Models");
-        assert!(words.contains(&"attention".to_string()));
-        assert!(words.contains(&"patterns".to_string()));
-        assert!(words.contains(&"transformer".to_string()));
-        assert!(words.contains(&"models".to_string()));
-    }
-
-    #[test]
-    fn test_get_query_words_bibtex_braces() {
-        let words = get_query_words("{BERT}: Pre-training of Deep Bidirectional Transformers");
-        assert!(words.contains(&"bert".to_string()));
-        assert!(words.contains(&"pre-training".to_string()));
-    }
-
-    #[test]
-    fn test_get_query_words_hyphenated() {
-        let words = get_query_words("Machine-Learning Approaches for Natural Language");
-        assert!(words.contains(&"machine-learning".to_string()));
-    }
-
-    #[test]
-    fn test_get_query_words_digits() {
-        let words = get_query_words("L2 Regularization for 3D Point Cloud Models");
-        assert!(words.contains(&"point".to_string()));
-        assert!(words.contains(&"regularization".to_string()));
     }
 
     #[test]
@@ -289,6 +261,58 @@ mod tests {
         let result = result.unwrap();
         assert!(result.score >= DEFAULT_THRESHOLD);
         assert_eq!(result.record.authors.len(), 2);
+        assert_eq!(result.record.source, "ndss2026");
+    }
+
+    #[test]
+    fn test_query_fts_fuzzy_match_survives_punctuation_drift() {
+        let conn = setup_db_with_data();
+        // Trailing punctuation and different capitalization — normalize_title
+        // strips both, so this is a 100%-score match. Real bibliographies mix
+        // "Title." and "Title" / Title Case and Sentence case constantly.
+        let result = query_fts(
+            &conn,
+            "attention patterns in transformer models.",
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().score, 1.0);
+    }
+
+    #[test]
+    fn test_query_fts_fuzzy_match_survives_inserted_filler_word() {
+        let conn = setup_db_with_data();
+        // A filler word ("the") some citation styles insert and others
+        // drop — short enough (<4 chars) to be excluded from the FTS5
+        // candidate-retrieval words, so it doesn't block the match, and
+        // small enough that the rapidfuzz ratio still clears 95%. This is
+        // exactly the class of drift that broke exact-identity
+        // fp_override matching: the same underlying paper, cited with
+        // slightly different wording.
+        let result = query_fts(
+            &conn,
+            "Attention Patterns in the Transformer Models",
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().score < 1.0);
+    }
+
+    #[test]
+    fn test_query_fts_rejects_large_drift() {
+        let conn = setup_db_with_data();
+        // A whole extra parenthetical is real, useful conservatism — the
+        // same threshold the rest of the pipeline (`matching::titles_match`)
+        // already applies. Not every "close-ish" title should silently match.
+        let result = query_fts(
+            &conn,
+            "Attention Patterns in Transformer Models (Extended Version)",
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
@@ -326,15 +350,17 @@ mod tests {
         // fuzzy-similarity score once retrieved.
         let conn = Connection::open_in_memory().unwrap();
         db::init_database(&conn).unwrap();
-        let mut batch = InsertBatch::new();
-        batch.publications.push((
-            "2024.acl-long.99".to_string(),
-            "Attention Patterns Deep Transformer Networks For Sequence Classification".to_string(),
-            None,
-            None,
-        ));
-        insert_batch(&conn, &batch).unwrap();
-        rebuild_fts_index(&conn).unwrap();
+        db::insert_publication(
+            &conn,
+            &db::NewPublication {
+                title: "Attention Patterns Deep Transformer Networks For Sequence Classification"
+                    .to_string(),
+                authors: vec!["A. Researcher".to_string()],
+                url: None,
+                source: "ndss2026".to_string(),
+            },
+        )
+        .unwrap();
 
         let result = query_fts(
             &conn,

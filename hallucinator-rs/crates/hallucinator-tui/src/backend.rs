@@ -420,3 +420,22 @@ pub fn open_openalex_db(
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     Ok(Arc::new(db))
 }
+
+/// Open the local corpus database if a path is configured, returning the
+/// Arc<CorpusPool> handle. Grown incrementally by `hallucinator-cli
+/// import-*` subcommands, not built inside the TUI — no build-progress
+/// UI exists for it here, same as arXiv/IACR ePrint.
+pub fn open_local_corpus_db(
+    path: &std::path::Path,
+    pool_size: usize,
+) -> anyhow::Result<Arc<hallucinator_local_corpus::CorpusPool>> {
+    if !path.exists() {
+        anyhow::bail!(
+            "Local corpus database not found at {}. Build it with `hallucinator-cli import-ndss` / `import-usenix` / `import-corpus-reports` (etc.).",
+            path.display(),
+        );
+    }
+    let pool = hallucinator_local_corpus::CorpusPool::open_with_size(path, pool_size)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(Arc::new(pool))
+}

@@ -76,6 +76,13 @@ struct Cli {
     #[arg(long)]
     openalex_offline: Option<PathBuf>,
 
+    /// Path to local corpus database (recent conference proceedings not
+    /// yet indexed elsewhere, plus references marked safe during review).
+    /// Built with `hallucinator-cli import-*` subcommands — no in-TUI
+    /// build support, same as --arxiv-offline / --iacr-eprint-offline.
+    #[arg(long)]
+    local_corpus: Option<PathBuf>,
+
     /// Comma-separated list of databases to disable
     #[arg(long, value_delimiter = ',')]
     disable_dbs: Vec<String>,
@@ -224,6 +231,11 @@ async fn main() -> anyhow::Result<()> {
     {
         config_state.openalex_offline_path = path;
     }
+    if let Ok(path) = std::env::var("LOCAL_CORPUS_PATH")
+        && !path.is_empty()
+    {
+        config_state.local_corpus_path = path;
+    }
     if let Ok(v) = std::env::var("DB_TIMEOUT")
         && let Ok(secs) = v.parse::<u64>()
     {
@@ -259,6 +271,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(ref path) = cli.openalex_offline {
         config_state.openalex_offline_path = path.display().to_string();
+    }
+    if let Some(ref path) = cli.local_corpus {
+        config_state.local_corpus_path = path.display().to_string();
     }
     if let Some(ref theme) = cli.theme {
         config_state.theme_name = theme.clone();
@@ -369,6 +384,23 @@ async fn main() -> anyhow::Result<()> {
         for candidate in &candidates {
             if candidate.exists() {
                 config_state.openalex_offline_path = candidate.display().to_string();
+                break;
+            }
+        }
+    }
+
+    // Auto-detect default local corpus DB if no explicit path configured
+    if config_state.local_corpus_path.is_empty() {
+        let candidates = [
+            PathBuf::from("local-corpus.db"),
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hallucinator")
+                .join("local-corpus.db"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                config_state.local_corpus_path = candidate.display().to_string();
                 break;
             }
         }
@@ -488,6 +520,32 @@ async fn main() -> anyhow::Result<()> {
             match backend::open_openalex_db(path) {
                 Ok(db) => {
                     startup_info.push(format!("OpenAlex offline index loaded: {}", path.display()));
+                    Some(db)
+                }
+                Err(e) => {
+                    startup_warnings.push(format!("{e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    // Resolve local corpus path from config state
+    let local_corpus_path: Option<PathBuf> = if config_state.local_corpus_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&config_state.local_corpus_path))
+    };
+
+    // Open local corpus database if configured (fall back to None if
+    // missing or corrupt) — no online counterpart, so this is purely
+    // additive when present.
+    let local_corpus_db: Option<Arc<hallucinator_local_corpus::CorpusPool>> =
+        if let Some(ref path) = local_corpus_path {
+            match backend::open_local_corpus_db(path, config_state.num_workers) {
+                Ok(db) => {
+                    startup_info.push(format!("Local corpus loaded: {}", path.display()));
                     Some(db)
                 }
                 Err(e) => {
@@ -732,6 +790,8 @@ async fn main() -> anyhow::Result<()> {
     let mut cached_iacr_eprint_db = iacr_eprint_offline_db.clone();
     let mut cached_openalex_path = openalex_offline_path.clone();
     let mut cached_openalex_db = openalex_offline_db.clone();
+    let mut cached_local_corpus_path = local_corpus_path.clone();
+    let mut cached_local_corpus_db = local_corpus_db.clone();
     // Tracks the worker count the offline DB pools were last sized for, so a
     // num_workers change in the config screen (without a path change) still
     // triggers a resize on the next batch — otherwise workers queue behind a
@@ -812,6 +872,16 @@ async fn main() -> anyhow::Result<()> {
                         };
                     }
 
+                    // If user changed the local corpus path or worker count, (re)open it
+                    if config.local_corpus_path != cached_local_corpus_path || num_workers_changed {
+                        cached_local_corpus_path = config.local_corpus_path.clone();
+                        cached_local_corpus_db = if let Some(ref path) = cached_local_corpus_path {
+                            backend::open_local_corpus_db(path, config.num_workers).ok()
+                        } else {
+                            None
+                        };
+                    }
+
                     cached_num_workers = config.num_workers;
 
                     config.dblp_offline_path = cached_dblp_path.clone();
@@ -824,6 +894,8 @@ async fn main() -> anyhow::Result<()> {
                     config.iacr_eprint_offline_db = cached_iacr_eprint_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
+                    config.local_corpus_path = cached_local_corpus_path.clone();
+                    config.local_corpus_db = cached_local_corpus_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
 
                     let tx = event_tx_for_backend.clone();
@@ -850,6 +922,8 @@ async fn main() -> anyhow::Result<()> {
                     config.iacr_eprint_offline_db = cached_iacr_eprint_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
+                    config.local_corpus_path = cached_local_corpus_path.clone();
+                    config.local_corpus_db = cached_local_corpus_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
 
                     let tx = event_tx_for_backend.clone();

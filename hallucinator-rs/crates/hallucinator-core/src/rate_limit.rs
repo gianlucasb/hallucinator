@@ -450,13 +450,28 @@ pub async fn query_with_retry(
         rate_limiters,
         _max_retries,
         cache,
+        None,
+        None,
     )
     .await
 }
 
 /// Variant of [`query_with_retry`] that forwards the citation's authors so
 /// that backends supporting author-aware tie-breaking (DBLP) can pick the
-/// right record when several share a title.
+/// right record when several share a title, plus (optionally) the DOI /
+/// arXiv ID contexts that let a backend try its fast, precise
+/// [`DatabaseBackend::query_doi`] / [`DatabaseBackend::query_arxiv_id`]
+/// lookup before falling back to fuzzy title search.
+///
+/// Passing `None` for both silently degrades to title-search-only — the
+/// bug this fixed (see git history) was exactly that: callers reaching
+/// this function via [`crate::orchestrator::query_local_databases`] /
+/// [`crate::orchestrator::query_remote_databases`] used to hardcode
+/// `None, None` unconditionally, so the offline arXiv backend's
+/// `query_arxiv_id` fast path — which resolves a citation like
+/// `"Poc-gym: ..." arXiv:2602.04165` even when the indexed title differs
+/// enough to break FTS candidate retrieval (e.g. a hyphen the FTS5
+/// tokenizer treats as a word boundary) — was never reached.
 #[allow(clippy::too_many_arguments)]
 pub async fn query_with_retry_with_authors(
     db: &dyn DatabaseBackend,
@@ -467,6 +482,8 @@ pub async fn query_with_retry_with_authors(
     rate_limiters: &RateLimiters,
     _max_retries: u32,
     cache: Option<&QueryCache>,
+    doi_context: Option<&DoiContext<'_>>,
+    arxiv_id_context: Option<&ArxivIdContext<'_>>,
 ) -> RateLimitedResult {
     query_with_rate_limit(
         db,
@@ -476,8 +493,8 @@ pub async fn query_with_retry_with_authors(
         timeout,
         rate_limiters,
         cache,
-        None,
-        None,
+        doi_context,
+        arxiv_id_context,
     )
     .await
 }
@@ -930,5 +947,97 @@ mod tests {
         .await;
         assert!(rl_result.result.is_err());
         assert!(cache.is_empty()); // errors not cached
+    }
+
+    // ── arxiv_id_context / doi_context threading (regression) ──────────
+    //
+    // Bug history: `query_local_databases` / `query_remote_databases` in
+    // `orchestrator.rs` used to call `query_with_retry_with_authors` with
+    // no way to pass a DOI/arXiv-ID context at all, so `execute_query`
+    // always fell straight to the generic title search — the offline
+    // arXiv backend's `query_arxiv_id` fast path (which resolves a
+    // citation via its arXiv ID even when the indexed title differs just
+    // enough to break FTS candidate retrieval) was silently unreachable
+    // for every local backend, and for every backend reached via the
+    // single-reference `query_all_databases` convenience wrapper.
+
+    #[tokio::test]
+    async fn arxiv_id_context_present_uses_id_lookup_even_when_title_search_would_miss() {
+        // Title search always misses; only the ID lookup succeeds — proves
+        // `execute_query` actually tries `query_arxiv_id` first when given
+        // a context, rather than going straight to title search.
+        let db = MockDb::new("arXiv", MockResponse::NotFound).with_arxiv_id_response(
+            "1234.56789",
+            MockResponse::Found {
+                title: "The Real Title".into(),
+                authors: vec!["A. Author".into()],
+                url: Some("https://arxiv.org/abs/1234.56789".into()),
+            },
+        );
+        let client = reqwest::Client::new();
+        let limiters = RateLimiters::new(false, false);
+        let ctx = ArxivIdContext {
+            arxiv_id: "1234.56789",
+            authors: &[],
+        };
+
+        let rl_result = query_with_retry_with_authors(
+            &db,
+            "A Differently-Worded Title",
+            &[],
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            0,
+            None,
+            None,
+            Some(&ctx),
+        )
+        .await;
+
+        let result = rl_result.result.expect("query should not error");
+        assert_eq!(
+            result.found_title.as_deref(),
+            Some("The Real Title"),
+            "expected the ID lookup to find a match"
+        );
+    }
+
+    #[tokio::test]
+    async fn arxiv_id_context_absent_falls_back_to_title_search_only() {
+        // Same mock as above, but with no context passed — must NOT find
+        // the record via ID (since `execute_query` never got the ID),
+        // confirming the previous test's Found result is actually caused
+        // by the context and not some other path.
+        let db = MockDb::new("arXiv", MockResponse::NotFound).with_arxiv_id_response(
+            "1234.56789",
+            MockResponse::Found {
+                title: "The Real Title".into(),
+                authors: vec!["A. Author".into()],
+                url: None,
+            },
+        );
+        let client = reqwest::Client::new();
+        let limiters = RateLimiters::new(false, false);
+
+        let rl_result = query_with_retry_with_authors(
+            &db,
+            "A Differently-Worded Title",
+            &[],
+            &client,
+            Duration::from_secs(10),
+            &limiters,
+            0,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let result = rl_result.result.expect("query should not error");
+        assert!(
+            result.found_title.is_none(),
+            "no context means no ID lookup attempt"
+        );
     }
 }

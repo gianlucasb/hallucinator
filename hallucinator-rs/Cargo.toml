@@ -10,6 +10,7 @@ members = [
     "crates/hallucinator-arxiv-offline",
     "crates/hallucinator-iacr-eprint",
     "crates/hallucinator-openalex",
+    "crates/hallucinator-local-corpus",
     "crates/hallucinator-ingest",
     "crates/hallucinator-cli",
     "crates/hallucinator-tui",
@@ -44,6 +45,7 @@ hallucinator-acl = { path = "crates/hallucinator-acl" }
 hallucinator-arxiv-offline = { path = "crates/hallucinator-arxiv-offline" }
 hallucinator-iacr-eprint = { path = "crates/hallucinator-iacr-eprint" }
 hallucinator-openalex = { path = "crates/hallucinator-openalex" }
+hallucinator-local-corpus = { path = "crates/hallucinator-local-corpus" }
 hallucinator-ingest = { path = "crates/hallucinator-ingest" }
 hallucinator-reporting = { path = "crates/hallucinator-reporting" }
 hallucinator-scowl = { path = "crates/hallucinator-scowl" }
