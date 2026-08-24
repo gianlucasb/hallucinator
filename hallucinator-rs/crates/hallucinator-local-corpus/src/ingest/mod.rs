@@ -17,8 +17,10 @@ pub mod iclr;
 pub mod icml;
 pub mod icse;
 pub mod ieee_sp;
+pub mod infocom;
 pub mod ndss;
 pub mod neurips;
+pub mod pets;
 pub mod raid;
 pub mod report_json;
 pub mod sosp;
@@ -399,6 +401,30 @@ pub async fn import_iclr(
 ) -> Result<ImportStats, CorpusError> {
     let html = fetch_html(&source).await?;
     let records = iclr::parse_papers_with_code(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a PETS/PoPETs paper-list page. `source_tag` is stored as each
+/// record's provenance, e.g. `"pets2026"`.
+pub async fn import_pets(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = pets::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an IEEE INFOCOM accepted-paper-list page. `source_tag` is
+/// stored as each record's provenance, e.g. `"infocom2026"`.
+pub async fn import_infocom(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = infocom::parse_accepted_papers(&html, source_tag);
     insert_all(conn, records)
 }
 

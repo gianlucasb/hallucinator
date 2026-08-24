@@ -693,6 +693,50 @@ enum Command {
         #[arg(long, conflicts_with = "url")]
         from_file: Option<PathBuf>,
     },
+
+    /// Import a PETS/PoPETs paper-list page into the local corpus. One
+    /// page covers every quarterly issue for the year.
+    ImportPets {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "pets2026"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://petsymposium.org/2026/paperlist.php)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import an IEEE INFOCOM accepted-paper-list page into the local
+    /// corpus.
+    ImportInfocom {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "infocom2026"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://infocom2026.ieee-infocom.org/accepted-paper-list-main-conference)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -882,6 +926,18 @@ async fn main() -> anyhow::Result<()> {
             url,
             from_file,
         } => import_iclr(&corpus, &source_tag, url, from_file).await,
+        Command::ImportPets {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_pets(&corpus, &source_tag, url, from_file).await,
+        Command::ImportInfocom {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_infocom(&corpus, &source_tag, url, from_file).await,
         Command::Check {
             file_path,
             no_color,
@@ -3433,6 +3489,46 @@ async fn import_iclr(
     let conn = hallucinator_local_corpus::open_or_create(corpus_path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let stats = hallucinator_local_corpus::ingest::import_iclr(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a PETS/PoPETs paper-list page into the local corpus.
+async fn import_pets(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_pets(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import an IEEE INFOCOM accepted-paper-list page into the local corpus.
+async fn import_infocom(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_infocom(&conn, source, source_tag)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     print_import_stats(&stats);
