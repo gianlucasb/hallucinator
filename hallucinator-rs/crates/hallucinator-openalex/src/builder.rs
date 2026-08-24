@@ -402,8 +402,24 @@ pub async fn build(
         .unwrap_or_default()
         .as_secs();
 
-    let total_in_index =
-        existing_meta.and_then(|m| m.publication_count).unwrap_or(0) + total_records;
+    // Read the real post-dedup doc count from the index itself rather than
+    // adding this run's record count onto the old stored count. Every
+    // upsert here does `delete_term` + `add_document` on `openalex_id`, so
+    // re-processing an already-indexed work (routine on any incremental
+    // update, and near-universal on a full historical rebuild) does not
+    // create a second document — but naively summing old + new here would
+    // count it as if it had, badly inflating the figure over time.
+    let total_in_index = {
+        let reader = index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|e: tantivy::TantivyError| OpenAlexError::Index(e.to_string()))?;
+        reader
+            .reload()
+            .map_err(|e| OpenAlexError::Index(e.to_string()))?;
+        reader.searcher().num_docs()
+    };
 
     let sync_watermark = safe_watermark(
         &ok_partition_dates,
