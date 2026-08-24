@@ -5,20 +5,36 @@
 pub mod aaai;
 pub mod acsac;
 pub mod asiaccs;
+pub mod asplos;
 pub(crate) mod author_parsing;
 pub mod blackhat;
 pub mod ccs;
+pub mod chi;
 pub mod cvf;
 pub mod defcon;
+pub(crate) mod dom_text;
+pub mod dsn;
 pub mod esorics;
 pub mod eurosp;
+pub mod eurosys;
+pub mod iclr;
+pub mod icml;
 pub mod icse;
 pub mod ieee_sp;
+pub mod imc;
+pub mod infocom;
+pub mod kdd;
 pub mod ndss;
 pub mod neurips;
+pub mod pets;
 pub mod raid;
 pub mod report_json;
+pub mod sigcomm;
+pub mod sigmod;
+pub mod sosp;
 pub mod usenix;
+pub mod vldb;
+pub mod www;
 
 use std::path::PathBuf;
 
@@ -327,6 +343,214 @@ pub async fn import_blackhat(
     // applies unchanged.
     let json = fetch_html(&source).await?;
     let records = blackhat::parse_sessions(&json, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a SOSP accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"sosp2025"`.
+pub async fn import_sosp(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = sosp::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ASPLOS program page. `source_tag` is stored as each
+/// record's provenance, e.g. `"asplos2026"`.
+pub async fn import_asplos(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = asplos::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ISCA program page. `source_tag` is stored as each record's
+/// provenance, e.g. `"isca2026"`.
+///
+/// ISCA's `iscaconf.org` program page uses the exact same
+/// `div.paper`/`div.paper-title`/`div.paper-authors` markup as ASPLOS's
+/// site — evidently a shared conference-site template across systems/
+/// architecture venues — so this reuses [`asplos::parse_accepted_papers`]
+/// directly rather than duplicating it, the same way NSDI/OSDI reuse
+/// `import_usenix` for their shared USENIX Drupal template.
+pub async fn import_isca(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = asplos::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ICML PMLR volume page. `source_tag` is stored as each
+/// record's provenance, e.g. `"icml2026"`.
+pub async fn import_icml(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = icml::parse_volume(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a Paper Digest "<Venue> Papers with Code & Data" page — built
+/// for ICLR, whose own sources are all unusable (see `iclr` module docs).
+/// `source_tag` is stored as each record's provenance, e.g. `"iclr2026"`.
+pub async fn import_iclr(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = iclr::parse_papers_with_code(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a PETS/PoPETs paper-list page. `source_tag` is stored as each
+/// record's provenance, e.g. `"pets2026"`.
+pub async fn import_pets(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = pets::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an IEEE INFOCOM accepted-paper-list page. `source_tag` is
+/// stored as each record's provenance, e.g. `"infocom2026"`.
+pub async fn import_infocom(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = infocom::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import ACM SIGCOMM's accepted-papers page. `source_tag` is stored as
+/// each record's provenance, e.g. `"sigcomm2026"`.
+pub async fn import_sigcomm(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = sigcomm::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import ACM IMC's accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"imc2026"`.
+pub async fn import_imc(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = imc::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a DSN accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"dsn2026"`.
+pub async fn import_dsn(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = dsn::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a EuroSys accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"eurosys2026"`.
+pub async fn import_eurosys(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = eurosys::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a SIGMOD accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"sigmod2026"`.
+pub async fn import_sigmod(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = sigmod::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a WWW ("The Web Conference") accepted-papers track page.
+/// `source_tag` is stored as each record's provenance, e.g. `"www2026"`.
+/// Separate pages exist per track (research/industry/short-papers/...) —
+/// run once per page you want indexed.
+pub async fn import_www(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = www::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a KDD accepted-papers page (parsing its embedded JS data, not
+/// its HTML). `source_tag` is stored as each record's provenance, e.g.
+/// `"kdd2026"`.
+pub async fn import_kdd(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = kdd::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a CHI (or any ACM-DL-front-matter-formatted) proceedings
+/// front-matter PDF, given its already-extracted text — the CLI layer
+/// does the actual PDF extraction (see the `chi` module docs for why:
+/// keeping this crate free of the AGPL `mupdf` dependency). No network
+/// access, so unlike every other importer here this isn't `async`.
+/// `source_tag` is stored as each record's provenance, e.g. `"chi2026"`.
+pub fn import_chi_frontmatter(
+    conn: &Connection,
+    text: &str,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let records = chi::parse_frontmatter(text, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a PVLDB issue's front-matter PDF table of contents, given its
+/// already-extracted text (see the `chi` module docs for why PDF
+/// extraction stays out of this crate). No network access, so this
+/// isn't `async`. `source_tag` is stored as each record's provenance,
+/// e.g. `"vldb2026-v19n9"` — call once per issue you want indexed.
+pub fn import_vldb_toc(
+    conn: &Connection,
+    text: &str,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let records = vldb::parse_table_of_contents(text, source_tag);
     insert_all(conn, records)
 }
 

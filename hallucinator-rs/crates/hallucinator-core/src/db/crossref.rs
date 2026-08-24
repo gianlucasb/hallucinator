@@ -76,30 +76,32 @@ impl DatabaseBackend for CrossRef {
                         .and_then(|a| a.first())
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
+                    let item_subtype = item["subtype"].as_str().unwrap_or("");
 
-                    // Detect review articles: type is "journal-article" but the
-                    // found title is short (book title) and container looks like a
-                    // review journal, or the item has a "relation.is-review-of" field
-                    let is_review =
-                        item["relation"]["is-review-of"].is_array() || item_type == "peer-review";
+                    // Detect review articles: explicit CrossRef relation, "peer-review"
+                    // type, or "review-article" subtype.
+                    let is_review = item["relation"]["is-review-of"].is_array()
+                        || item_type == "peer-review"
+                        || item_subtype == "review-article";
 
-                    // Detect when a journal article matches a book title query.
-                    // CrossRef returns these when someone reviewed the book in a journal.
-                    // Heuristic: if found_title closely matches query but the item is a
-                    // journal-article and the container-title doesn't match at all,
-                    // it's likely a review article about the queried book.
-                    let is_likely_book_review =
-                        item_type == "journal-article" && !item_container.is_empty() && {
-                            // Check if the container title is a journal (review source)
-                            // while the query looks like a book title (no journal-like words)
-                            let query_lower = title.to_lowercase();
-                            !query_lower.contains("journal")
-                                && !query_lower.contains("transactions")
-                                && !query_lower.contains("proceedings")
-                                && !query_lower.contains("conference")
-                        };
+                    // Detect book reviews CrossRef doesn't tag via the relation above:
+                    // these still show up as plain "journal-article" items, but the
+                    // *returned* title or container announces it's a review (e.g.
+                    // "Review of ...", container "Book Reviews"). We only trust signals
+                    // on the matched item here, never on the query title's wording — a
+                    // prior version of this check flagged any short journal-article
+                    // title lacking words like "journal"/"transactions" as "likely a
+                    // book review", which wrongly discarded real short-titled papers
+                    // (e.g. IEEE Transactions articles) that happened to match.
+                    let found_title_lower = found_title.to_lowercase();
+                    let container_lower = item_container.to_lowercase();
+                    let is_likely_book_review = item_type == "journal-article"
+                        && (found_title_lower.starts_with("review of ")
+                            || found_title_lower.starts_with("book review")
+                            || found_title_lower.contains(": review of ")
+                            || container_lower.contains("book review"));
 
-                    if is_review {
+                    if is_review || is_likely_book_review {
                         continue;
                     }
 
@@ -121,20 +123,6 @@ impl DatabaseBackend for CrossRef {
                     // causes false AuthorMismatch when we can't verify authors
                     if authors.is_empty() {
                         continue;
-                    }
-
-                    // For likely book reviews: if authors don't match, skip this
-                    // result and let other DBs try. Only flag mismatch if it's
-                    // NOT a likely book review.
-                    if is_likely_book_review {
-                        // Import is at the crate level via `use crate::authors::validate_authors`
-                        // but we're inside an async block. We do a quick check here:
-                        // if the query has ≤8 words (short title, likely a book), skip
-                        // this result entirely to avoid book-review false matches.
-                        let word_count = title.split_whitespace().count();
-                        if word_count <= 8 {
-                            continue;
-                        }
                     }
 
                     let doi = item["DOI"].as_str();

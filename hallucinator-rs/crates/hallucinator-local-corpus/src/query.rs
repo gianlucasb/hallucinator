@@ -50,6 +50,23 @@ fn get_query_words(title: &str) -> Vec<String> {
         .collect()
 }
 
+/// Quote a single word for safe use inside an FTS5 MATCH query string.
+///
+/// `get_query_words` keeps internal hyphens/apostrophes as part of one
+/// token (e.g. "Branch-Guided" -> `branch-guided`), but FTS5's own query
+/// mini-language treats bareword `-` as an operator character — an
+/// unquoted term like `branch-guided` fails to parse as the literal token
+/// and errors out instead of matching. That error was silently swallowed
+/// by `fts_match`'s `.filter_map(|r| r.ok())`, making a query containing
+/// any hyphenated word look like "zero candidates" instead of a query
+/// syntax error — a real, silent false-negative bug (confirmed: FTS5
+/// happily finds "Bulbasaur: Branch-Guided ..." via `MATCH 'bulbasaur AND
+/// "branch-guided"'` but errors on the unquoted form). Wrapping each term
+/// in double quotes makes FTS5 treat it as a literal string instead.
+fn quote_fts_term(word: &str) -> String {
+    format!("\"{}\"", word.replace('"', "\"\""))
+}
+
 /// Query the FTS5 index for a title, returning the best match above the threshold.
 ///
 /// Three-tier fallback (mirrors `hallucinator_dblp::query::query_fts_with_authors`):
@@ -79,14 +96,22 @@ pub fn query_fts(
         return Ok(None);
     }
 
-    let fts_query = words.join(" ");
+    let fts_query = words
+        .iter()
+        .map(|w| quote_fts_term(w))
+        .collect::<Vec<_>>()
+        .join(" ");
     let result = fts_match(conn, &fts_query, &norm_query, threshold)?;
     if result.is_some() {
         return Ok(result);
     }
 
     if words.len() > 3 {
-        let fallback_query = words[..3].join(" ");
+        let fallback_query = words[..3]
+            .iter()
+            .map(|w| quote_fts_term(w))
+            .collect::<Vec<_>>()
+            .join(" ");
         let result = fts_match(conn, &fallback_query, &norm_query, threshold)?;
         if result.is_some() {
             return Ok(result);
@@ -96,7 +121,11 @@ pub fn query_fts(
     if words.len() >= 2 {
         let take = words.len().min(4);
         let or_words = select_or_fallback_words(conn, &words, take);
-        let or_query = or_words.join(" OR ");
+        let or_query = or_words
+            .iter()
+            .map(|w| quote_fts_term(w))
+            .collect::<Vec<_>>()
+            .join(" OR ");
         return fts_match(conn, &or_query, &norm_query, threshold);
     }
 
@@ -332,6 +361,47 @@ mod tests {
         let conn = setup_db_with_data();
         let result = query_fts(&conn, "", DEFAULT_THRESHOLD).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_hyphenated_word_in_title_does_not_break_the_query() {
+        // Regression: FTS5's bareword query parser treats an unquoted
+        // internal `-` as an operator character, so a query word like
+        // "branch-guided" (kept as one token by `get_query_words` because
+        // WORD_RE treats hyphens as word-internal) failed to parse at all
+        // when joined unquoted into the MATCH string — and that parse
+        // error was silently swallowed by `fts_match`'s
+        // `.filter_map(|r| r.ok())`, making a real, indexed title look
+        // like "zero candidates". Confirmed against production data:
+        // "Bulbasaur: Branch-Guided Online Mutator Generation for Greybox
+        // Fuzzing" (real USENIX Security 2026 paper) was unfindable via
+        // `CorpusPool::query` despite `MATCH 'bulbasaur'` finding it
+        // trivially at the raw SQL level.
+        let conn = Connection::open_in_memory().unwrap();
+        db::init_database(&conn).unwrap();
+        db::insert_publication(
+            &conn,
+            &db::NewPublication {
+                title: "Bulbasaur: Branch-Guided Online Mutator Generation for Greybox Fuzzing"
+                    .to_string(),
+                authors: vec!["A. Researcher".to_string()],
+                url: None,
+                source: "usenix2026".to_string(),
+            },
+        )
+        .unwrap();
+
+        let result = query_fts(
+            &conn,
+            "Bulbasaur: Branch-Guided Online Mutator Generation for Greybox Fuzzing",
+            DEFAULT_THRESHOLD,
+        )
+        .unwrap();
+        assert!(
+            result.is_some(),
+            "a title containing a hyphenated word must still be found, not silently dropped"
+        );
+        assert_eq!(result.unwrap().score, 1.0);
     }
 
     #[test]
