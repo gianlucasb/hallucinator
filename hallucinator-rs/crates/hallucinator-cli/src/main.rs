@@ -665,6 +665,34 @@ enum Command {
         #[arg(long, conflicts_with = "url")]
         from_file: Option<PathBuf>,
     },
+
+    /// Import a Paper Digest "<Venue> Papers with Code & Data" page into
+    /// the local corpus. Built for ICLR, whose own sources are all
+    /// unusable (OpenReview's clean endpoint 403s behind a challenge and
+    /// its open endpoint leaks review content; ICLR's own site needs
+    /// ~5,500 per-paper fetches and disallows GPTBot from that path;
+    /// Papers With Code no longer exists). Only covers accepted papers
+    /// with an associated public code/data repo — a real but incomplete
+    /// subset of the full accepted list.
+    ImportIclr {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "iclr2026"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://www.paperdigest.org/2026/04/iclr-2026-papers-with-code-data/)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -848,6 +876,12 @@ async fn main() -> anyhow::Result<()> {
             url,
             from_file,
         } => import_icml(&corpus, &source_tag, url, from_file).await,
+        Command::ImportIclr {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_iclr(&corpus, &source_tag, url, from_file).await,
         Command::Check {
             file_path,
             no_color,
@@ -3378,6 +3412,27 @@ async fn import_icml(
     let conn = hallucinator_local_corpus::open_or_create(corpus_path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let stats = hallucinator_local_corpus::ingest::import_icml(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a Paper Digest "papers with code & data" page into the local
+/// corpus.
+async fn import_iclr(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_iclr(&conn, source, source_tag)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     print_import_stats(&stats);

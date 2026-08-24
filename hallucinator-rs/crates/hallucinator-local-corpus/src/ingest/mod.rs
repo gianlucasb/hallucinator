@@ -13,6 +13,7 @@ pub mod cvf;
 pub mod defcon;
 pub mod esorics;
 pub mod eurosp;
+pub mod iclr;
 pub mod icml;
 pub mod icse;
 pub mod ieee_sp;
@@ -385,6 +386,19 @@ pub async fn import_icml(
 ) -> Result<ImportStats, CorpusError> {
     let html = fetch_html(&source).await?;
     let records = icml::parse_volume(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a Paper Digest "<Venue> Papers with Code & Data" page — built
+/// for ICLR, whose own sources are all unusable (see `iclr` module docs).
+/// `source_tag` is stored as each record's provenance, e.g. `"iclr2026"`.
+pub async fn import_iclr(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = iclr::parse_papers_with_code(&html, source_tag);
     insert_all(conn, records)
 }
 
