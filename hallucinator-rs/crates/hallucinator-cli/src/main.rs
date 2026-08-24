@@ -575,6 +575,96 @@ enum Command {
         #[arg(long, conflicts_with = "url")]
         from_file: Option<PathBuf>,
     },
+
+    /// Import a SOSP (ACM SIGOPS Symposium on Operating Systems
+    /// Principles) accepted-papers page into the local corpus.
+    ImportSosp {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "sosp2025"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://sigops.org/s/conferences/sosp/2025/accepted.html)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import an ASPLOS program page into the local corpus.
+    ImportAsplos {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "asplos2026"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://www.asplos-conference.org/asplos2026/program/index.html)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import an ISCA program page into the local corpus. Reuses the
+    /// ASPLOS parser — same underlying page template.
+    ImportIsca {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "isca2026"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://iscaconf.org/isca2026/program/index.php)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import an ICML `proceedings.mlr.press` volume page into the local
+    /// corpus. Only exists once PMLR publishes that year's volume
+    /// (weeks after the conference, same lag as NeurIPS) — check
+    /// https://proceedings.mlr.press/ for the current "Proceedings of
+    /// ICML <year>" volume number first.
+    ImportIcml {
+        /// Path to the local corpus SQLite database (created if missing)
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Provenance tag stored on each record, e.g. "icml2026"
+        #[arg(long)]
+        source_tag: String,
+
+        /// Fetch live from this URL (e.g.
+        /// https://proceedings.mlr.press/v267/)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+
+        /// Parse an already-downloaded copy of the page instead of
+        /// fetching live.
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -734,6 +824,30 @@ async fn main() -> anyhow::Result<()> {
             url,
             from_file,
         } => import_eurosp(&corpus, &source_tag, url, from_file).await,
+        Command::ImportSosp {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_sosp(&corpus, &source_tag, url, from_file).await,
+        Command::ImportAsplos {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_asplos(&corpus, &source_tag, url, from_file).await,
+        Command::ImportIsca {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_isca(&corpus, &source_tag, url, from_file).await,
+        Command::ImportIcml {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_icml(&corpus, &source_tag, url, from_file).await,
         Command::Check {
             file_path,
             no_color,
@@ -3184,6 +3298,86 @@ async fn import_eurosp(
     let conn = hallucinator_local_corpus::open_or_create(corpus_path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let stats = hallucinator_local_corpus::ingest::import_eurosp(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a SOSP accepted-papers page into the local corpus.
+async fn import_sosp(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_sosp(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import an ASPLOS program page into the local corpus.
+async fn import_asplos(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_asplos(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import an ISCA program page into the local corpus.
+async fn import_isca(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_isca(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import an ICML PMLR volume page into the local corpus.
+async fn import_icml(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_icml(&conn, source, source_tag)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     print_import_stats(&stats);

@@ -5,6 +5,7 @@
 pub mod aaai;
 pub mod acsac;
 pub mod asiaccs;
+pub mod asplos;
 pub(crate) mod author_parsing;
 pub mod blackhat;
 pub mod ccs;
@@ -12,12 +13,14 @@ pub mod cvf;
 pub mod defcon;
 pub mod esorics;
 pub mod eurosp;
+pub mod icml;
 pub mod icse;
 pub mod ieee_sp;
 pub mod ndss;
 pub mod neurips;
 pub mod raid;
 pub mod report_json;
+pub mod sosp;
 pub mod usenix;
 
 use std::path::PathBuf;
@@ -327,6 +330,61 @@ pub async fn import_blackhat(
     // applies unchanged.
     let json = fetch_html(&source).await?;
     let records = blackhat::parse_sessions(&json, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a SOSP accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"sosp2025"`.
+pub async fn import_sosp(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = sosp::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ASPLOS program page. `source_tag` is stored as each
+/// record's provenance, e.g. `"asplos2026"`.
+pub async fn import_asplos(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = asplos::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ISCA program page. `source_tag` is stored as each record's
+/// provenance, e.g. `"isca2026"`.
+///
+/// ISCA's `iscaconf.org` program page uses the exact same
+/// `div.paper`/`div.paper-title`/`div.paper-authors` markup as ASPLOS's
+/// site — evidently a shared conference-site template across systems/
+/// architecture venues — so this reuses [`asplos::parse_accepted_papers`]
+/// directly rather than duplicating it, the same way NSDI/OSDI reuse
+/// `import_usenix` for their shared USENIX Drupal template.
+pub async fn import_isca(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = asplos::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import an ICML PMLR volume page. `source_tag` is stored as each
+/// record's provenance, e.g. `"icml2026"`.
+pub async fn import_icml(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = icml::parse_volume(&html, source_tag);
     insert_all(conn, records)
 }
 
