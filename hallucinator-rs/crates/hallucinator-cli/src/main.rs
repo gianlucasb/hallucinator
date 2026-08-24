@@ -845,6 +845,24 @@ enum Command {
         #[arg(long, conflicts_with = "url")]
         from_file: Option<PathBuf>,
     },
+
+    /// Import CHI (or any ACM-DL-front-matter-formatted) proceedings
+    /// from its front-matter PDF's table of contents into the local
+    /// corpus. CHI's own program site has no static content to scrape
+    /// (a JS app shell) — the ACM DL front-matter PDF (freely
+    /// downloadable, no paywall, linked from the proceedings' ACM DL
+    /// page) is the only usable source.
+    ImportChi {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "chi2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Path to the downloaded front-matter PDF (e.g. a
+        /// `<id>.fm.pdf` file from the ACM DL proceedings page)
+        #[arg(long)]
+        pdf_path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -1088,6 +1106,11 @@ async fn main() -> anyhow::Result<()> {
             url,
             from_file,
         } => import_kdd(&corpus, &source_tag, url, from_file).await,
+        Command::ImportChi {
+            corpus,
+            source_tag,
+            pdf_path,
+        } => import_chi(&corpus, &source_tag, &pdf_path),
         Command::Check {
             file_path,
             no_color,
@@ -3800,6 +3823,26 @@ async fn import_www(
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let stats = hallucinator_local_corpus::ingest::import_www(&conn, source, source_tag)
         .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import CHI (or any ACM-DL-front-matter-formatted) proceedings from
+/// its front-matter PDF into the local corpus. Not `async` — no network
+/// access, just local PDF text extraction + parsing.
+fn import_chi(corpus_path: &Path, source_tag: &str, pdf_path: &Path) -> anyhow::Result<()> {
+    use hallucinator_core::PdfBackend as _;
+    let text = hallucinator_pdf_mupdf::MupdfBackend
+        .extract_text(pdf_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_chi_frontmatter(&conn, &text, source_tag)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     print_import_stats(&stats);
     let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)

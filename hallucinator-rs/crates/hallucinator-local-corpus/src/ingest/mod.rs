@@ -9,6 +9,7 @@ pub mod asplos;
 pub(crate) mod author_parsing;
 pub mod blackhat;
 pub mod ccs;
+pub mod chi;
 pub mod cvf;
 pub mod defcon;
 pub(crate) mod dom_text;
@@ -520,6 +521,21 @@ pub async fn import_kdd(
 ) -> Result<ImportStats, CorpusError> {
     let html = fetch_html(&source).await?;
     let records = kdd::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a CHI (or any ACM-DL-front-matter-formatted) proceedings
+/// front-matter PDF, given its already-extracted text — the CLI layer
+/// does the actual PDF extraction (see the `chi` module docs for why:
+/// keeping this crate free of the AGPL `mupdf` dependency). No network
+/// access, so unlike every other importer here this isn't `async`.
+/// `source_tag` is stored as each record's provenance, e.g. `"chi2026"`.
+pub fn import_chi_frontmatter(
+    conn: &Connection,
+    text: &str,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let records = chi::parse_frontmatter(text, source_tag);
     insert_all(conn, records)
 }
 
