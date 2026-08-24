@@ -12,11 +12,11 @@
 //! `"Name (Affiliation), Name (Affiliation), and Name (Affiliation)"` —
 //! the same shape [`parse_paren_grouped_names`] already handles.
 
-use scraper::{ElementRef, Selector};
-use std::ops::Deref;
+use scraper::Selector;
 
 use crate::db::NewPublication;
 use crate::ingest::author_parsing::parse_paren_grouped_names;
+use crate::ingest::dom_text::direct_text;
 
 /// Parse a PETS/PoPETs paper-list page into publication records.
 ///
@@ -51,16 +51,6 @@ pub fn parse_accepted_papers(html: &str, source_tag: &str) -> Vec<NewPublication
         });
     }
     out
-}
-
-/// Collect only an element's own direct text-node children (not text from
-/// nested elements), concatenated and trimmed.
-fn direct_text(el: &ElementRef) -> String {
-    el.children()
-        .filter_map(|child| child.value().as_text().map(|t| t.deref()))
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 #[cfg(test)]

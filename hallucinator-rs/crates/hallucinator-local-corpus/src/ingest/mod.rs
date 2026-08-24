@@ -11,20 +11,28 @@ pub mod blackhat;
 pub mod ccs;
 pub mod cvf;
 pub mod defcon;
+pub(crate) mod dom_text;
+pub mod dsn;
 pub mod esorics;
 pub mod eurosp;
+pub mod eurosys;
 pub mod iclr;
 pub mod icml;
 pub mod icse;
 pub mod ieee_sp;
+pub mod imc;
 pub mod infocom;
+pub mod kdd;
 pub mod ndss;
 pub mod neurips;
 pub mod pets;
 pub mod raid;
 pub mod report_json;
+pub mod sigcomm;
+pub mod sigmod;
 pub mod sosp;
 pub mod usenix;
+pub mod www;
 
 use std::path::PathBuf;
 
@@ -425,6 +433,93 @@ pub async fn import_infocom(
 ) -> Result<ImportStats, CorpusError> {
     let html = fetch_html(&source).await?;
     let records = infocom::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import ACM SIGCOMM's accepted-papers page. `source_tag` is stored as
+/// each record's provenance, e.g. `"sigcomm2026"`.
+pub async fn import_sigcomm(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = sigcomm::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import ACM IMC's accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"imc2026"`.
+pub async fn import_imc(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = imc::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a DSN accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"dsn2026"`.
+pub async fn import_dsn(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = dsn::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a EuroSys accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"eurosys2026"`.
+pub async fn import_eurosys(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = eurosys::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a SIGMOD accepted-papers page. `source_tag` is stored as each
+/// record's provenance, e.g. `"sigmod2026"`.
+pub async fn import_sigmod(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = sigmod::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a WWW ("The Web Conference") accepted-papers track page.
+/// `source_tag` is stored as each record's provenance, e.g. `"www2026"`.
+/// Separate pages exist per track (research/industry/short-papers/...) —
+/// run once per page you want indexed.
+pub async fn import_www(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = www::parse_accepted_papers(&html, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a KDD accepted-papers page (parsing its embedded JS data, not
+/// its HTML). `source_tag` is stored as each record's provenance, e.g.
+/// `"kdd2026"`.
+pub async fn import_kdd(
+    conn: &Connection,
+    source: HtmlSource,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let html = fetch_html(&source).await?;
+    let records = kdd::parse_accepted_papers(&html, source_tag);
     insert_all(conn, records)
 }
 

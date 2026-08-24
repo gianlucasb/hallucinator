@@ -737,6 +737,114 @@ enum Command {
         #[arg(long, conflicts_with = "url")]
         from_file: Option<PathBuf>,
     },
+
+    /// Import ACM SIGCOMM's accepted-papers page into the local corpus.
+    ImportSigcomm {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "sigcomm2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Fetch live from this URL (e.g.
+        /// https://conferences.sigcomm.org/sigcomm/2026/accepted-papers/)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import ACM IMC's accepted-papers page into the local corpus.
+    ImportImc {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "imc2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Fetch live from this URL (e.g.
+        /// https://conferences.sigcomm.org/imc/2026/accepted-papers/)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import a DSN accepted-papers page into the local corpus.
+    ImportDsn {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "dsn2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Fetch live from this URL (e.g.
+        /// https://dsn2026.github.io/cpaccepted.html)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import a EuroSys accepted-papers page into the local corpus.
+    ImportEurosys {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "eurosys2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Fetch live from this URL (e.g.
+        /// https://2026.eurosys.org/papers.html)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import a SIGMOD accepted-papers page into the local corpus.
+    ImportSigmod {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "sigmod2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Fetch live from this URL (e.g.
+        /// https://2026.sigmod.org/sigmod_papers.shtml)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import a WWW ("The Web Conference") accepted-papers track page
+    /// into the local corpus. Separate pages exist per track — run once
+    /// per page you want indexed.
+    ImportWww {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "www2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Fetch live from this URL (e.g.
+        /// https://www2026.thewebconf.org/accepted/research-tracks.html)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
+
+    /// Import a KDD accepted-papers page into the local corpus (parses
+    /// embedded JS data, not HTML — see the `kdd` ingest module).
+    ImportKdd {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "kdd2026"
+        #[arg(long)]
+        source_tag: String,
+        /// Fetch live from this URL (e.g.
+        /// https://kdd2026.kdd.org/papers/)
+        #[arg(long, conflicts_with = "from_file")]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "url")]
+        from_file: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -938,6 +1046,48 @@ async fn main() -> anyhow::Result<()> {
             url,
             from_file,
         } => import_infocom(&corpus, &source_tag, url, from_file).await,
+        Command::ImportSigcomm {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_sigcomm(&corpus, &source_tag, url, from_file).await,
+        Command::ImportImc {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_imc(&corpus, &source_tag, url, from_file).await,
+        Command::ImportDsn {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_dsn(&corpus, &source_tag, url, from_file).await,
+        Command::ImportEurosys {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_eurosys(&corpus, &source_tag, url, from_file).await,
+        Command::ImportSigmod {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_sigmod(&corpus, &source_tag, url, from_file).await,
+        Command::ImportWww {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_www(&corpus, &source_tag, url, from_file).await,
+        Command::ImportKdd {
+            corpus,
+            source_tag,
+            url,
+            from_file,
+        } => import_kdd(&corpus, &source_tag, url, from_file).await,
         Command::Check {
             file_path,
             no_color,
@@ -3529,6 +3679,146 @@ async fn import_infocom(
     let conn = hallucinator_local_corpus::open_or_create(corpus_path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let stats = hallucinator_local_corpus::ingest::import_infocom(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import an ACM SIGCOMM accepted-papers page into the local corpus.
+async fn import_sigcomm(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_sigcomm(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import an ACM IMC accepted-papers page into the local corpus.
+async fn import_imc(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_imc(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a DSN accepted-papers page into the local corpus.
+async fn import_dsn(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_dsn(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a EuroSys accepted-papers page into the local corpus.
+async fn import_eurosys(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_eurosys(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a SIGMOD accepted-papers page into the local corpus.
+async fn import_sigmod(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_sigmod(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a WWW accepted-papers track page into the local corpus.
+async fn import_www(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_www(&conn, source, source_tag)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a KDD accepted-papers page into the local corpus.
+async fn import_kdd(
+    corpus_path: &Path,
+    source_tag: &str,
+    url: Option<String>,
+    from_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let source = resolve_html_source(url, from_file)?;
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_kdd(&conn, source, source_tag)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     print_import_stats(&stats);
