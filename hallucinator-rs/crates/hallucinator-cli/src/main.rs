@@ -863,6 +863,22 @@ enum Command {
         #[arg(long)]
         pdf_path: PathBuf,
     },
+
+    /// Import a PVLDB issue's front-matter PDF (its table of contents)
+    /// into the local corpus. PVLDB publishes monthly with no single
+    /// consolidated "accepted papers" page — run once per issue you
+    /// want indexed (the front-matter PDF is freely downloadable, no
+    /// paywall, from dl.acm.org/journal/pvldb or pvldb.org).
+    ImportVldb {
+        #[arg(long)]
+        corpus: PathBuf,
+        /// Provenance tag stored on each record, e.g. "vldb2026-v19n9"
+        #[arg(long)]
+        source_tag: String,
+        /// Path to the downloaded issue front-matter PDF
+        #[arg(long)]
+        pdf_path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -1111,6 +1127,11 @@ async fn main() -> anyhow::Result<()> {
             source_tag,
             pdf_path,
         } => import_chi(&corpus, &source_tag, &pdf_path),
+        Command::ImportVldb {
+            corpus,
+            source_tag,
+            pdf_path,
+        } => import_vldb(&corpus, &source_tag, &pdf_path),
         Command::Check {
             file_path,
             no_color,
@@ -3843,6 +3864,25 @@ fn import_chi(corpus_path: &Path, source_tag: &str, pdf_path: &Path) -> anyhow::
     let conn = hallucinator_local_corpus::open_or_create(corpus_path)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let stats = hallucinator_local_corpus::ingest::import_chi_frontmatter(&conn, &text, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    print_import_stats(&stats);
+    let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Corpus now has {total_for_tag} publications tagged \"{source_tag}\"");
+    Ok(())
+}
+
+/// Import a PVLDB issue's front-matter PDF into the local corpus. Not
+/// `async` — no network access, just local PDF text extraction + parsing.
+fn import_vldb(corpus_path: &Path, source_tag: &str, pdf_path: &Path) -> anyhow::Result<()> {
+    use hallucinator_core::PdfBackend as _;
+    let text = hallucinator_pdf_mupdf::MupdfBackend
+        .extract_text(pdf_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let conn = hallucinator_local_corpus::open_or_create(corpus_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stats = hallucinator_local_corpus::ingest::import_vldb_toc(&conn, &text, source_tag)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     print_import_stats(&stats);
     let total_for_tag = hallucinator_local_corpus::count_by_source(&conn, source_tag)

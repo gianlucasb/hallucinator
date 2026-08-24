@@ -33,6 +33,7 @@ pub mod sigcomm;
 pub mod sigmod;
 pub mod sosp;
 pub mod usenix;
+pub mod vldb;
 pub mod www;
 
 use std::path::PathBuf;
@@ -536,6 +537,20 @@ pub fn import_chi_frontmatter(
     source_tag: &str,
 ) -> Result<ImportStats, CorpusError> {
     let records = chi::parse_frontmatter(text, source_tag);
+    insert_all(conn, records)
+}
+
+/// Import a PVLDB issue's front-matter PDF table of contents, given its
+/// already-extracted text (see the `chi` module docs for why PDF
+/// extraction stays out of this crate). No network access, so this
+/// isn't `async`. `source_tag` is stored as each record's provenance,
+/// e.g. `"vldb2026-v19n9"` — call once per issue you want indexed.
+pub fn import_vldb_toc(
+    conn: &Connection,
+    text: &str,
+    source_tag: &str,
+) -> Result<ImportStats, CorpusError> {
+    let records = vldb::parse_table_of_contents(text, source_tag);
     insert_all(conn, records)
 }
 
