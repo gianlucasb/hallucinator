@@ -112,6 +112,16 @@ enum Command {
         #[arg(long)]
         searxng: bool,
 
+        /// Force SearxNG off for this run, even if the config file's
+        /// `searxng_url` would otherwise auto-enable it. Without this flag,
+        /// a configured `searxng_url` silently enables the web-search
+        /// fallback regardless of whether `--searxng` was passed — useful
+        /// for e.g. a "local DBs only" pass that shouldn't make network
+        /// calls at all. Takes precedence over both `--searxng` and the
+        /// config file.
+        #[arg(long)]
+        no_searxng: bool,
+
         /// Cross-check references that fail all DB lookups against their
         /// raw URL via URL Check (live HTTP) and the Wayback Machine.
         /// Without this flag, a NotFound ref that still carries a
@@ -1153,6 +1163,7 @@ async fn main() -> anyhow::Result<()> {
             max_rate_limit_retries,
             dry_run,
             searxng,
+            no_searxng,
             url_match,
             cache_path,
             clear_cache,
@@ -1227,6 +1238,7 @@ async fn main() -> anyhow::Result<()> {
                     num_workers,
                     max_rate_limit_retries,
                     searxng,
+                    no_searxng,
                     url_match,
                     cache_path,
                     file_config,
@@ -1362,6 +1374,7 @@ async fn check(
     num_workers: Option<usize>,
     max_rate_limit_retries: Option<u32>,
     searxng: bool,
+    no_searxng: bool,
     url_match: bool,
     cache_path: Option<PathBuf>,
     file_config: hallucinator_core::config_file::ConfigFile,
@@ -1490,8 +1503,10 @@ async fn check(
         })
         .unwrap_or(5);
 
-    // SearxNG URL: --searxng flag > env var > config file
-    let searxng_url = if searxng {
+    // SearxNG URL: --no-searxng (forces off) > --searxng flag > env var > config file
+    let searxng_url = if no_searxng {
+        None
+    } else if searxng {
         let url = std::env::var("SEARXNG_URL")
             .ok()
             .filter(|s| !s.is_empty())
