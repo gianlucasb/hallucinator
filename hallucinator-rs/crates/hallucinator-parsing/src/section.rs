@@ -137,6 +137,22 @@ pub(crate) fn find_references_section_with_config(
                 r"Training|Baseline|Reproducibility|Limitations?|Discussion|",
                 r"Examples?|Supplementary|Survey|Questionnaire|Full|Further|",
                 r"Post-Processing|Human|Category|Scoring|Results)|",
+                // Single-letter appendix sections, general form:
+                // "A\nTitle Case Heading" or "A\nALL CAPS HEADING" —
+                // whatever the appendix's actual topic is. The curated
+                // keyword list above is always one paper behind whatever
+                // topic word it hasn't seen yet: confirmed missing
+                // "Pictorial Depiction of a Local Community Service
+                // Network" (a qualitative-research appendix title), which
+                // let 250+ appendix bullet points and paragraphs leak
+                // into the references section and get chopped into fake
+                // reference entries by the segmenter. A letter genuinely
+                // isolated on its own line, followed by a short,
+                // digit-free, capitalized heading line, is essentially
+                // never legitimate reference content — citations are
+                // dense with years, page numbers, and punctuation, never
+                // structured this way.
+                r"[A-Z]\n\s*[A-Z][\p{L} ,:'\u{2019}-]{1,79}\n|",
                 // "A.\n\nTitle" pattern (ACM/LREC appendix with period after letter)
                 r"[A-Z]\.\s*\n\s*(?:Prompt|Annotation|Evaluation|Training|Baseline|",
                 r"Full|Further|Additional|Detailed?|Post-Processing|Human|Category|",
@@ -295,6 +311,31 @@ fn strip_page_headers(text: &str) -> String {
         .unwrap()
     });
 
+    // A running page-number footer (e.g. a bare "14") that some PDF text
+    // extractors — confirmed with MuPDF, this project's production
+    // backend — place on its own line, blank lines on either side, right
+    // in the middle of a reference that wraps across a page boundary:
+    //
+    //   [1] Edward J. Alessi and Sarilee Kahn. Toward a trauma-
+    //   informed qualitative research approach: Guidelines for
+    //
+    //   14
+    //
+    //   ensuring the safety and promoting the resilience of re-
+    //   search participants. Qualitative Research in Psychology, ...
+    //
+    // Left unstripped, the segmenter treats the isolated "14" line as a
+    // paragraph break inside reference [1], and the back half ("ensuring
+    // the safety...") comes out as its own orphaned segment with no
+    // author/title at all — a silent, empty-title "reference" that can
+    // never resolve against any database. No legitimate reference,
+    // title, or author line is ever *just* a bare 1-3 digit number, so
+    // stripping this unconditionally is safe (capped at 3 digits so a
+    // genuine 4-digit year alone on a line — vanishingly rare, but
+    // possible — is never touched).
+    static STANDALONE_PAGE_NUMBER: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?m)^[ \t]*\d{1,3}[ \t]*$").unwrap());
+
     let mut result = USENIX_HEADER.replace_all(text, "\n").to_string();
     result = USENIX_ASSOC_ONLY.replace_all(&result, "\n").to_string();
     result = IEEE_HEADER.replace_all(&result, "\n").to_string();
@@ -307,6 +348,7 @@ fn strip_page_headers(text: &str) -> String {
         .replace_all(&result, "\n")
         .to_string();
     result = POPETS_HEADER.replace_all(&result, "\n").to_string();
+    result = STANDALONE_PAGE_NUMBER.replace_all(&result, "").to_string();
 
     result
 }
@@ -442,6 +484,14 @@ pub(crate) fn segment_references_numbered_with_config(
     else {
         return Vec::new();
     };
+
+    if std::env::var("HALLUCINATOR_DEBUG_STRIP").is_ok() {
+        eprintln!(
+            "=== CHOSEN STRATEGY: {:?}, {} refs ===",
+            chosen.strategy,
+            chosen.references.len()
+        );
+    }
 
     // The prose-drop filter (`looks_like_reference`) exists to discard appendix
     // text that leaked past the section-end detector and got chunked by the
@@ -1007,6 +1057,33 @@ mod tests {
     }
 
     #[test]
+    fn test_find_references_section_with_arbitrary_appendix_title() {
+        // Regression: confirmed via real production PDF
+        // (sec27cycle1-paper51.pdf). The curated single-letter-appendix
+        // keyword list (Appendix, Proofs, Datasets, Analysis, ...) missed
+        // this qualitative-research paper's appendix title entirely,
+        // letting 250+ appendix bullet points and paragraphs leak into
+        // the references section — which the Fallback segmentation
+        // strategy then chopped into hundreds of fake, empty-title
+        // "references" that could never resolve against any database.
+        let text = concat!(
+            "Body.\n\nReferences\n\n[1] Ref one.\n[2] Ref two.\n\n",
+            "A\n",
+            "Pictorial Depiction of a Local Community\n",
+            "Service Network\n\n",
+            "Data Demanders & Governors\n\nFunder 1\nFunder 2\n",
+        );
+        let section = find_references_section(text).unwrap();
+        assert!(section.contains("[1] Ref one."));
+        assert!(section.contains("[2] Ref two."));
+        assert!(
+            !section.contains("Pictorial Depiction"),
+            "Should truncate at the arbitrary-topic appendix heading: {section:?}"
+        );
+        assert!(!section.contains("Funder 1"));
+    }
+
+    #[test]
     fn test_find_references_section_with_detailed_appendix() {
         // Test "A\nDetailed" pattern
         let text =
@@ -1479,6 +1556,90 @@ mod tests {
                 .iter()
                 .any(|r| r.contains("Proceedings on Privacy Enhancing Technologies 2026")),
             "PoPETs journal+year header must not appear in any reference"
+        );
+    }
+
+    #[test]
+    fn test_strip_page_headers_standalone_page_number() {
+        // Confirmed via real MuPDF extraction (sec27cycle1-paper51.pdf): a
+        // running page-number footer lands on its own line, blank lines on
+        // both sides, splitting a reference that wraps across a page break.
+        let text = concat!(
+            "[1] Edward J. Alessi and Sarilee Kahn. Toward a trauma-\n",
+            "informed qualitative research approach: Guidelines for\n",
+            "\n",
+            "14\n",
+            "\n",
+            "\n",
+            "ensuring the safety and promoting the resilience of re-\n",
+            "search participants. Qualitative Research in Psychology,\n",
+            "20(1):121\u{2013}154, 2023. doi:10.1080/14780887.2022.\n",
+            "2107967.\n",
+            "\n",
+            "[2] Adriana Alvarado Garcia. Mobilizing social media data.\n",
+        );
+        let stripped = strip_page_headers(text);
+        assert!(
+            !stripped.lines().any(|l| l.trim() == "14"),
+            "Standalone page-number line must be stripped: {stripped}"
+        );
+    }
+
+    #[test]
+    fn test_strip_page_headers_preserves_page_ranges_and_years() {
+        // A page range or year that's part of real citation text (not
+        // isolated on its own line) must survive untouched.
+        let text = "Qualitative Research in Psychology, 20(1):121\u{2013}154, 2023.";
+        let stripped = strip_page_headers(text);
+        assert_eq!(stripped, text, "Inline page range/year must be preserved");
+    }
+
+    #[test]
+    fn test_segment_ieee_reference_split_by_standalone_page_number_rejoins() {
+        // End-to-end regression for the exact production bug: without
+        // stripping the standalone "14", the segmenter splits reference
+        // [1] into two pieces at the page-number paragraph break, and the
+        // back half ("ensuring the safety...") comes out as its own
+        // orphaned segment with no author/title — an empty-title
+        // "reference" that can never resolve against any database.
+        //
+        // Three `[N]` refs, not two: `try_ieee_with_config` requires at
+        // least 3 bracket matches before it even attempts IEEE
+        // segmentation (guards against misfiring on `[2017]`-style
+        // author-year citations), so a 2-ref sample never exercises the
+        // code path this test targets.
+        let text = concat!(
+            "[1] Edward J. Alessi and Sarilee Kahn. Toward a trauma-\n",
+            "informed qualitative research approach: Guidelines for\n",
+            "\n",
+            "14\n",
+            "\n",
+            "\n",
+            "ensuring the safety and promoting the resilience of re-\n",
+            "search participants. Qualitative Research in Psychology,\n",
+            "20(1):121\u{2013}154, 2023. doi:10.1080/14780887.2022.\n",
+            "2107967.\n",
+            "\n",
+            "[2] Adriana Alvarado Garcia, Marisol Wong-Villacres, and\n",
+            "Milagros Miceli. Mobilizing social media data: Reflections\n",
+            "of a researcher mediating between data and organization.\n",
+            "\n",
+            "[3] Tawfiq Ammari, Momina Nofal, Mustafa Naseem, and\n",
+            "Maryam Mustafa. Moderation as empowerment: Creating\n",
+            "and managing women-only digital safe spaces.\n",
+        );
+        let refs = segment_references(text);
+        assert_eq!(refs.len(), 3, "Should find exactly 3 references: {refs:?}");
+        assert!(
+            refs[0].contains("Edward J. Alessi") && refs[0].contains("ensuring the safety"),
+            "Reference [1] must stay whole across the page-number split: {:?}",
+            refs[0]
+        );
+        assert!(
+            !refs
+                .iter()
+                .any(|r| r.trim_start().starts_with("ensuring the safety")),
+            "The page-break tail must not become its own orphaned segment: {refs:?}"
         );
     }
 
