@@ -141,11 +141,10 @@ pub(crate) fn find_references_section_with_config(
                 // "A\nTitle Case Heading" or "A\nALL CAPS HEADING" —
                 // whatever the appendix's actual topic is. The curated
                 // keyword list above is always one paper behind whatever
-                // topic word it hasn't seen yet: confirmed missing
-                // "Pictorial Depiction of a Local Community Service
-                // Network" (a qualitative-research appendix title), which
-                // let 250+ appendix bullet points and paragraphs leak
-                // into the references section and get chopped into fake
+                // topic word it hasn't seen yet: confirmed missing a
+                // qualitative-research paper's appendix title, which let
+                // 250+ appendix bullet points and paragraphs leak into
+                // the references section and get chopped into fake
                 // reference entries by the segmenter. A letter genuinely
                 // isolated on its own line, followed by a short,
                 // digit-free, capitalized heading line, is essentially
@@ -316,13 +315,13 @@ fn strip_page_headers(text: &str) -> String {
     // backend — place on its own line, blank lines on either side, right
     // in the middle of a reference that wraps across a page boundary:
     //
-    //   [1] Edward J. Alessi and Sarilee Kahn. Toward a trauma-
-    //   informed qualitative research approach: Guidelines for
+    //   [1] Jordan T. Whitfield and Priya N. Ramachandran. Toward a
+    //   framework-informed qualitative research approach: Guidelines
     //
     //   14
     //
-    //   ensuring the safety and promoting the resilience of re-
-    //   search participants. Qualitative Research in Psychology, ...
+    //   for ensuring the safety and promoting the resilience of re-
+    //   search participants. Qualitative Research in Sociology, ...
     //
     // Left unstripped, the segmenter treats the isolated "14" line as a
     // paragraph break inside reference [1], and the back half ("ensuring
@@ -1058,29 +1057,29 @@ mod tests {
 
     #[test]
     fn test_find_references_section_with_arbitrary_appendix_title() {
-        // Regression: confirmed via real production PDF
-        // (sec27cycle1-paper51.pdf). The curated single-letter-appendix
-        // keyword list (Appendix, Proofs, Datasets, Analysis, ...) missed
-        // this qualitative-research paper's appendix title entirely,
-        // letting 250+ appendix bullet points and paragraphs leak into
-        // the references section — which the Fallback segmentation
-        // strategy then chopped into hundreds of fake, empty-title
-        // "references" that could never resolve against any database.
+        // Regression: confirmed via a real production PDF. The curated
+        // single-letter-appendix keyword list (Appendix, Proofs,
+        // Datasets, Analysis, ...) missed a qualitative-research paper's
+        // appendix title entirely, letting 250+ appendix bullet points
+        // and paragraphs leak into the references section — which the
+        // Fallback segmentation strategy then chopped into hundreds of
+        // fake, empty-title "references" that could never resolve
+        // against any database.
         let text = concat!(
             "Body.\n\nReferences\n\n[1] Ref one.\n[2] Ref two.\n\n",
             "A\n",
-            "Pictorial Depiction of a Local Community\n",
-            "Service Network\n\n",
-            "Data Demanders & Governors\n\nFunder 1\nFunder 2\n",
+            "Overview of Interview Site Selection\n",
+            "and Recruitment Criteria\n\n",
+            "Sponsoring Bodies\n\nSponsor 1\nSponsor 2\n",
         );
         let section = find_references_section(text).unwrap();
         assert!(section.contains("[1] Ref one."));
         assert!(section.contains("[2] Ref two."));
         assert!(
-            !section.contains("Pictorial Depiction"),
+            !section.contains("Overview of Interview Site Selection"),
             "Should truncate at the arbitrary-topic appendix heading: {section:?}"
         );
-        assert!(!section.contains("Funder 1"));
+        assert!(!section.contains("Sponsor 1"));
     }
 
     #[test]
@@ -1561,22 +1560,22 @@ mod tests {
 
     #[test]
     fn test_strip_page_headers_standalone_page_number() {
-        // Confirmed via real MuPDF extraction (sec27cycle1-paper51.pdf): a
-        // running page-number footer lands on its own line, blank lines on
-        // both sides, splitting a reference that wraps across a page break.
+        // Confirmed via a real MuPDF extraction: a running page-number
+        // footer lands on its own line, blank lines on both sides,
+        // splitting a reference that wraps across a page break.
         let text = concat!(
-            "[1] Edward J. Alessi and Sarilee Kahn. Toward a trauma-\n",
-            "informed qualitative research approach: Guidelines for\n",
+            "[1] Jordan T. Whitfield and Priya N. Ramachandran. Toward a\n",
+            "framework-informed qualitative research approach: Guidelines\n",
             "\n",
             "14\n",
             "\n",
             "\n",
-            "ensuring the safety and promoting the resilience of re-\n",
-            "search participants. Qualitative Research in Psychology,\n",
-            "20(1):121\u{2013}154, 2023. doi:10.1080/14780887.2022.\n",
-            "2107967.\n",
+            "for ensuring the safety and promoting the resilience of re-\n",
+            "search participants. Qualitative Research in Sociology,\n",
+            "18(2):211\u{2013}238, 2021. doi:10.1080/14780887.2021.\n",
+            "1234567.\n",
             "\n",
-            "[2] Adriana Alvarado Garcia. Mobilizing social media data.\n",
+            "[2] Marisol Fontaine. Mobilizing community outreach data.\n",
         );
         let stripped = strip_page_headers(text);
         assert!(
@@ -1609,29 +1608,29 @@ mod tests {
         // author-year citations), so a 2-ref sample never exercises the
         // code path this test targets.
         let text = concat!(
-            "[1] Edward J. Alessi and Sarilee Kahn. Toward a trauma-\n",
-            "informed qualitative research approach: Guidelines for\n",
+            "[1] Jordan T. Whitfield and Priya N. Ramachandran. Toward a\n",
+            "framework-informed qualitative research approach: Guidelines\n",
             "\n",
             "14\n",
             "\n",
             "\n",
-            "ensuring the safety and promoting the resilience of re-\n",
-            "search participants. Qualitative Research in Psychology,\n",
-            "20(1):121\u{2013}154, 2023. doi:10.1080/14780887.2022.\n",
-            "2107967.\n",
+            "for ensuring the safety and promoting the resilience of re-\n",
+            "search participants. Qualitative Research in Sociology,\n",
+            "18(2):211\u{2013}238, 2021. doi:10.1080/14780887.2021.\n",
+            "1234567.\n",
             "\n",
-            "[2] Adriana Alvarado Garcia, Marisol Wong-Villacres, and\n",
-            "Milagros Miceli. Mobilizing social media data: Reflections\n",
+            "[2] Marisol Fontaine, Devon Okafor, and\n",
+            "Renata Bergstrom. Mobilizing community data: Reflections\n",
             "of a researcher mediating between data and organization.\n",
             "\n",
-            "[3] Tawfiq Ammari, Momina Nofal, Mustafa Naseem, and\n",
-            "Maryam Mustafa. Moderation as empowerment: Creating\n",
-            "and managing women-only digital safe spaces.\n",
+            "[3] Halima Osei, Nadia Reyes, Wentao Lin, and\n",
+            "Caleb Fitzgerald. Moderation as empowerment: Creating\n",
+            "and managing community-run digital safe spaces.\n",
         );
         let refs = segment_references(text);
         assert_eq!(refs.len(), 3, "Should find exactly 3 references: {refs:?}");
         assert!(
-            refs[0].contains("Edward J. Alessi") && refs[0].contains("ensuring the safety"),
+            refs[0].contains("Jordan T. Whitfield") && refs[0].contains("ensuring the safety"),
             "Reference [1] must stay whole across the page-number split: {:?}",
             refs[0]
         );
