@@ -1,12 +1,11 @@
 //! Parse RAID's accepted-papers page into corpus records.
 //!
 //! `raidYYYY.github.io` publishes no BibTeX/CSV/JSON export. 2024 and
-//! 2025 share one identical format (this module) — the cleanest of the
-//! five newest venues added here, no bot-blocking, no per-year format
-//! churn between those two. 2023 used a different, ACM-DL-embedded page
-//! and 2026 (not yet held) has switched to a CSV data file
-//! (`data/accepted_papers.csv`) — both out of scope for now, same
-//! current-edition-only pattern as everywhere else.
+//! 2025 share one identical format ([`parse_accepted_papers`]) — the
+//! cleanest of the five newest venues added here, no bot-blocking, no
+//! per-year format churn between those two. 2026 (not yet held) has
+//! switched to a CSV data file (`data/accepted_papers.csv`) — out of
+//! scope for now, same current-edition-only pattern as everywhere else.
 //!
 //! Structure: `<p><b> Title <a>[PDF]</a></b><br/> Name, Affiliation; Name,
 //! Affiliation; </p>` — note the title's trailing `[PDF]` link has real
@@ -14,6 +13,14 @@
 //! authors use `"Name, Affiliation"` with **no parentheses**, semicolon-
 //! separated — a different shape from the `parse_paren_grouped_names`
 //! pattern used elsewhere, handled by [`split_semicolon_name_affiliation`].
+//!
+//! 2022 and 2023 instead embed the standard ACM Digital Library
+//! "Open Access" TOC widget directly into the page (rather than a
+//! hand-rolled listing): `h3 > a.DLtitleLink` (title) followed by a
+//! sibling `ul.DLauthors > li.nameList` (one `<li>` per author, plain
+//! name text, no affiliations at all — nothing to strip). Tried as a
+//! fallback in [`parse_dl_widget_papers`] when the primary format finds
+//! nothing.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -26,6 +33,16 @@ use crate::db::NewPublication;
 /// `source_tag` is the provenance string to store on each record, e.g.
 /// `"raid2025"`.
 pub fn parse_accepted_papers(html: &str, source_tag: &str) -> Vec<NewPublication> {
+    let out = parse_hand_rolled_papers(html, source_tag);
+    if !out.is_empty() {
+        return out;
+    }
+    parse_dl_widget_papers(html, source_tag)
+}
+
+/// 2024/2025 hand-rolled template: `p > b` (title) + plain text after it
+/// (authors).
+fn parse_hand_rolled_papers(html: &str, source_tag: &str) -> Vec<NewPublication> {
     static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
 
     let document = Html::parse_document(html);
@@ -56,6 +73,56 @@ pub fn parse_accepted_papers(html: &str, source_tag: &str) -> Vec<NewPublication
         let after_title = &p_html[idx + 4..];
         let plain = TAG_RE.replace_all(after_title, " ");
         let authors = split_semicolon_name_affiliation(&plain);
+        if authors.is_empty() {
+            continue;
+        }
+
+        out.push(NewPublication {
+            title,
+            authors,
+            url: None,
+            source: source_tag.to_string(),
+        });
+    }
+    out
+}
+
+/// 2022/2023 ACM Digital Library "Open Access" TOC widget: `h3 >
+/// a.DLtitleLink` (title) + the following sibling `ul.DLauthors >
+/// li.nameList` (authors, one per `<li>`, plain names — no affiliations
+/// to strip).
+fn parse_dl_widget_papers(html: &str, source_tag: &str) -> Vec<NewPublication> {
+    let document = Html::parse_document(html);
+    let title_link_sel = Selector::parse("h3 > a.DLtitleLink").unwrap();
+    let authors_list_sel = Selector::parse("ul.DLauthors").unwrap();
+    let name_sel = Selector::parse("li.nameList").unwrap();
+
+    let mut out = Vec::new();
+    for title_link in document.select(&title_link_sel) {
+        let title = title_link.text().collect::<String>().trim().to_string();
+        if title.is_empty() {
+            continue;
+        }
+
+        // The authors list is the h3's next-sibling ul.DLauthors, not a
+        // descendant of anything title-related — walk sibling elements
+        // from the enclosing <h3> until one matches.
+        let Some(h3) = title_link.parent().and_then(scraper::ElementRef::wrap) else {
+            continue;
+        };
+        let authors_list = h3
+            .next_siblings()
+            .filter_map(scraper::ElementRef::wrap)
+            .find(|el| authors_list_sel.matches(el));
+        let Some(authors_list) = authors_list else {
+            continue;
+        };
+
+        let authors: Vec<String> = authors_list
+            .select(&name_sel)
+            .map(|li| li.text().collect::<String>().trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
         if authors.is_empty() {
             continue;
         }
@@ -138,5 +205,37 @@ mod tests {
     #[test]
     fn test_parse_empty_html() {
         assert!(parse_accepted_papers("<html></html>", "raid2025").is_empty());
+    }
+
+    const DL_WIDGET_SAMPLE: &str = r##"
+        <div id="DLcontent"><div class="text-center"><h2>SESSION: IoT / Firmware / Binaries</h2></div>
+            <h3><a class="DLtitleLink" href="https://dl.acm.org/doi/10.1145/3607199.3607200">Black-box Attacks Against Neural Binary Function Detection</a></h3>
+            <ul class="DLauthors"><li class="nameList">Joshua Bundt</li><li class="nameList">Michael Davinroy</li><li class="nameList Last">William Robertson</li></ul>
+            <div class="DLabstract"><div style="display:inline"><p>Some abstract text.</p></div></div>
+
+            <h3><a class="DLtitleLink" href="https://dl.acm.org/doi/10.1145/3607199.3607211">Extracting Threat Intelligence From Cheat Binaries</a></h3>
+            <ul class="DLauthors"><li class="nameList">Md Sakib Anwar</li><li class="nameList Last">Zhiqiang Lin</li></ul>
+            <div class="DLabstract"><div style="display:inline"><p>Some abstract text.</p></div></div>
+        </div>
+    "##;
+
+    #[test]
+    fn test_parse_dl_widget_fallback_two_papers() {
+        let out = parse_accepted_papers(DL_WIDGET_SAMPLE, "raid2023");
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out[0].title,
+            "Black-box Attacks Against Neural Binary Function Detection"
+        );
+        assert_eq!(
+            out[0].authors,
+            vec!["Joshua Bundt", "Michael Davinroy", "William Robertson"]
+        );
+        assert_eq!(out[0].source, "raid2023");
+        assert_eq!(
+            out[1].title,
+            "Extracting Threat Intelligence From Cheat Binaries"
+        );
+        assert_eq!(out[1].authors, vec!["Md Sakib Anwar", "Zhiqiang Lin"]);
     }
 }
