@@ -15,17 +15,19 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+/// Matches a `name-group (affiliation)` unit directly — a non-greedy run of
+/// non-paren characters followed by a parenthesized group — rather than
+/// splitting on a separator first, since names/affiliations never contain
+/// `(`/`)` but affiliations often contain the same punctuation (commas,
+/// semicolons) used to separate entries. Shared between
+/// [`parse_paren_grouped_names`] and the heuristic in
+/// [`parse_names_maybe_with_affiliations`] that decides whether a list's
+/// parens are affiliations at all.
+static PAIR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([^()]+?)\(([^()]*)\)").unwrap());
+
 /// Parse `"Name (Affiliation), Name and Name (Affiliation); ..."` into
 /// just the names, dropping every affiliation.
-///
-/// Matches each `name-group (affiliation)` unit directly — a non-greedy
-/// run of non-paren characters followed by a parenthesized group — rather
-/// than splitting on a separator first, since names/affiliations never
-/// contain `(`/`)` but affiliations often contain the same punctuation
-/// (commas, semicolons) used to separate entries.
 pub fn parse_paren_grouped_names(text: &str) -> Vec<String> {
-    static PAIR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([^()]+?)\(([^()]*)\)").unwrap());
-
     let mut names = Vec::new();
     for cap in PAIR_RE.captures_iter(text) {
         let group = strip_leading_separator(&cap[1]).replace(" and ", ", ");
@@ -37,6 +39,55 @@ pub fn parse_paren_grouped_names(text: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// Parse an author list that may or may not carry parenthesized
+/// affiliations: `"Name (Affiliation), Name (Affiliation)"` delegates to
+/// [`parse_paren_grouped_names`]; plain `"Name, Name, Name"` with no
+/// affiliations at all (e.g. ISCA's 2023-2025 program pages, unlike its
+/// 2026 page or ASPLOS's, which always include them) is split directly on
+/// `,`/`;`.
+///
+/// The two shapes can't be told apart just by "does the text contain a
+/// `(`" — ISCA's plain lists occasionally wrap an author's nickname in
+/// parens mid-name (`"Boyang (Tony) Yu"`), which [`parse_paren_grouped_names`]
+/// would otherwise misparse as an affiliation and mangle. Distinguish them
+/// by what follows each `)`: a real affiliation is always followed by a
+/// separator (`,`, `;`, `"and "`) or the end of the string, e.g.
+/// `"Name (Aff), Name (Aff)"` or `"Name (Aff) and Name (Aff)"`. A nickname
+/// is followed directly by another bare word — the rest of the same
+/// name — which no genuine affiliation list does.
+pub fn parse_names_maybe_with_affiliations(text: &str) -> Vec<String> {
+    if parens_look_like_affiliations(text) {
+        return parse_paren_grouped_names(text);
+    }
+    text.split([',', ';'])
+        .map(|s| strip_leading_separator(s))
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("and"))
+        .collect()
+}
+
+/// Whether every parenthesized group in `text` is followed by a
+/// list-separator (or the end of the string) rather than a bare word —
+/// see [`parse_names_maybe_with_affiliations`]. `false` if there are no
+/// parens at all, so the caller still takes the plain-split path.
+fn parens_look_like_affiliations(text: &str) -> bool {
+    let mut found_any = false;
+    for m in PAIR_RE.find_iter(text) {
+        found_any = true;
+        let remainder = text[m.end()..].trim_start();
+        let is_separator = remainder.is_empty()
+            || remainder.starts_with(',')
+            || remainder.starts_with(';')
+            || remainder
+                .get(..4)
+                .is_some_and(|s| s.eq_ignore_ascii_case("and "))
+            || remainder.eq_ignore_ascii_case("and");
+        if !is_separator {
+            return false;
+        }
+    }
+    found_any
 }
 
 /// Trim a captured group's leading punctuation/conjunction left over from
@@ -115,6 +166,51 @@ mod tests {
     #[test]
     fn test_empty_input() {
         assert!(parse_paren_grouped_names("").is_empty());
+    }
+
+    #[test]
+    fn test_maybe_with_affiliations_falls_back_to_plain_comma_list() {
+        // ISCA 2023-2025-style: no parenthesized affiliations at all.
+        let names = parse_names_maybe_with_affiliations(
+            "Cong Guo, Jiaming Tang, Weiming Hu, Jingwen Leng, Yuhao Zhu",
+        );
+        assert_eq!(
+            names,
+            vec![
+                "Cong Guo",
+                "Jiaming Tang",
+                "Weiming Hu",
+                "Jingwen Leng",
+                "Yuhao Zhu"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_maybe_with_affiliations_not_fooled_by_embedded_nickname() {
+        // ISCA 2023/2025-style: a mid-name nickname in parens, not an
+        // affiliation — must not be misparsed as one.
+        let names = parse_names_maybe_with_affiliations(
+            "Sixu Li, Chaojian Li, Wenbo Zhu, Boyang (Tony) Yu, Yingyan (Celine) Lin",
+        );
+        assert_eq!(
+            names,
+            vec![
+                "Sixu Li",
+                "Chaojian Li",
+                "Wenbo Zhu",
+                "Boyang (Tony) Yu",
+                "Yingyan (Celine) Lin"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_maybe_with_affiliations_delegates_when_parens_present() {
+        let names = parse_names_maybe_with_affiliations(
+            "Weihao Cui (Shanghai Jiao Tong University), Yukang Chen (Shanghai Jiao Tong University)",
+        );
+        assert_eq!(names, vec!["Weihao Cui", "Yukang Chen"]);
     }
 
     #[test]
