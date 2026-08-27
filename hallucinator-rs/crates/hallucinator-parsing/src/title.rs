@@ -46,6 +46,26 @@ pub(crate) fn extract_title_from_reference_with_config(
         Lazy::new(|| Regex::new(r"(doi\.org/[^\s]+)\.\s*\n\s*(\d+)").unwrap());
     let ref_text = DOI_LINE_BREAK.replace_all(&ref_text, "$1.$2");
 
+    // Same fix for a bare (non-URL) "doi:10.xxxx/..." DOI whose trailing
+    // segment got wrapped across a PDF line — very common with IEEE/ACM-
+    // style journal citations ("doi:10.1109/TIT.1983.\n1056650"). Unlike
+    // the pattern above, the line break here has often already been
+    // collapsed to a plain space by an earlier pipeline stage (whitespace
+    // normalization runs before this function is even called, in
+    // `parse_single_reference`'s hyphenation-fixing step) by the time we
+    // see it, so this matches on any whitespace, not just a literal `\n`.
+    // Anchored to the end of the string (with an optional trailing period)
+    // so a genuine two-sentence citation — "...1983. 2020 was an eventful
+    // year." — is never glued into one number.
+    //
+    // Left unfixed, this dangling ". NNNNNNN" tail doesn't just corrupt
+    // the DOI — it derails every format-detection branch below into
+    // returning an empty title, even though the real title earlier in
+    // the string is perfectly well-formed.
+    static DOI_WRAP_TAIL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s]+\.)\s+(\d{3,9})\.?\s*$").unwrap());
+    let ref_text = DOI_WRAP_TAIL.replace_all(&ref_text, "$1$2");
+
     // Fix arXiv ID line breaks: arXiv IDs (NNNN.NNNNN) can split across
     // lines too — "arXiv:2412.02\n349" → "arXiv:2412.02349". Same
     // motivation: must run before whitespace collapse so the sentence
@@ -2819,6 +2839,38 @@ mod tests {
         let (title, from_quotes) = extract_title_from_reference(ref_text);
         assert!(!from_quotes);
         assert!(title.contains("Novel Approach"));
+    }
+
+    #[test]
+    fn test_bare_doi_wrapped_across_line_does_not_blank_the_title() {
+        // Regression: confirmed against real production citations. A bare
+        // (non-URL) "doi:10.xxxx/..." DOI whose trailing segment got
+        // wrapped across a PDF line — collapsed to a plain space by the
+        // time whitespace normalization runs, e.g.
+        // "doi:10.1109/TFOO.2020. 1234567" instead of
+        // "doi:10.1109/TFOO.2020.1234567" — was derailing every format-
+        // detection branch into returning an empty title, even though
+        // the real title earlier in the string was perfectly
+        // well-formed. This affected a substantial fraction of IEEE
+        // Trans.-style journal citations (year embedded as a DOI segment,
+        // e.g. ".2020.") in one real corpus.
+        let ref_text = "A. Author and B. Author. A perfectly ordinary title here. \
+            IEEE Transactions on Testing, 12(4):100-110, 2020. \
+            doi:10.1109/TFOO.2020. 1234567";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(title, "A perfectly ordinary title here");
+    }
+
+    #[test]
+    fn test_bare_doi_wrap_fix_does_not_glue_unrelated_trailing_sentence() {
+        // The end-of-string anchor must not fire when there's real
+        // content after the trailing digits.
+        let ref_text = "A. Author. A perfectly ordinary title here. \
+            IEEE Transactions on Testing, 12(4):100-110, 2020. \
+            doi:10.1109/TFOO.2020.1234567. Retrieved 2021 via IEEE Xplore";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "A perfectly ordinary title here");
     }
 
     #[test]
