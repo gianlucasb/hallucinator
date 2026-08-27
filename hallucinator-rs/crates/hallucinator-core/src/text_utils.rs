@@ -389,6 +389,16 @@ pub fn extract_doi(text: &str) -> Option<String> {
         Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>,]+\d)\s*\n\s*(\d+(?:\.\d+)*)").unwrap());
     let text_fixed = FIX1B.replace_all(&text_fixed, "$1$2");
 
+    // Pattern 1c: same line-wrap as Pattern 1, but the newline has already
+    // been collapsed to a plain space by an earlier pipeline stage by the
+    // time this text reaches here — leaving e.g. "10.1109/TIT.1983. 1056650"
+    // instead of "10.1109/TIT.1983.\n1056650". Anchored to the end of the
+    // string (with an optional trailing period) so a genuine two-sentence
+    // reference never gets its trailing digits glued onto an unrelated DOI.
+    static FIX1C: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>,]+\.)\s+(\d{3,9})\.?\s*$").unwrap());
+    let text_fixed = FIX1C.replace_all(&text_fixed, "$1$2");
+
     // Pattern 2: DOI ending with dash + newline + continuation
     static FIX2: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>,]+-)\s*\n\s*(\S+)").unwrap());
@@ -570,6 +580,31 @@ mod tests {
         assert_eq!(
             extract_doi("https://doi.org/10.1145/3442381.3450048"),
             Some("10.1145/3442381.3450048".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_doi_split_across_lines_already_collapsed_to_space() {
+        // Same line-wrap as test_extract_doi_split_across_lines, but the
+        // newline has already been collapsed to a plain space by an
+        // earlier pipeline stage — the common real-world shape for a
+        // bare (non-URL) "10.xxxx/..." DOI at the tail of a journal
+        // citation, e.g. "...IEEE Trans. Foo, 12(4):1-10, 2020.
+        // doi:10.1109/TFOO.2020. 1234567".
+        assert_eq!(
+            extract_doi("doi:10.1109/TFOO.2020. 1234567"),
+            Some("10.1109/TFOO.2020.1234567".into())
+        );
+    }
+
+    #[test]
+    fn test_extract_doi_space_wrap_does_not_glue_unrelated_trailing_text() {
+        // The end-of-string anchor must not fire when there's real content
+        // after the trailing digits — that's not a wrapped continuation,
+        // just an unrelated sentence.
+        assert_eq!(
+            extract_doi("doi:10.1109/TFOO.2020.1234567. Accessed 2021 via IEEE Xplore"),
+            Some("10.1109/TFOO.2020.1234567".into())
         );
     }
 
