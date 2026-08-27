@@ -64,24 +64,43 @@ pub(crate) fn extract_authors_from_reference_with_config(
         return vec![SAME_AS_PREVIOUS.to_string()];
     }
 
+    // Mask out DOI/arXiv identifiers before boundary detection. A DOI's
+    // internal digit-dot structure often embeds the year as its own
+    // segment — e.g. "10.1109/TIT.2002.1003824" contains ".2002." —
+    // which can spuriously match the ACM-year-boundary pattern below.
+    // Left unmasked, that pushes the "authors end here" boundary almost
+    // to the end of the string, turning the entire reference (authors,
+    // title, venue, and all) into one giant blob that fails every name-
+    // parsing format check and comes back with zero authors, even though
+    // the real author list at the very start was simple and well-formed.
+    //
+    // Positions must stay aligned with `ref_text` for the later
+    // `ref_text[..author_end]` slice, so matched bytes are replaced with
+    // a same-length run of a filler character rather than removed.
+    static DOI_ARXIV_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)(?:10\.\d{4,}/|arxiv:\s*)\S+").unwrap());
+    let boundary_text =
+        DOI_ARXIV_RE.replace_all(ref_text, |caps: &regex::Captures| "#".repeat(caps[0].len()));
+    let boundary_text = boundary_text.as_ref();
+
     // Determine where authors section ends based on format
 
     // IEEE format: authors end at quoted title
     static QUOTE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"["\u{201c}\u{201d}]"#).unwrap());
-    let quote_match = QUOTE_RE.find(ref_text);
+    let quote_match = QUOTE_RE.find(boundary_text);
 
     // Springer/Nature format: authors end before "(Year)" pattern
     static SPRINGER_YEAR_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\s+\((\d{4}[a-z]?)\)\s+").unwrap());
-    let springer_year_match = SPRINGER_YEAR_RE.find(ref_text);
+    let springer_year_match = SPRINGER_YEAR_RE.find(boundary_text);
 
     // ACM format: authors end before ". Year." pattern
     static ACM_YEAR_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\.\s*((?:19|20)\d{2})\.\s*").unwrap());
-    let acm_year_match = ACM_YEAR_RE.find(ref_text);
+    let acm_year_match = ACM_YEAR_RE.find(boundary_text);
 
     // USENIX/default: find first "real" period (not after initials)
-    let first_period = find_first_real_period(ref_text);
+    let first_period = find_first_real_period(boundary_text);
 
     // Determine author section end
     let author_end = if let Some(qm) = quote_match {
@@ -393,6 +412,44 @@ mod tests {
         let ref_text = "Smith J, Jones A (2023) A novel approach to detection.";
         let authors = extract_authors_from_reference(ref_text);
         assert!(!authors.is_empty());
+    }
+
+    #[test]
+    fn test_doi_embedded_year_does_not_swallow_the_author_list() {
+        // Regression: confirmed against real production citations. A
+        // DOI whose suffix embeds the publication year as its own
+        // segment — e.g. "10.1109/TFOO.2020.1234567" contains ".2020." —
+        // was spuriously matching the ACM-style "authors end at
+        // '. YYYY.'" boundary detector, pushing the boundary almost to
+        // the end of the whole reference. The entire reference (authors,
+        // title, and venue together) then failed every author-format
+        // check and came back with zero authors, even for a single,
+        // simply-formatted author name at the very start of the string.
+        let ref_text = "Jane Q. Author. A perfectly ordinary title here. \
+            IEEE Transactions on Testing, 12(4):100-110, 2020. \
+            doi:10.1109/TFOO.2020.1234567";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Jane Q. Author"]);
+    }
+
+    #[test]
+    fn test_doi_embedded_year_does_not_drop_last_author() {
+        let ref_text = "Alice Author and Bob Author. A perfectly ordinary title here. \
+            IEEE Transactions on Testing, 12(4):100-110, 2020. \
+            doi:10.1109/TFOO.2020.1234567";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Alice Author", "Bob Author"]);
+    }
+
+    #[test]
+    fn test_arxiv_id_does_not_confuse_author_boundary() {
+        // Same masking, for the arXiv-preprint equivalent of the DOI
+        // case above: an arXiv ID's own digit-dot structure shouldn't
+        // be mistaken for an author-list boundary marker either.
+        let ref_text =
+            "Alice Author and Bob Author. A perfectly ordinary title here. arXiv:2020.12345";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Alice Author", "Bob Author"]);
     }
 
     #[test]
