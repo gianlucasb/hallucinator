@@ -1,6 +1,6 @@
 [package]
 name = "hallucinator-python"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 description = "Python bindings for hallucinator reference extraction"
