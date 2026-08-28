@@ -63,7 +63,7 @@ pub(crate) fn extract_title_from_reference_with_config(
     // returning an empty title, even though the real title earlier in
     // the string is perfectly well-formed.
     static DOI_WRAP_TAIL: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s]+\.)\s+(\d{3,9})\.?\s*$").unwrap());
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s]+\.)\s+(\d{1,9})\.?\s*$").unwrap());
     let ref_text = DOI_WRAP_TAIL.replace_all(&ref_text, "$1$2");
 
     // Fix arXiv ID line breaks: arXiv IDs (NNNN.NNNNN) can split across
@@ -1225,27 +1225,35 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
 
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
-    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
+    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen.
+    // Every leading `[.?!]` below (rather than a literal `.`) matters: a
+    // title ending in a question or exclamation mark otherwise never
+    // matches, leaving the venue clause glued onto the title.
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         let j = r"[a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars
         vec![
-            Regex::new(r"\.\s*[Ii]n:\s+").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
-            Regex::new(&format!(r"\.\s*[A-Z]{}+\d+\s*\(\d+\)", j)).unwrap(),
-            Regex::new(&format!(r"\.\s*[A-Z]{}+\d+:\d+", j)).unwrap(),
-            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+", j)).unwrap(),
-            Regex::new(r"\.\s*https?://").unwrap(),
-            Regex::new(r"\.\s*URL\s+").unwrap(),
-            Regex::new(r"\.\s*Tech\.\s*rep\.").unwrap(),
-            Regex::new(r"\.\s*pp?\.?\s*\d+").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n:\s+").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z]").unwrap(),
+            // "In YEAR Venue" format: "! In 2012 Cybersecurity Summit" —
+            // the venue name itself isn't a recognized acronym, so the
+            // plain `[Ii]n\s+[A-Z]` pattern above (which needs a capital
+            // letter directly after "In ") never matches a year first.
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:19|20)\d{2}\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+\d+\s*\(\d+\)", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+\d+:\d+", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+,\s*\d+", j)).unwrap(),
+            Regex::new(r"[.?!]\s*https?://").unwrap(),
+            Regex::new(r"[.?!]\s*URL\s+").unwrap(),
+            Regex::new(r"[.?!]\s*Tech\.\s*rep\.").unwrap(),
+            Regex::new(r"[.?!]\s*pp?\.?\s*\d+").unwrap(),
             // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Journal after ? with volume:pages: "? JournalName, vol: pages"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
             // ". Journal Name (Year)" — e.g., ". Journal of Legal Analysis (2021)"
             Regex::new(
-                r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
+                r"[.?!]\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
             )
             .unwrap(),
         ]
@@ -1288,33 +1296,36 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     let caps = RE.captures(ref_text)?;
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
-    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
+    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen.
+    // Every leading `[.?!]` below (rather than a literal `.`) matters: a
+    // title ending in a question or exclamation mark otherwise never
+    // matches, leaving the venue clause glued onto the title.
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         let j = r"[a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars
         vec![
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
             Regex::new(r"\s+doi:").unwrap(),
             // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Journal after ? with volume:issue pattern: "? JournalName, vol: pages"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
             // Period then journal + volume/issue: ". JournalName, vol(issue)"
-            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Period then journal + volume:pages: ". JournalName, vol: pages"
-            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
             // Period then journal name + comma + volume (no parens/colon): ". JournalName, vol"
             // Catches "Foundations and Trends® in Human–Computer Interaction, 14(4–5)"
-            Regex::new(&format!(r"\.\s*[A-Z]{}{{10,}},\s*\d+", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}{{10,}},\s*\d+", j)).unwrap(),
             // ". Journal Name (Year)" — e.g., ". Journal of Legal Analysis (2021)"
             Regex::new(
-                r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
+                r"[.?!]\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
             )
             .unwrap(),
             // ". https://" — URL after period
-            Regex::new(r"\.\s*https?://").unwrap(),
+            Regex::new(r"[.?!]\s*https?://").unwrap(),
             // ". Publisher, City" — publisher names after period
-            Regex::new(r"\.\s*(?:Routledge|Springer|Elsevier|Wiley|Cambridge|Oxford|Knopf|MIT\s+Press|Academic\s+Press|Prentice\s+Hall|McGraw-Hill|Sage|CRC\s+Press)\b").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Routledge|Springer|Elsevier|Wiley|Cambridge|Oxford|Knopf|MIT\s+Press|Academic\s+Press|Prentice\s+Hall|McGraw-Hill|Sage|CRC\s+Press)\b").unwrap(),
         ]
     });
 
@@ -1471,18 +1482,26 @@ fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
 }
 
 fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
+    // The leading `[.?!]` (rather than a literal `.`) matters: a title
+    // ending in a question or exclamation mark — a real, common shape
+    // ("How do fixes become bugs?", "Shoal++: ... fast and robust!") —
+    // otherwise never matches any of these patterns at all, since every
+    // one of them originally required a literal period immediately
+    // before "In {venue}". Left unfixed, the venue clause (and often an
+    // editor list ahead of it) gets glued onto the end of the title
+    // instead of being recognized as the boundary.
     static VENUE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
-            Regex::new(r"\.\s*[Ii]n:\s+(?:Proceedings|Workshop|Conference|Symposium|IFIP|IEEE|ACM)").unwrap(),
-            Regex::new(r"\.\s*[Ii]n:\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+(?:Proceedings|Workshop|Conference|Symposium|AAAI|IEEE|ACM|USENIX)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n:\s+(?:Proceedings|Workshop|Conference|Symposium|IFIP|IEEE|ACM)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n:\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:Proceedings|Workshop|Conference|Symposium|AAAI|IEEE|ACM|USENIX)").unwrap(),
             // Handle "In YEAR Venue" format: ". In 2017 USENIX Workshop"
-            Regex::new(r"\.\s*[Ii]n\s+(?:19|20)\d{2}\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS)").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z][a-z]+\s+(?:Conference|Workshop|Symposium)").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+(?:The\s+)?(?:\w+\s+)+(?:International\s+)?(?:Conference|Workshop|Symposium)").unwrap(),
-            Regex::new(r"\.\s*(?:NeurIPS|ICML|ICLR|CVPR|ICCV|ECCV|AAAI|IJCAI|CoRR|JMLR),").unwrap(),
-            Regex::new(r"\.\s*arXiv\s+preprint").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:19|20)\d{2}\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z][a-z]+\s+(?:Conference|Workshop|Symposium)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:The\s+)?(?:\w+\s+)+(?:International\s+)?(?:Conference|Workshop|Symposium)").unwrap(),
+            Regex::new(r"[.?!]\s*(?:NeurIPS|ICML|ICLR|CVPR|ICCV|ECCV|AAAI|IJCAI|CoRR|JMLR),").unwrap(),
+            Regex::new(r"[.?!]\s*arXiv\s+preprint").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z]").unwrap(),
             Regex::new(r",\s*(?:19|20)\d{2}\.\s*(?:URL|$)").unwrap(),
             Regex::new(r",\s*(?:19|20)\d{2}\.\s*$").unwrap(),
         ]
@@ -1505,6 +1524,17 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
 
     for vp in VENUE_PATTERNS.iter() {
         if let Some(venue_match) = vp.find(ref_text) {
+            // A "?" or "!" right at the start of the match is itself part
+            // of the title (unlike a "." separator, which is pure
+            // punctuation and correctly excluded below) — include it so
+            // a title like "How do fixes become bugs?" keeps its
+            // question mark instead of losing it along with the venue
+            // clause that follows.
+            let content_end = match ref_text[venue_match.start()..].chars().next() {
+                Some(c @ ('?' | '!')) => venue_match.start() + c.len_utf8(),
+                _ => venue_match.start(),
+            };
+
             // Check if this match is actually an editor list, not a venue
             // Use floor_char_boundary to avoid slicing in the middle of a UTF-8 character
             let editor_check_end =
@@ -1513,7 +1543,7 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 // This is an editor list, not a regular venue.
                 // Extract the title from BEFORE the ". In editors" marker
                 // instead of skipping to other patterns which may match the year.
-                let before_editors = ref_text[..venue_match.start()].trim();
+                let before_editors = ref_text[..content_end].trim();
                 let parts = split_sentences_skip_initials(before_editors);
                 if parts.len() >= 2 {
                     let title = parts[1].trim();
@@ -1526,7 +1556,7 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 continue; // If extraction failed, continue to next pattern
             }
 
-            let before_venue = ref_text[..venue_match.start()].trim();
+            let before_venue = ref_text[..content_end].trim();
 
             // First try: split into sentences
             let parts = split_sentences_skip_initials(before_venue);
@@ -1852,32 +1882,51 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     let title_start = caps.get(1).unwrap().start();
     let title_text = &ref_text[title_start..];
 
-    // Find where title ends (venue/year markers)
+    // Find where title ends (venue/year markers). The leading `[.?!]`
+    // (rather than a literal `.`) matters: a title ending in a question
+    // or exclamation mark ("How do fixes become bugs?", "Shoal++: ...
+    // fast and robust!") otherwise never matches any of these patterns,
+    // since they originally required a literal period immediately
+    // before the venue clause — leaving the venue glued onto the title.
     static TITLE_END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
-            Regex::new(r"\.\s+In\s+").unwrap(),
+            Regex::new(r"[.?!]\s+In\s+").unwrap(),
             Regex::new(r"\s+In\s+Proceedings").unwrap(),
-            Regex::new(r"\.\s+(?:Proc\.|Proceedings\s+of)").unwrap(),
-            Regex::new(r"\.\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS|EuroS&P)\b").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+\d{4}").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s*&\s*[A-Z][a-z]+)+").unwrap(),
-            Regex::new(r"\.\s+arXiv\s+preprint").unwrap(),
+            Regex::new(r"[.?!]\s+(?:Proc\.|Proceedings\s+of)").unwrap(),
+            Regex::new(r"[.?!]\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS|EuroS&P)\b")
+                .unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+\d{4}").unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s*&\s*[A-Z][a-z]+)+").unwrap(),
+            Regex::new(r"[.?!]\s+arXiv\s+preprint").unwrap(),
             Regex::new(r",\s+(?:vol\.|pp\.|pages)\s").unwrap(),
             Regex::new(r",\s+\d{4}\.\s*$").unwrap(),
             Regex::new(r",\s+\d+\(\d+\)").unwrap(),
-            Regex::new(r"\.\s+(?:Springer|Elsevier|Wiley|Nature|Science|PLOS|Oxford|Cambridge)\b")
-                .unwrap(),
-            Regex::new(r"\.\s+(?:The\s+)?(?:Annals|Journal|Proceedings)\s+of\b").unwrap(),
-            Regex::new(r"\.\s+Journal\s+of\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+,\s*\d").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+\d+[:(]").unwrap(),
+            Regex::new(
+                r"[.?!]\s+(?:Springer|Elsevier|Wiley|Nature|Science|PLOS|Oxford|Cambridge)\b",
+            )
+            .unwrap(),
+            Regex::new(r"[.?!]\s+(?:The\s+)?(?:Annals|Journal|Proceedings)\s+of\b").unwrap(),
+            Regex::new(r"[.?!]\s+Journal\s+of\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+,\s*\d").unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+\d+[:(]").unwrap(),
         ]
     });
 
     let mut title_end = title_text.len();
     for re in TITLE_END_PATTERNS.iter() {
         if let Some(m) = re.find(title_text) {
-            title_end = title_end.min(m.start());
+            // For patterns anchored on ? or !, keep the punctuation mark —
+            // it's part of the title, unlike a "." separator.
+            let candidate = if title_text
+                .as_bytes()
+                .get(m.start())
+                .is_some_and(|&b| b == b'?' || b == b'!')
+            {
+                m.start() + 1
+            } else {
+                m.start()
+            };
+            title_end = title_end.min(candidate);
         }
     }
 
@@ -2306,8 +2355,51 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     if potential_title.is_empty() {
         None
     } else {
-        Some((potential_title, false))
+        // As the last-resort fallback, `potential_title` is bounded only
+        // by `split_sentences_skip_initials`'s period-based splitting —
+        // a title ending in "?" or "!" (e.g. "How far are we?") has no
+        // period of its own to stop at, so the venue clause that follows
+        // ("In 35th IEEE/ACM International Conference...") stays glued
+        // on all the way to the next real period. Truncate at the first
+        // recognizable venue marker, same as the structurally-stronger
+        // paths above.
+        Some((
+            truncate_at_venue_marker(&potential_title).to_string(),
+            false,
+        ))
     }
+}
+
+/// Truncate `text` at the first recognizable venue/proceedings marker,
+/// treating `.`, `?`, or `!` as a valid boundary before it. A `?`/`!` is
+/// kept (it's part of the title itself, unlike a bare `.` separator).
+/// Deliberately conservative — only the highest-confidence markers, since
+/// callers use this on already low-signal text.
+fn truncate_at_venue_marker(text: &str) -> &str {
+    static PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z0-9]").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Proceedings|Proc\.|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR)\b")
+                .unwrap(),
+        ]
+    });
+
+    let mut end = text.len();
+    for re in PATTERNS.iter() {
+        if let Some(m) = re.find(text) {
+            let candidate = if text
+                .as_bytes()
+                .get(m.start())
+                .is_some_and(|&b| b == b'?' || b == b'!')
+            {
+                m.start() + 1
+            } else {
+                m.start()
+            };
+            end = end.min(candidate);
+        }
+    }
+    text[..end].trim_end_matches('.').trim()
 }
 
 // ───────────────── Sentence splitting ─────────────────
@@ -2839,6 +2931,84 @@ mod tests {
         let (title, from_quotes) = extract_title_from_reference(ref_text);
         assert!(!from_quotes);
         assert!(title.contains("Novel Approach"));
+    }
+
+    // Regression: confirmed against real production citations. A title
+    // ending in "?" or "!" is a real, common shape — but every venue-
+    // boundary regex in the format-detection chain originally required
+    // a literal period immediately before "In {venue}" (or a venue/
+    // publisher name), since only "." was ever treated as a valid
+    // title-ending marker. Left unfixed, the venue clause (and often an
+    // editor list ahead of it) gets glued onto the end of the title
+    // instead of being recognized as the boundary. Each test below
+    // targets a different format-detection path.
+
+    #[test]
+    fn test_question_mark_title_via_venue_marker() {
+        // USENIX/ICML-style: "Authors. Title? In Venue."
+        let ref_text = "A. Author and B. Author. How do fixes become bugs? \
+            In 19th ACM SIGSOFT Symposium on the Foundations of Software Engineering.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(title, "How do fixes become bugs?");
+    }
+
+    #[test]
+    fn test_exclamation_title_via_author_particles() {
+        // "and Surname." author-boundary path.
+        let ref_text = "A. Author. Shoal plus plus: robust and fast! \
+            In Symposium on Networked Systems Design and Implementation (NSDI).";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "Shoal plus plus: robust and fast!");
+    }
+
+    #[test]
+    fn test_multi_mark_title_keeps_internal_marks_and_stops_at_real_boundary() {
+        // A title can legitimately contain several "!"/"?" of its own —
+        // only the LAST one, right before "In {venue}", is the real
+        // boundary; the earlier ones must stay part of the title.
+        let ref_text = "A. Author, B. Author, and C. Author. Disaster strikes! \
+            Internet blackout! What is the fate of crisis mapping? \
+            In 22nd International Conference on Human-Computer Interaction.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Disaster strikes! Internet blackout! What is the fate of crisis mapping?"
+        );
+    }
+
+    #[test]
+    fn test_question_mark_title_before_editor_list() {
+        let ref_text = "A. Author, B. Author, and C. Author. \
+            How to use timed-release encryption on blockchains? \
+            In D. Editor, E. Editor, and F. Editor, editors, CCS, 2020.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "How to use timed-release encryption on blockchains?");
+    }
+
+    #[test]
+    fn test_exclamation_title_via_springer_year_with_in_year_venue() {
+        // Springer/Nature "(Year)" format, plus the "In YEAR Venue" shape
+        // where the venue name isn't a recognized acronym.
+        let ref_text = "Author, A. (2012). Cybersecurity: We need metrics! \
+            In 2012 Cybersecurity Summit (pp. 1-2). IEEE";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "Cybersecurity: We need metrics!");
+    }
+
+    #[test]
+    fn test_question_mark_title_via_fallback_sentence() {
+        let ref_text = "Some Author, Another Author, Third Author, Fourth Author, \
+            Fifth Author, Sixth Author, Seventh Author, and Eighth Author. \
+            Automated patch correctness assessment: How far are we? \
+            In 35th IEEE/ACM International Conference on Automated Software \
+            Engineering, ASE 2020, Melbourne, Australia, September 21-25, 2020, \
+            pages 968-980. IEEE, 2020";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Automated patch correctness assessment: How far are we?"
+        );
     }
 
     #[test]
