@@ -396,7 +396,7 @@ pub fn extract_doi(text: &str) -> Option<String> {
     // string (with an optional trailing period) so a genuine two-sentence
     // reference never gets its trailing digits glued onto an unrelated DOI.
     static FIX1C: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>,]+\.)\s+(\d{3,9})\.?\s*$").unwrap());
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>,]+\.)\s+(\d{1,9})\.?\s*$").unwrap());
     let text_fixed = FIX1C.replace_all(&text_fixed, "$1$2");
 
     // Pattern 2: DOI ending with dash + newline + continuation
