@@ -3,7 +3,7 @@ use regex::Regex;
 use std::collections::HashSet;
 
 use crate::config::ParsingConfig;
-use crate::text_processing::fix_hyphenation;
+use crate::text_processing::{fix_hyphenation, is_single_uppercase_initial};
 
 /// Abbreviations that should NEVER be sentence boundaries (mid-title abbreviations).
 static MID_SENTENCE_ABBREVIATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
@@ -2404,6 +2404,86 @@ fn truncate_at_venue_marker(text: &str) -> &str {
 
 // ───────────────── Sentence splitting ─────────────────
 
+/// Continuation check used only for the "2-3 letter name-prefix" case: a
+/// short Title-Case word like "Md." or a patronymic initial like "Yu.",
+/// immediately followed by more of that author's name. Matches a
+/// normal-order "First [Particle] Middle Last, and Next..." name with the
+/// comma directly touching the last name — e.g. "Md. Kabir Rahman
+/// Chowdhury, and Priya Wu." — which the general `AUTHOR_AFTER` patterns
+/// miss (they either require a space before that comma, or don't allow
+/// this many consecutive name words). Optional particle covers names like
+/// "Maarten van Steen,". Used by both [`split_sentences_skip_initials`]
+/// (title-boundary detection) and `authors::find_first_real_period`
+/// (author-boundary detection) — see the 2-3 letter check in each.
+///
+/// Deliberately NOT added to `AUTHOR_AFTER`, and deliberately not just
+/// "the next word starts with a capital letter": either would also match
+/// right after an ordinary short surname (e.g. "Wu." — a common East
+/// Asian surname), where this same syntactic shape is a real risk — a
+/// title beginning "Fair Systems Analysis, and Practical Deployment
+/// Considerations" would otherwise be mistaken for more authors, and a
+/// title starting with any capitalized word (nearly all of them) would
+/// make a genuine last author's period look like a name-prefix. Requiring
+/// the specific "2-4 capitalized words, comma, and, capital" shape (a
+/// title practically never starts this way) keeps that blast radius
+/// contained.
+///
+/// The comma before "and" is deliberately REQUIRED here (not optional):
+/// dropping it was tried and reverted — see [`MD_PREFIX_CONTINUATION`] for
+/// why a comma-free "X and Y" needs a narrower, name-specific check
+/// instead of widening this one.
+pub(crate) static NAME_PREFIX_CONTINUATION: Lazy<Regex> = Lazy::new(|| {
+    let sc =
+        r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}\u{2018}\u{2019}]";
+    let uc = r"[A-Z\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0100}-\u{0178}]";
+    let particle =
+        r"(?:van|von|de|del|della|di|da|le|la|den|der|ten|ter|dos|das|du|op|het|el|al|ben|ibn)";
+    Regex::new(&format!(
+        r"^{}{}+(?:\s+(?:{}\s+)?{}{}+){{1,3}}\s*,\s*and\s+{}",
+        uc, sc, particle, uc, sc, uc
+    ))
+    .unwrap()
+});
+
+/// Narrower cousin of [`NAME_PREFIX_CONTINUATION`], used ONLY when the
+/// 2-3 letter word immediately before the period is exactly "Md" (a South
+/// Asian first-name prefix, e.g. "Md. Kabir Rahman Chowdhury" or "Md.
+/// Imran Hossen and Xiali Hei").
+///
+/// "Md" is safe to treat much more permissively than the general 2-3
+/// letter case: unlike "Wu", "Yu", "Al", "Xu" and similar, it is
+/// essentially never itself a complete surname — it always prefixes more
+/// of the same author's name — so the comma-before-"and" requirement that
+/// protects the general case against swallowing a genuine short surname
+/// isn't needed here, and can be relaxed to also cover:
+///   - a bare "and" with no comma at all (a 2-author list has no Oxford
+///     comma) — "Md. Imran Hossen and Xiali Hei."
+///   - one or more *additional* full comma-separated names before the
+///     closing "and Lastauthor" — "Md. Mahmud Hossain, Maziar Fotouhi,
+///     and Ragib Hasan." — when the prefixed author isn't last in the
+///     list.
+///
+/// Widening the general check to cover these instead was tried first and
+/// reverted: it also matched a genuine short surname ("Wu.") followed by
+/// a real title with no Oxford comma ("Fair Systems Analysis and
+/// Practical Deployment Considerations"), breaking title extraction for
+/// that combination. Gating on the exact word "Md" avoids that ambiguity
+/// entirely: no title starts with the literal word "Md".
+pub(crate) static MD_PREFIX_CONTINUATION: Lazy<Regex> = Lazy::new(|| {
+    let sc =
+        r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}\u{2018}\u{2019}]";
+    let uc = r"[A-Z\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0100}-\u{0178}]";
+    let particle =
+        r"(?:van|von|de|del|della|di|da|le|la|den|der|ten|ter|dos|das|du|op|het|el|al|ben|ibn)";
+    // {0}=uc, {1}=sc, {2}=particle (indexed so each can repeat without
+    // re-listing it in the format! args).
+    Regex::new(&format!(
+        r"^{0}{1}+(?:\s+(?:{2}\s+)?{0}{1}+){{1,3}}(?:\s*,\s*{0}{1}+(?:\s+(?:{2}\s+)?{0}{1}+){{0,2}})*\s*(?:,\s*)?and\s+{0}",
+        uc, sc, particle
+    ))
+    .unwrap()
+});
+
 /// Split text into sentences, but skip periods that are author initials
 /// (e.g., "M." "J.") or mid-sentence abbreviations (e.g., "vs.").
 pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
@@ -2527,16 +2607,23 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             .unwrap(),
             // Surname, Firstname [Middlenames...] I. (inverted format with middle names + initial)
             // Handles "Oliveira, Ana Flávia C. Moura" after split at "P."
+            // Optional particle before each middle/last name component so a
+            // Dutch/German/French particle (van, von, de, ...) inside the
+            // name — e.g. "Oliveira, Ana van Someren C. Moura" — doesn't
+            // break the match (every word here was previously required to
+            // start with an uppercase letter).
             Regex::new(&format!(
-                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+[A-Z]{}+)+\s+[A-Z]\.\s*[A-Z]",
-                sc, sc, sc
+                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+(?:{}\s+)?[A-Z]{}+)+\s+[A-Z]\.\s*[A-Z]",
+                sc, sc, particle, sc
             ))
             .unwrap(),
             // Surname, Firstname [Middle...] Lastname, (inverted format in comma-separated author list)
             // Handles "Mazurek, Aron Laszka," and "Klemmer, Stefan Albert Horstmann,"
+            // Optional particle before each middle/last name component —
+            // see comment on the pattern above for why.
             Regex::new(&format!(
-                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+[A-Z]{}+)+\s*,",
-                sc, sc, sc
+                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+(?:{}\s+)?[A-Z]{}+)+\s*,",
+                sc, sc, particle, sc
             ))
             .unwrap(),
             // Surname, Firstname, (inverted format with single first name)
@@ -2544,9 +2631,11 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^({}{}+)\s*,\s*{}{}{{2,}}\s*,", uc, sc, uc, sc)).unwrap(),
             // Surname, Firstname Lastname, and Firstname (inverted format with full names)
             // Handles "Gomez, Łukasz Kaiser, and Illia" after split at "N."
+            // Optional particle between the first and last name for the
+            // same reason as the patterns above.
             Regex::new(&format!(
-                r"^({}{}+)\s*,\s*{}{}+\s+{}{}+\s*,\s*and\s+{}",
-                uc, sc, uc, sc, uc, sc, uc
+                r"^({}{}+)\s*,\s*{}{}+\s+(?:{}\s+)?{}{}+\s*,\s*and\s+{}",
+                uc, sc, uc, sc, particle, uc, sc, uc
             ))
             .unwrap(),
             // Surname, et al (inverted format with et al)
@@ -2638,10 +2727,10 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
 
         let char_before = text.as_bytes()[pos - 1];
 
-        // Check if period follows a single capital letter (potential initial)
-        if char_before.is_ascii_uppercase()
-            && (pos == 1 || !text.as_bytes()[pos - 2].is_ascii_alphabetic())
-        {
+        // Check if period follows a single capital letter (potential initial).
+        // Unicode-aware so accented initials (Ö., É., Ł., Ø., Ñ., ...) are
+        // recognized too, not just ASCII A-Z.
+        if is_single_uppercase_initial(text, pos) {
             let after_period = &text[next_start..];
             let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
             if is_author {
@@ -2649,7 +2738,8 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             }
         }
 
-        // Check for multi-letter initials (2-3 chars like "Yu." in Russian/Chinese names)
+        // Check for multi-letter initials (2-3 chars like "Yu." in Russian/Chinese names,
+        // or "Md." — a common South Asian first-name prefix)
         // e.g., "A. Yu. Veretennikov" where "Yu." is a patronymic initial
         {
             let mut word_start = pos - 1;
@@ -2660,7 +2750,10 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // Short words (2-3 chars) starting with capital followed by surname
             if (2..=3).contains(&word_len) && text.as_bytes()[word_start].is_ascii_uppercase() {
                 let after_period = &text[next_start..];
-                let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
+                let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period))
+                    || NAME_PREFIX_CONTINUATION.is_match(after_period)
+                    || (&text[word_start..pos] == "Md"
+                        && MD_PREFIX_CONTINUATION.is_match(after_period));
                 if is_author {
                     continue; // Skip — this is a multi-letter initial
                 }
@@ -2951,6 +3044,135 @@ mod tests {
         let (title, from_quotes) = extract_title_from_reference(ref_text);
         assert!(!from_quotes);
         assert_eq!(title, "How do fixes become bugs?");
+    }
+
+    // Regression: an author list containing a lowercase name particle
+    // (van/von/de/...) in the middle of a "First Particle Last" name broke
+    // every multi-word-name continuation pattern in `AUTHOR_AFTER` (they
+    // all required every name token to start uppercase), causing a
+    // spurious sentence split right before the true title and leaving the
+    // tail of the author list as the extracted "title".
+    #[test]
+    fn test_particle_name_in_author_list_not_mistaken_for_title() {
+        let ref_text = "Amara Osei, Brice Fontaine, Farid Haddad, Junko Watanabe, \
+            Daniel J. Kowalski, Martina Lindberg, David R. Sanchez, Maarten van Steen, \
+            and Andreas Berg. Systemname: A framework for evaluating something. \
+            In 27th Annual Some Symposium, 2020.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(title, "Systemname: A framework for evaluating something");
+    }
+
+    // Regression: a short Title-Case name-prefix like "Md." (a common South
+    // Asian first-name abbreviation) was treated the same as a full
+    // surname, so the sentence splitter cut the author list right after it
+    // instead of continuing through the rest of that author's name.
+    #[test]
+    fn test_name_prefix_initial_in_author_list_not_mistaken_for_title() {
+        let ref_text = "Ana Beltran, Farrukh Yu Nazari, Md. Kabir Rahman Chowdhury, \
+            and Priya Wu. Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024, pages 1-10.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression: an accented initial (Ö, É, Ł, Ø, Ñ, ...) wasn't
+    // recognized as an initial at all — an ASCII-only check inspected a
+    // raw UTF-8 continuation byte instead of the actual character — so the
+    // sentence splitter treated the period after it as a real boundary and
+    // returned the tail of the author list as the title.
+    #[test]
+    fn test_non_ascii_initial_in_author_list_not_mistaken_for_title() {
+        let ref_text = "Farid Chen, Selin Ö. Yilmaz, and Priya Wu. \
+            Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression guard: a title beginning with "CapWord CapWord CapWord,
+    // and CapWord..." has the exact same syntactic shape as the
+    // name-prefix-continuation fix above (e.g. "Md. Kabir Rahman
+    // Chowdhury, and Priya Wu."). It must NOT be mistaken for more
+    // authors just because it follows an ordinary (non-prefix) surname.
+    #[test]
+    fn test_title_starting_with_comma_and_not_mistaken_for_more_authors() {
+        let ref_text = "Jane Smith and John Miller. \
+            Fair Systems Analysis, and Practical Deployment Considerations. \
+            In Proceedings of Some Conference.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Fair Systems Analysis, and Practical Deployment Considerations"
+        );
+    }
+
+    #[test]
+    fn test_title_starting_with_comma_and_after_initials_not_mistaken_for_more_authors() {
+        let ref_text = "A. Author, B. Author, and C. Author. \
+            Deep Learning Systems, and Fairness Considerations in Practice. \
+            In Some Symposium.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Deep Learning Systems, and Fairness Considerations in Practice"
+        );
+    }
+
+    // Regression: "Md." at the start of a bare 2-author list with no
+    // Oxford comma ("Md. First Last and First2 Last2.") wasn't recognized
+    // as a name-prefix continuation, so the sentence splitter cut right
+    // after it and returned the rest of the author list as the title.
+    #[test]
+    fn test_md_prefix_two_author_no_comma_not_mistaken_for_title() {
+        let ref_text = "Md. Kabir Chen and Priya Wu. \
+            Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression: "Md." prefixing an author who isn't last in the list —
+    // one more full name appears before the closing ", and Lastauthor."
+    #[test]
+    fn test_md_prefix_not_last_in_list_not_mistaken_for_title() {
+        let ref_text = "Md. Kabir Rahman Chowdhury, Farid Haddad, and Priya Wu. \
+            Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression guard: the permissive "Md" continuation must stay scoped
+    // to the exact word "Md" — a genuine short surname like "Wu" at the
+    // real end of the author list, followed by a real title with no
+    // Oxford comma, must not be swallowed as "more authors".
+    #[test]
+    fn test_short_surname_with_bare_and_title_not_mistaken_for_md_prefix() {
+        let ref_text = "Farid Chen and Priya Wu. \
+            Fair Systems Analysis and Practical Deployment Considerations. \
+            In Proceedings of Some Conference.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Fair Systems Analysis and Practical Deployment Considerations"
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::config::ParsingConfig;
+use crate::text_processing::is_single_uppercase_initial;
 
 /// Special sentinel value indicating the reference uses em-dashes to
 /// indicate "same authors as previous entry."
@@ -53,8 +54,20 @@ pub(crate) fn extract_authors_from_reference_with_config(
 
     // Fix "word{and}" patterns where a space was lost between a name and "and"
     // e.g., "E. Dasand J. W. Burdick" → "E. Das and J. W. Burdick"
-    static MERGED_AND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([a-z])and ([A-Z])").unwrap());
-    let ref_text = MERGED_AND_RE.replace_all(ref_text, "$1 and $2");
+    //
+    // Regression: a bare `([a-z])and ([A-Z])` also matches inside any real
+    // name that happens to end in "...and" — e.g. "Roland H. C. Yap"
+    // contains "l" + "and" + " " + "H", which is structurally identical to
+    // the genuine merge artifact and got split into two bogus authors
+    // (`"Rol"`, `"H. C. Yap"`). The intended case only ever follows a
+    // single-letter initial directly ("E. Dasand...", "X.Y.Zand..."), so
+    // requiring that immediately before the merged word — real surnames
+    // like "Roland" that start a *new* author (preceded by ", " or "and ",
+    // not "X.") never match, while a genuinely glued "Initial.Surnameand"
+    // still does.
+    static MERGED_AND_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"([A-Z]\.\s*)([A-Za-z]*[a-z])and ([A-Z])").unwrap());
+    let ref_text = MERGED_AND_RE.replace_all(ref_text, "$1$2 and $3");
     let ref_text = ref_text.as_ref();
 
     // Check for em-dash pattern meaning "same authors as previous"
@@ -74,11 +87,32 @@ pub(crate) fn extract_authors_from_reference_with_config(
     // parsing format check and comes back with zero authors, even though
     // the real author list at the very start was simple and well-formed.
     //
+    // The `/\s*` after the DOI prefix and the optional trailing group both
+    // cover a DOI wrapped across a PDF line break that's already been
+    // collapsed to a plain space by an earlier pipeline stage:
+    //   - "doi: 10.1109/ SP61157.2025.00134" — the wrap lands right after
+    //     the slash. Without `\s*` there, `\S+` requires a non-whitespace
+    //     character immediately after the slash and the whole alternation
+    //     fails to match at all, leaving the *entire* DOI unmasked.
+    //   - "doi:10.14722/usec.2024. 23039" — the wrap lands mid-suffix.
+    //     Without the trailing optional group, `\S+` only masks up through
+    //     the space, leaving the wrapped remainder's own embedded
+    //     ".YYYY."-shaped digits exposed.
+    // Both leave a DOI's internal digit-dot structure exposed to the same
+    // spurious-boundary problem this masking exists to prevent — same
+    // underlying issue as the title-extraction fix in `extract_doi`
+    // (hallucinator-core), just unmasked here instead. The trailing group
+    // is deliberately narrow (a short alnum token then 1-4 ".digits"
+    // groups) so it only ever matches a DOI's own wrapped tail, never the
+    // start of a genuine next sentence.
+    //
     // Positions must stay aligned with `ref_text` for the later
     // `ref_text[..author_end]` slice, so matched bytes are replaced with
     // a same-length run of a filler character rather than removed.
-    static DOI_ARXIV_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)(?:10\.\d{4,}/|arxiv:\s*)\S+").unwrap());
+    static DOI_ARXIV_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)(?:10\.\d{4,}/\s*|arxiv:\s*)\S+(?:\s+[a-z0-9]{0,4}(?:\.\d+){1,4}\.?)?")
+            .unwrap()
+    });
     let boundary_text =
         DOI_ARXIV_RE.replace_all(ref_text, |caps: &regex::Captures| "#".repeat(caps[0].len()));
     let boundary_text = boundary_text.as_ref();
@@ -187,10 +221,13 @@ fn find_first_real_period(text: &str) -> Option<usize> {
         if pos == 0 {
             continue;
         }
-        let char_before = text.as_bytes()[pos - 1];
-        if char_before.is_ascii_uppercase()
-            && (pos == 1 || !text.as_bytes()[pos - 2].is_ascii_alphabetic())
-        {
+        // Check if period follows a single capital letter (potential initial).
+        // Unicode-aware so accented initials (Ö., É., Ł., Ø., Ñ., ...) are
+        // recognized too, not just ASCII A-Z — an ASCII-only check silently
+        // misses these (and would even inspect a raw UTF-8 continuation
+        // byte for a multi-byte character), so the period after e.g. "Ö."
+        // gets mistaken for the end of the author list.
+        if is_single_uppercase_initial(text, pos) {
             // This is likely an initial — skip
             continue;
         }
@@ -203,6 +240,33 @@ fn find_first_real_period(text: &str) -> Option<usize> {
         let word_before = &text[word_start..pos];
         if SUFFIX_WORDS.contains(word_before) {
             continue;
+        }
+
+        // Check for a short Title-Case name-prefix/patronymic initial, e.g.
+        // "Md." (a common South Asian first-name prefix) or "Yu."
+        // (Russian/Chinese patronymic), immediately followed by what looks
+        // like the rest of a name. Gated on the word being Title Case (not
+        // an ALL-CAPS acronym like "USA." or "IBM.") and on what follows
+        // having the same "more of a name list" shape required by
+        // `NAME_PREFIX_CONTINUATION` (2-4 capitalized words, comma, "and",
+        // capital) — NOT just "the next word starts with a capital
+        // letter", which would also swallow a genuine short final surname
+        // like "Wu." right before a title, since titles almost always
+        // start with a capital letter too.
+        //
+        // "Md" specifically gets the more permissive `MD_PREFIX_CONTINUATION`
+        // instead (no comma required before "and", and additional full
+        // names allowed before it) — see that regex's doc comment for why
+        // it's safe to relax only for this exact word.
+        let word_len = word_before.chars().count();
+        if (2..=3).contains(&word_len)
+            && word_before.chars().next().is_some_and(|c| c.is_uppercase())
+            && word_before.chars().skip(1).all(|c| c.is_lowercase())
+            && (crate::title::NAME_PREFIX_CONTINUATION.is_match(&text[m.end()..])
+                || (word_before == "Md"
+                    && crate::title::MD_PREFIX_CONTINUATION.is_match(&text[m.end()..])))
+        {
+            continue; // Likely a name-prefix initial, not a sentence end
         }
 
         return Some(pos);
@@ -450,6 +514,135 @@ mod tests {
             "Alice Author and Bob Author. A perfectly ordinary title here. arXiv:2020.12345";
         let authors = extract_authors_from_reference(ref_text);
         assert_eq!(authors, vec!["Alice Author", "Bob Author"]);
+    }
+
+    // Regression: "Md." (a common South Asian first-name prefix, e.g.
+    // "Md. Kabir Rahman Chowdhury") was treated the same as a full
+    // surname, so the author-boundary detector cut the author list right
+    // after it — dropping the rest of that author's name and everyone
+    // listed after them.
+    #[test]
+    fn test_name_prefix_initial_does_not_truncate_author_list() {
+        let ref_text = "Farid Chen, Md. Kabir Rahman Chowdhury, and Priya Wu. \
+            A perfectly ordinary title here. In Some Conference, 2024.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(
+            authors,
+            vec!["Farid Chen", "Md. Kabir Rahman Chowdhury", "Priya Wu"]
+        );
+    }
+
+    // Regression: an accented initial (Ö, É, Ł, Ø, Ñ, ...) wasn't
+    // recognized as an initial at all — the ASCII-only check inspected a
+    // raw UTF-8 continuation byte instead of the actual character — so the
+    // author-boundary detector treated the period after it as the real
+    // end of the author list, dropping every author listed afterward.
+    #[test]
+    fn test_non_ascii_initial_does_not_truncate_author_list() {
+        let ref_text = "Farid Chen, Selin Ö. Yilmaz, and Priya Wu. \
+            A perfectly ordinary title here. In Some Conference, 2024.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Farid Chen", "Selin Ö. Yilmaz", "Priya Wu"]);
+    }
+
+    // Regression guard: a genuine short (2-3 letter) surname at the real
+    // end of the author list — e.g. "Wu", a common East Asian surname —
+    // must not be mistaken for a name-prefix like "Md." just because the
+    // title that follows starts with a capital letter (nearly all do).
+    #[test]
+    fn test_short_surname_at_end_of_author_list_not_mistaken_for_prefix() {
+        let ref_text = "Farid Chen and Priya Wu. \
+            A perfectly ordinary title here. In Some Conference, 2024.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Farid Chen", "Priya Wu"]);
+    }
+
+    // Regression: "Md." at the very start of a bare 2-author list with no
+    // Oxford comma ("Md. First Last and First2 Last2.") wasn't recognized
+    // as a continuation — the general name-prefix check requires a comma
+    // before "and", which a 2-author list never has.
+    #[test]
+    fn test_md_prefix_two_author_list_with_no_oxford_comma() {
+        let ref_text = "Md. Kabir Chen and Priya Wu. \
+            A perfectly ordinary title here. In Some Conference, 2024.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Md. Kabir Chen", "Priya Wu"]);
+    }
+
+    // Regression: "Md." prefixing an author who ISN'T last in the list —
+    // one more full name appears before the closing ", and Lastauthor."
+    // — wasn't recognized either, since the general check only allows a
+    // single multi-word name between the prefix and "and".
+    #[test]
+    fn test_md_prefix_not_last_in_author_list() {
+        let ref_text = "Md. Kabir Rahman Chowdhury, Farid Haddad, and Priya Wu. \
+            A perfectly ordinary title here. In Some Conference, 2024.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(
+            authors,
+            vec!["Md. Kabir Rahman Chowdhury", "Farid Haddad", "Priya Wu"]
+        );
+    }
+
+    // Regression guard: the permissive "Md" continuation check must stay
+    // scoped to the exact word "Md" — a genuine short surname like "Wu"
+    // must still require a comma before "and" (the general check), so a
+    // real title with no Oxford comma isn't swallowed.
+    #[test]
+    fn test_short_surname_with_bare_and_title_not_mistaken_for_md_prefix() {
+        let ref_text = "Farid Chen and Priya Wu. \
+            Fair Systems Analysis and Practical Deployment Considerations. \
+            In Proceedings of Some Conference.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Farid Chen", "Priya Wu"]);
+    }
+
+    // Regression: a DOI wrapped across a PDF line break (already collapsed
+    // to a plain space by an earlier pipeline stage) left its own embedded
+    // ".YYYY."-shaped tail unmasked, spuriously matching the ACM-style
+    // "authors end at '. YYYY.'" boundary heuristic deep inside the venue
+    // clause. That dropped the true last author and admitted venue
+    // fragments (city/state/country) as pseudo-authors.
+    #[test]
+    fn test_wrapped_doi_does_not_leak_venue_into_author_list() {
+        let ref_text = "Farid Chen, Priya Wu, and Kabir Rahman. \
+            A perfectly ordinary title here. In Some Symposium, Some City, ST, USA, \
+            May 1-3, 2024, pages 1-10. Some Publisher, 2024. \
+            doi:10.1109/TFOO5534 2.2024.10545393";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Farid Chen", "Priya Wu", "Kabir Rahman"]);
+    }
+
+    // Regression: a DOI wrapped right after the slash (rather than
+    // mid-suffix, as in the test above) wasn't masked at all — `\S+`
+    // requires a non-whitespace character immediately after "10.NNNN/",
+    // so when a space follows the slash itself the whole alternation
+    // failed to match, leaving the entire DOI (and its embedded
+    // ".YYYY.") exposed to the same spurious-boundary problem.
+    #[test]
+    fn test_doi_wrapped_right_after_slash_does_not_leak_venue_into_author_list() {
+        let ref_text = "Farid Chen, Priya Wu, and Kabir Rahman. \
+            A perfectly ordinary title here. In Some Symposium, Some City, ST, USA, \
+            May 1-3, 2024, pages 1-10. Some Publisher, 2024. \
+            doi: 10.1109/ TFOO5534.2024.10545393";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(authors, vec!["Farid Chen", "Priya Wu", "Kabir Rahman"]);
+    }
+
+    // Regression: `MERGED_AND_RE` (below) also matched inside any real
+    // name ending in "...and" — e.g. "Ferdinand" contains "n" + "and" +
+    // " " + the next author's capital initial, structurally identical to
+    // the genuine missing-space artifact it's meant to fix — splitting it
+    // into two bogus authors.
+    #[test]
+    fn test_merged_and_regex_does_not_split_name_ending_in_and() {
+        let ref_text = "Priya Wu, Farid Ferdinand Haddad, and Kabir Rahman. \
+            A perfectly ordinary title here. In Some Conference, 2024.";
+        let authors = extract_authors_from_reference(ref_text);
+        assert_eq!(
+            authors,
+            vec!["Priya Wu", "Farid Ferdinand Haddad", "Kabir Rahman"]
+        );
     }
 
     #[test]
