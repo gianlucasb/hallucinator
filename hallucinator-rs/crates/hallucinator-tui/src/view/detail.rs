@@ -4,6 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
+use hallucinator_core::authors::get_last_name_public;
 use hallucinator_core::{DbStatus, MismatchKind, Status};
 
 use crate::app::App;
@@ -165,22 +166,7 @@ pub fn render_in(
 
             // DB Authors (what the database returned) — always show, even if empty
             if !result.found_authors.is_empty() {
-                let overlap = if !result.ref_authors.is_empty() {
-                    let ref_set: std::collections::HashSet<_> = result
-                        .ref_authors
-                        .iter()
-                        .map(|a| a.to_lowercase())
-                        .collect();
-                    let found_set: std::collections::HashSet<_> = result
-                        .found_authors
-                        .iter()
-                        .map(|a| a.to_lowercase())
-                        .collect();
-                    let overlap_count = ref_set.intersection(&found_set).count();
-                    format!(" ({}/{})", overlap_count, result.ref_authors.len())
-                } else {
-                    String::new()
-                };
+                let overlap = author_overlap_label(&result.ref_authors, &result.found_authors);
                 labeled_line(
                     &mut lines,
                     "DB Authors",
@@ -411,6 +397,37 @@ fn labeled_line<'a>(lines: &mut Vec<Line<'a>>, label: &'a str, value: &str, them
         Span::styled(format!("  {label:<16}"), Style::default().fg(theme.dim)),
         Span::styled(value.to_string(), Style::default().fg(theme.text)),
     ]));
+}
+
+/// Build the trailing " (N/M)" overlap count shown after the "DB Authors"
+/// line on a mismatch, or "" if `ref_authors` is empty.
+///
+/// Compares by surname (via the same `get_last_name_public` the real
+/// matcher uses), not the raw lowercased full name string. A naive
+/// full-string comparison called any formatting difference — a DBLP
+/// disambiguation suffix ("Wenbo Guo 0001"), an initial vs. a full first
+/// name ("J. Smith" vs "John Smith"), a diacritic — a non-match, so this
+/// count routinely showed something alarming like "(0/7)" for authors that
+/// actually agree. That's misleading on its own, and disconnected from
+/// `validate_authors_with_source` (the real mismatch decision), which
+/// already normalizes all of this — surname comparison is a much closer
+/// approximation of what that function actually considers a match.
+fn author_overlap_label(ref_authors: &[String], found_authors: &[String]) -> String {
+    if ref_authors.is_empty() {
+        return String::new();
+    }
+    let ref_set: std::collections::HashSet<String> = ref_authors
+        .iter()
+        .map(|a| get_last_name_public(a))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let found_set: std::collections::HashSet<String> = found_authors
+        .iter()
+        .map(|a| get_last_name_public(a))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let overlap_count = ref_set.intersection(&found_set).count();
+    format!(" ({}/{})", overlap_count, ref_authors.len())
 }
 
 /// Scan the rendered buffer inside a bordered content area for link display text
@@ -768,5 +785,36 @@ mod tests {
         let links = collect_links(&rs);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].label, "URL: https://github.com/a/b");
+    }
+
+    // Regression: the "(N/M)" overlap count used a naive lowercased
+    // full-string comparison, so a DBLP disambiguation suffix made a
+    // genuinely-matching author show as zero overlap.
+    #[test]
+    fn overlap_label_ignores_dblp_disambiguation_suffix() {
+        let ref_authors = vec!["Wenbo Guo".to_string()];
+        let found_authors = vec!["Wenbo Guo 0001".to_string()];
+        assert_eq!(author_overlap_label(&ref_authors, &found_authors), " (1/1)");
+    }
+
+    // Regression: same naive comparison also called an initial vs. a full
+    // first name a non-match, even though it's the same person.
+    #[test]
+    fn overlap_label_ignores_initial_vs_full_first_name() {
+        let ref_authors = vec!["J. Smith".to_string()];
+        let found_authors = vec!["John Smith".to_string()];
+        assert_eq!(author_overlap_label(&ref_authors, &found_authors), " (1/1)");
+    }
+
+    #[test]
+    fn overlap_label_counts_genuine_non_overlap() {
+        let ref_authors = vec!["Alice Jones".to_string()];
+        let found_authors = vec!["Bob Kim".to_string()];
+        assert_eq!(author_overlap_label(&ref_authors, &found_authors), " (0/1)");
+    }
+
+    #[test]
+    fn overlap_label_empty_ref_authors_is_empty_string() {
+        assert_eq!(author_overlap_label(&[], &["Someone".to_string()]), "");
     }
 }
