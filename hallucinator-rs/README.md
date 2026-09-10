@@ -96,9 +96,14 @@ hallucinator-cli check --no-color paper.pdf
 
 ### Building Offline Databases
 
+> [!WARNING]
+> **DBLP's online API is currently broken.** dblp.org has deployed [Anubis](https://anubis.techaro.lol/) bot-protection: `https://dblp.org/search/publ/api` returns a JS challenge page (HTTP 200) instead of JSON to any non-browser client, so every online DBLP query fails. Build the offline DB below and pass `--dblp-offline` — it queries a local SQLite database instead of dblp.org, so it's unaffected. If the bulk download in `update-dblp` also gets blocked, download `https://dblp.uni-trier.de/xml/dblp.xml.gz` manually in a browser and run `update-dblp dblp.db --from-file /path/to/dblp.xml.gz` instead (`update-dblp` also now detects a bad/blocked download — one that parses to a suspiciously small record count — and fails with an error instead of silently building an empty database).
+
 ```bash
-# DBLP (~4.6GB download, builds SQLite with FTS5 index)
+# DBLP (large download, builds SQLite with FTS5 index)
 hallucinator-cli update-dblp dblp.db
+# or, if the live download is blocked: download dblp.xml.gz manually and:
+# hallucinator-cli update-dblp dblp.db --from-file /path/to/dblp.xml.gz
 
 # ACL Anthology
 hallucinator-cli update-acl acl.db
@@ -283,7 +288,7 @@ If no path is specified, the tool checks:
 |----------|----------|-------|
 | CrossRef | DOIs, journal articles, conference papers | |
 | arXiv | Preprints (CS, physics, math, etc.) | Online API or offline SQLite + FTS5 (Kaggle snapshot) |
-| DBLP | Computer science bibliography | Online API or offline SQLite + FTS5 |
+| DBLP | Computer science bibliography | Online API currently broken (bot-protection) — offline SQLite + FTS5 strongly recommended, see warning above |
 | Semantic Scholar | Aggregates Academia.edu, SSRN, PubMed, and more | Optional API key for higher rate limits |
 | ACL Anthology | Computational linguistics | Online API or offline SQLite + FTS5 |
 | Europe PMC | Life science literature (42M+ abstracts) | |

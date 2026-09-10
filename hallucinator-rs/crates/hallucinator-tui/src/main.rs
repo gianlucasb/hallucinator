@@ -3,7 +3,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -123,9 +123,22 @@ struct Cli {
 #[allow(clippy::enum_variant_names)]
 enum Command {
     /// Download and build the offline DBLP database
+    ///
+    /// dblp.org has started serving Anubis (bot-protection) challenge
+    /// pages to some clients, which a plain HTTP download can't get past —
+    /// it requires running JS to solve a proof-of-work challenge. If the
+    /// live download fails (or --from-file is more convenient), download
+    /// https://dblp.uni-trier.de/xml/dblp.xml.gz in a real browser and
+    /// pass it via --from-file instead.
     UpdateDblp {
         /// Path to store the DBLP SQLite database (default: ./dblp.db)
         path: Option<PathBuf>,
+
+        /// Build from an already-downloaded dblp.xml.gz instead of
+        /// fetching it live. Use this if the live download is blocked —
+        /// save the file from a real browser first.
+        #[arg(long)]
+        from_file: Option<PathBuf>,
     },
     /// Download and build the offline ACL Anthology database
     UpdateAcl {
@@ -155,9 +168,9 @@ async fn main() -> anyhow::Result<()> {
     // Handle subcommands
     if let Some(command) = cli.command {
         return match command {
-            Command::UpdateDblp { path } => {
+            Command::UpdateDblp { path, from_file } => {
                 let db_path = path.unwrap_or_else(|| PathBuf::from("dblp.db"));
-                update_dblp(&db_path).await
+                update_dblp(&db_path, from_file.as_deref()).await
             }
             Command::UpdateAcl { path } => {
                 let db_path = path.unwrap_or_else(|| PathBuf::from("acl.db"));
@@ -1163,7 +1176,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
+async fn update_dblp(db_path: &PathBuf, from_file: Option<&Path>) -> anyhow::Result<()> {
     use indicatif::{HumanBytes, HumanCount, MultiProgress, ProgressBar, ProgressStyle};
     use std::time::Instant;
 
@@ -1197,7 +1210,14 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     let dl_bar = multi.add(ProgressBar::new(0));
     dl_bar.set_style(dl_unknown_style.clone());
     dl_bar.set_message("Connecting to dblp.org...");
-    dl_bar.enable_steady_tick(Duration::from_millis(120));
+    if from_file.is_some() {
+        // build_database_from_file never emits a Downloading event — hide
+        // this bar entirely instead of leaving a stale "Connecting..."
+        // spinner on screen.
+        dl_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+    } else {
+        dl_bar.enable_steady_tick(Duration::from_millis(120));
+    }
 
     let parse_bar = multi.add(ProgressBar::new(0));
     parse_bar.set_style(parse_spinner_style.clone());
@@ -1210,7 +1230,7 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     let build_start = Instant::now();
     let parse_start = std::cell::Cell::new(None::<Instant>);
 
-    let updated = hallucinator_dblp::build_database(db_path, |event| match event {
+    let mut progress_cb = |event| match event {
         hallucinator_dblp::BuildProgress::Downloading {
             bytes_downloaded,
             total_bytes,
@@ -1313,8 +1333,14 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
                 ));
             }
         }
-    })
-    .await?;
+    };
+
+    let updated = if let Some(xml_gz_path) = from_file {
+        hallucinator_dblp::build_database_from_file(db_path, xml_gz_path, &mut progress_cb)?;
+        true // no "already up to date" concept when building from a local file
+    } else {
+        hallucinator_dblp::build_database(db_path, &mut progress_cb).await?
+    };
 
     let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
     if !updated {
