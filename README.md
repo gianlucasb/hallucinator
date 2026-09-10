@@ -79,7 +79,7 @@ The tool queries these databases simultaneously:
 |----------|----------------|
 | **CrossRef** | DOIs, journal articles, conference papers |
 | **arXiv** | Preprints (CS, physics, math, etc.) — online or offline |
-| **DBLP** | Computer science bibliography (online or offline) |
+| **DBLP** | Computer science bibliography (online API currently broken — see below; offline strongly recommended) |
 | **Semantic Scholar** | Aggregates Academia.edu, SSRN, PubMed, and more |
 | **ACL Anthology** | Computational linguistics papers (online or offline) |
 | **Europe PMC** | Life science literature (42M+ abstracts, mirrors PubMed/PMC) |
@@ -94,7 +94,10 @@ The tool queries these databases simultaneously:
 
 ~~**OpenReview**~~ - Disabled. API unreachable after the Nov 2025 incident.
 
-We **strongly recommend** downloading the **DBLP**, **ACL Anthology**, and **arXiv** databases for local querying—DBLP and arXiv in particular rate-limit online requests aggressively (arXiv enforces a 3-second gap between requests). See the "Offline Databases" section below.
+> [!WARNING]
+> **DBLP's online API is currently unusable.** dblp.org has deployed [Anubis](https://anubis.techaro.lol/) bot-protection, which returns a JavaScript challenge page (with an HTTP 200 status) instead of real data to any non-browser client — there is no simple fix on our end for this, since it requires solving a proof-of-work challenge in a browser. Every online DBLP query will fail right now. **Use offline DBLP (see below)** — it talks to a local SQLite database instead of dblp.org, so it's unaffected.
+
+We **strongly recommend** downloading the **DBLP**, **ACL Anthology**, and **arXiv** databases for local querying. DBLP's online API is currently broken entirely (see above), and arXiv rate-limits online requests aggressively (a 3-second gap between requests, so 50 references can take 2+ minutes). See the "Offline Databases" section below.
 
 ---
 
@@ -146,15 +149,22 @@ hallucinator-cli check \
 
 If you place the databases in `~/.local/share/hallucinator/`, they're detected automatically—no flags needed.
 
-### DBLP (strongly recommended)
+### DBLP (required right now — see warning above)
 
-DBLP aggressively rate-limits API requests. Download their full database (~4.6GB) and query it locally:
+DBLP's online API is currently broken entirely by bot-protection, and even once that's resolved, it rate-limits requests aggressively. Download their full database and query it locally instead:
 
 ```bash
 hallucinator-cli update-dblp dblp.db
 ```
 
-This downloads the latest [DBLP N-Triples dump](https://dblp.org/rdf/) and builds a SQLite database with ~6M publications. Takes 20-30 minutes.
+This downloads the latest [DBLP XML dump](https://dblp.org/xml/) (a large compressed download) and builds a SQLite database with several million publications. Takes 20-30 minutes.
+
+**If the live download itself gets blocked too** — dblp.org's bot-protection can intercept the bulk dump, not just the search API, though `hallucinator-cli`/`hallucinator-tui` now detect this (a download that parses to a suspiciously small number of records fails loudly with an error, instead of silently building an empty database) — download `https://dblp.uni-trier.de/xml/dblp.xml.gz` manually in a real browser, then point `update-dblp` at the saved file:
+
+```bash
+hallucinator-cli update-dblp dblp.db --from-file /path/to/dblp.xml.gz
+# or: hallucinator-tui update-dblp dblp.db --from-file /path/to/dblp.xml.gz
+```
 
 ### arXiv (strongly recommended)
 
