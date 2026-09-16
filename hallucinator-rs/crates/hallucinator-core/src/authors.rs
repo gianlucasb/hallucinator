@@ -84,6 +84,58 @@ pub fn db_has_complete_authors(db_name: &str) -> bool {
     db_name != "DBLP" && db_name != "OpenAlex"
 }
 
+/// Whether `author` carries no real identifying information — either an
+/// explicit "no named author" placeholder (`"Anonymous"`, `"N/A"`,
+/// `"Unknown"`) or a bibliography-style "ditto" marker some citation
+/// styles use for a repeated author instead of restating the name
+/// (`"___"`, `"----"`, an em/en-dash run). A reference whose author list
+/// is made up entirely of these carries nothing to compare against a
+/// database's returned authors — see [`has_real_authors`].
+fn is_placeholder_author(author: &str) -> bool {
+    let trimmed = author.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_lowercase();
+    if matches!(
+        lower.as_str(),
+        "anonymous" | "anon" | "anon." | "n/a" | "na" | "unknown"
+    ) {
+        return true;
+    }
+    // A run of underscores/hyphens/dashes standing in for "same as the
+    // previous entry" (e.g. "___", "----", "—", "——").
+    trimmed
+        .chars()
+        .all(|c| matches!(c, '_' | '-' | '\u{2014}' | '\u{2013}'))
+}
+
+/// Whether `authors` has at least one name that isn't a placeholder (see
+/// [`is_placeholder_author`]) — i.e. whether there's anything real to
+/// compare against a database's author list. Callers should treat "no
+/// real authors" the same as an empty author list: skip the comparison
+/// rather than flag a mismatch against a placeholder string that was
+/// never meant to identify anyone.
+pub fn has_real_authors(authors: &[String]) -> bool {
+    authors.iter().any(|a| !is_placeholder_author(a))
+}
+
+/// Whether `db_name` is a source where an empty `found_authors` on an
+/// otherwise-successful title match is normal, not a sign the match is
+/// wrong — so it should be accepted rather than forced into
+/// AuthorMismatch.
+///
+/// - **Web Search** (SearxNG) never returns author data at all.
+/// - **DBLP** sometimes stores authorless records (handbook chapters,
+///   anonymised/organisational entries like `journals/ccr/X12`).
+/// - **Standards** (3GPP/IEEE/ISO/ITU-T/ETSI/W3C/NIST pattern matches)
+///   has no per-author byline to return in the first place — the
+///   "author" is the standards body itself, already captured in the
+///   title, not a `found_authors` entry.
+pub fn db_allows_empty_found_authors(db_name: &str) -> bool {
+    matches!(db_name, "Web Search" | "DBLP" | "Standards")
+}
+
 /// Backwards-compatible entry point that assumes the source may omit authors
 /// (DBLP-style leniency). Prefer [`validate_authors_with_source`] from the
 /// checker so complete-author databases get the stricter phantom rule.
@@ -544,6 +596,46 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_has_real_authors_anonymous_is_placeholder() {
+        assert!(!has_real_authors(&s(&["Anonymous"])));
+        assert!(!has_real_authors(&s(&["anonymous"])));
+        assert!(!has_real_authors(&s(&["Anon."])));
+    }
+
+    #[test]
+    fn test_has_real_authors_ditto_marker_is_placeholder() {
+        assert!(!has_real_authors(&s(&["___"])));
+        assert!(!has_real_authors(&s(&["----"])));
+        assert!(!has_real_authors(&s(&["\u{2014}"]))); // em-dash
+    }
+
+    #[test]
+    fn test_has_real_authors_mixed_list_counts_as_real() {
+        // One placeholder alongside a real name still carries real
+        // information to compare.
+        assert!(has_real_authors(&s(&["Anonymous", "Jane Doe"])));
+    }
+
+    #[test]
+    fn test_has_real_authors_empty_list_is_not_real() {
+        assert!(!has_real_authors(&s(&[])));
+    }
+
+    #[test]
+    fn test_has_real_authors_normal_name_is_real() {
+        assert!(has_real_authors(&s(&["John Smith"])));
+    }
+
+    #[test]
+    fn test_db_allows_empty_found_authors() {
+        assert!(db_allows_empty_found_authors("Web Search"));
+        assert!(db_allows_empty_found_authors("DBLP"));
+        assert!(db_allows_empty_found_authors("Standards"));
+        assert!(!db_allows_empty_found_authors("CrossRef"));
+        assert!(!db_allows_empty_found_authors("OpenAlex"));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +76,13 @@ struct Cli {
     #[arg(long)]
     openalex_offline: Option<PathBuf>,
 
+    /// Path to local corpus database (recent conference proceedings not
+    /// yet indexed elsewhere, plus references marked safe during review).
+    /// Built with `hallucinator-cli import-*` subcommands — no in-TUI
+    /// build support, same as --arxiv-offline / --iacr-eprint-offline.
+    #[arg(long)]
+    local_corpus: Option<PathBuf>,
+
     /// Comma-separated list of databases to disable
     #[arg(long, value_delimiter = ',')]
     disable_dbs: Vec<String>,
@@ -116,9 +123,22 @@ struct Cli {
 #[allow(clippy::enum_variant_names)]
 enum Command {
     /// Download and build the offline DBLP database
+    ///
+    /// dblp.org has started serving Anubis (bot-protection) challenge
+    /// pages to some clients, which a plain HTTP download can't get past —
+    /// it requires running JS to solve a proof-of-work challenge. If the
+    /// live download fails (or --from-file is more convenient), download
+    /// https://dblp.uni-trier.de/xml/dblp.xml.gz in a real browser and
+    /// pass it via --from-file instead.
     UpdateDblp {
         /// Path to store the DBLP SQLite database (default: ./dblp.db)
         path: Option<PathBuf>,
+
+        /// Build from an already-downloaded dblp.xml.gz instead of
+        /// fetching it live. Use this if the live download is blocked —
+        /// save the file from a real browser first.
+        #[arg(long)]
+        from_file: Option<PathBuf>,
     },
     /// Download and build the offline ACL Anthology database
     UpdateAcl {
@@ -148,9 +168,9 @@ async fn main() -> anyhow::Result<()> {
     // Handle subcommands
     if let Some(command) = cli.command {
         return match command {
-            Command::UpdateDblp { path } => {
+            Command::UpdateDblp { path, from_file } => {
                 let db_path = path.unwrap_or_else(|| PathBuf::from("dblp.db"));
-                update_dblp(&db_path).await
+                update_dblp(&db_path, from_file.as_deref()).await
             }
             Command::UpdateAcl { path } => {
                 let db_path = path.unwrap_or_else(|| PathBuf::from("acl.db"));
@@ -224,6 +244,11 @@ async fn main() -> anyhow::Result<()> {
     {
         config_state.openalex_offline_path = path;
     }
+    if let Ok(path) = std::env::var("LOCAL_CORPUS_PATH")
+        && !path.is_empty()
+    {
+        config_state.local_corpus_path = path;
+    }
     if let Ok(v) = std::env::var("DB_TIMEOUT")
         && let Ok(secs) = v.parse::<u64>()
     {
@@ -259,6 +284,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(ref path) = cli.openalex_offline {
         config_state.openalex_offline_path = path.display().to_string();
+    }
+    if let Some(ref path) = cli.local_corpus {
+        config_state.local_corpus_path = path.display().to_string();
     }
     if let Some(ref theme) = cli.theme {
         config_state.theme_name = theme.clone();
@@ -369,6 +397,23 @@ async fn main() -> anyhow::Result<()> {
         for candidate in &candidates {
             if candidate.exists() {
                 config_state.openalex_offline_path = candidate.display().to_string();
+                break;
+            }
+        }
+    }
+
+    // Auto-detect default local corpus DB if no explicit path configured
+    if config_state.local_corpus_path.is_empty() {
+        let candidates = [
+            PathBuf::from("local-corpus.db"),
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hallucinator")
+                .join("local-corpus.db"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                config_state.local_corpus_path = candidate.display().to_string();
                 break;
             }
         }
@@ -488,6 +533,32 @@ async fn main() -> anyhow::Result<()> {
             match backend::open_openalex_db(path) {
                 Ok(db) => {
                     startup_info.push(format!("OpenAlex offline index loaded: {}", path.display()));
+                    Some(db)
+                }
+                Err(e) => {
+                    startup_warnings.push(format!("{e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    // Resolve local corpus path from config state
+    let local_corpus_path: Option<PathBuf> = if config_state.local_corpus_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&config_state.local_corpus_path))
+    };
+
+    // Open local corpus database if configured (fall back to None if
+    // missing or corrupt) — no online counterpart, so this is purely
+    // additive when present.
+    let local_corpus_db: Option<Arc<hallucinator_local_corpus::CorpusPool>> =
+        if let Some(ref path) = local_corpus_path {
+            match backend::open_local_corpus_db(path, config_state.num_workers) {
+                Ok(db) => {
+                    startup_info.push(format!("Local corpus loaded: {}", path.display()));
                     Some(db)
                 }
                 Err(e) => {
@@ -732,6 +803,8 @@ async fn main() -> anyhow::Result<()> {
     let mut cached_iacr_eprint_db = iacr_eprint_offline_db.clone();
     let mut cached_openalex_path = openalex_offline_path.clone();
     let mut cached_openalex_db = openalex_offline_db.clone();
+    let mut cached_local_corpus_path = local_corpus_path.clone();
+    let mut cached_local_corpus_db = local_corpus_db.clone();
     // Tracks the worker count the offline DB pools were last sized for, so a
     // num_workers change in the config screen (without a path change) still
     // triggers a resize on the next batch — otherwise workers queue behind a
@@ -812,6 +885,16 @@ async fn main() -> anyhow::Result<()> {
                         };
                     }
 
+                    // If user changed the local corpus path or worker count, (re)open it
+                    if config.local_corpus_path != cached_local_corpus_path || num_workers_changed {
+                        cached_local_corpus_path = config.local_corpus_path.clone();
+                        cached_local_corpus_db = if let Some(ref path) = cached_local_corpus_path {
+                            backend::open_local_corpus_db(path, config.num_workers).ok()
+                        } else {
+                            None
+                        };
+                    }
+
                     cached_num_workers = config.num_workers;
 
                     config.dblp_offline_path = cached_dblp_path.clone();
@@ -824,6 +907,8 @@ async fn main() -> anyhow::Result<()> {
                     config.iacr_eprint_offline_db = cached_iacr_eprint_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
+                    config.local_corpus_path = cached_local_corpus_path.clone();
+                    config.local_corpus_db = cached_local_corpus_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
 
                     let tx = event_tx_for_backend.clone();
@@ -850,6 +935,8 @@ async fn main() -> anyhow::Result<()> {
                     config.iacr_eprint_offline_db = cached_iacr_eprint_db.clone();
                     config.openalex_offline_path = cached_openalex_path.clone();
                     config.openalex_offline_db = cached_openalex_db.clone();
+                    config.local_corpus_path = cached_local_corpus_path.clone();
+                    config.local_corpus_db = cached_local_corpus_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
 
                     let tx = event_tx_for_backend.clone();
@@ -1089,7 +1176,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
+async fn update_dblp(db_path: &PathBuf, from_file: Option<&Path>) -> anyhow::Result<()> {
     use indicatif::{HumanBytes, HumanCount, MultiProgress, ProgressBar, ProgressStyle};
     use std::time::Instant;
 
@@ -1123,7 +1210,14 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     let dl_bar = multi.add(ProgressBar::new(0));
     dl_bar.set_style(dl_unknown_style.clone());
     dl_bar.set_message("Connecting to dblp.org...");
-    dl_bar.enable_steady_tick(Duration::from_millis(120));
+    if from_file.is_some() {
+        // build_database_from_file never emits a Downloading event — hide
+        // this bar entirely instead of leaving a stale "Connecting..."
+        // spinner on screen.
+        dl_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+    } else {
+        dl_bar.enable_steady_tick(Duration::from_millis(120));
+    }
 
     let parse_bar = multi.add(ProgressBar::new(0));
     parse_bar.set_style(parse_spinner_style.clone());
@@ -1136,7 +1230,7 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     let build_start = Instant::now();
     let parse_start = std::cell::Cell::new(None::<Instant>);
 
-    let updated = hallucinator_dblp::build_database(db_path, |event| match event {
+    let mut progress_cb = |event| match event {
         hallucinator_dblp::BuildProgress::Downloading {
             bytes_downloaded,
             total_bytes,
@@ -1239,8 +1333,14 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
                 ));
             }
         }
-    })
-    .await?;
+    };
+
+    let updated = if let Some(xml_gz_path) = from_file {
+        hallucinator_dblp::build_database_from_file(db_path, xml_gz_path, &mut progress_cb)?;
+        true // no "already up to date" concept when building from a local file
+    } else {
+        hallucinator_dblp::build_database(db_path, &mut progress_cb).await?
+    };
 
     let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
     if !updated {

@@ -517,6 +517,29 @@ pub(crate) fn fix_hyphenation_with_config(text: &str, config: &ParsingConfig) ->
     RE_NO_SPACE.replace_all(&result, "$1$2$3").into_owned()
 }
 
+/// Whether the character immediately before `period_pos` in `text` is a
+/// single Unicode uppercase letter forming its own "word" — i.e. a likely
+/// initial like "J." or an accented initial like "Ö." — rather than the
+/// last letter of a longer word.
+///
+/// Unicode-aware (`char::is_uppercase()`) rather than an ASCII-only check,
+/// so accented initials (Ö, É, Ł, Ø, Ñ, ...) are recognized as initials
+/// too. An ASCII-only byte check misses these entirely — worse, indexing
+/// `text.as_bytes()[period_pos - 1]` on a multi-byte character reads a raw
+/// UTF-8 continuation byte, not the character itself, so the check silently
+/// never fires for author names containing one.
+///
+/// `period_pos` must be a valid char boundary in `text` (true for any
+/// position located by matching a literal `.` in `text`, since `.` is a
+/// single-byte ASCII character).
+pub(crate) fn is_single_uppercase_initial(text: &str, period_pos: usize) -> bool {
+    let mut chars = text[..period_pos].chars().rev();
+    match chars.next() {
+        Some(c) if c.is_uppercase() => !chars.next().is_some_and(|prev| prev.is_alphabetic()),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,6 +14,7 @@ hallucinator-acl.workspace = true
 hallucinator-arxiv-offline.workspace = true
 hallucinator-iacr-eprint.workspace = true
 hallucinator-openalex.workspace = true
+hallucinator-local-corpus.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 reqwest.workspace = true

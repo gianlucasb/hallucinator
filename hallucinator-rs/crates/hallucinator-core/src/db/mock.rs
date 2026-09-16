@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use super::{DatabaseBackend, DbQueryResult};
+use super::{ArxivIdQueryResult, DatabaseBackend, DbQueryResult};
 use crate::rate_limit::DbQueryError;
 
 /// A configurable mock response for [`MockDb`].
@@ -42,6 +42,14 @@ pub struct MockDb {
     fallback: MockResponse,
     delay: Option<Duration>,
     call_count: AtomicUsize,
+    is_local: bool,
+    /// Simulates a backend that implements `query_arxiv_id` (like the
+    /// offline arXiv backend): `Some((id, response))` makes `query_arxiv_id`
+    /// return `response` when called with exactly that id, and `None`
+    /// (fall through to title search) for any other id. Regression coverage
+    /// for the bug where `arxiv_id_context`/`doi_context` never reached
+    /// local backends — see `rate_limit::tests`.
+    arxiv_id_response: Option<(&'static str, MockResponse)>,
 }
 
 impl MockDb {
@@ -53,7 +61,25 @@ impl MockDb {
             fallback: response,
             delay: None,
             call_count: AtomicUsize::new(0),
+            is_local: false,
+            arxiv_id_response: None,
         }
+    }
+
+    /// Make `is_local()` return `true` (routes through the local-DB path
+    /// instead of the per-DB remote drainer).
+    #[allow(dead_code)]
+    pub fn with_is_local(mut self, is_local: bool) -> Self {
+        self.is_local = is_local;
+        self
+    }
+
+    /// Simulate a backend that answers `query_arxiv_id` for exactly `id`,
+    /// independent of whatever `query`/`query_with_authors` would return.
+    #[allow(dead_code)]
+    pub fn with_arxiv_id_response(mut self, id: &'static str, response: MockResponse) -> Self {
+        self.arxiv_id_response = Some((id, response));
+        self
     }
 
     /// Create a mock that returns responses in order, repeating the last one.
@@ -72,6 +98,8 @@ impl MockDb {
             fallback,
             delay: None,
             call_count: AtomicUsize::new(0),
+            is_local: false,
+            arxiv_id_response: None,
         }
     }
 
@@ -100,6 +128,39 @@ impl MockDb {
 impl DatabaseBackend for MockDb {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn is_local(&self) -> bool {
+        self.is_local
+    }
+
+    fn query_arxiv_id<'a>(
+        &'a self,
+        arxiv_id: &'a str,
+        _title: &'a str,
+        _authors: &'a [String],
+        _client: &'a reqwest::Client,
+        _timeout: Duration,
+    ) -> ArxivIdQueryResult<'a> {
+        let matched = self
+            .arxiv_id_response
+            .as_ref()
+            .filter(|(id, _)| *id == arxiv_id)
+            .map(|(_, resp)| resp.clone());
+        Box::pin(async move {
+            match matched? {
+                MockResponse::Found {
+                    title,
+                    authors,
+                    url,
+                } => Some(Ok(DbQueryResult::found(title, authors, url))),
+                MockResponse::NotFound => Some(Ok(DbQueryResult::not_found())),
+                MockResponse::RateLimited { retry_after } => {
+                    Some(Err(DbQueryError::RateLimited { retry_after }))
+                }
+                MockResponse::Error(msg) => Some(Err(DbQueryError::Other(msg))),
+            }
+        })
     }
 
     fn query<'a>(

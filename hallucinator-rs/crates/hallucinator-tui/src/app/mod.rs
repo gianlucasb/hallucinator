@@ -718,6 +718,9 @@ impl App {
         // File picker renders without activity panel
         if self.screen == Screen::FilePicker {
             crate::view::file_picker::render_in(f, self, area);
+            if self.show_help {
+                crate::view::help::render(f, &self.theme);
+            }
             if self.confirm_quit {
                 crate::view::quit_confirm::render(f, &self.theme);
             }

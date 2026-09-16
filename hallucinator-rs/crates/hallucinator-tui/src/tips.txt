@@ -20,7 +20,7 @@ Pro-tip: Press o to add more PDFs to the queue without restarting
 Pro-tip: Build an offline ACL Anthology database for local lookups (hallucinator-tui update-acl)
 Pro-tip: Build an offline OpenAlex index for local lookups (hallucinator-tui update-openalex)
 Pro-tip: Build an offline arXiv database from the weekly Kaggle snapshot (hallucinator-tui update-arxiv)
-Pro-tip: Offline arXiv needs Kaggle credentials -- put kaggle.json in ~/.kaggle/ or set KAGGLE_USERNAME+KAGGLE_KEY
+Pro-tip: Offline arXiv needs a Kaggle API token -- set KAGGLE_API_TOKEN or save it to ~/.kaggle/access_token
 Pro-tip: Filter OpenAlex imports by date (--since 2024-01-01) or publication year (--min-year 2020)
 Pro-tip: Enable SearxNG as a fallback web search source (--searxng or configure URL in config)
 Pro-tip: Get a free GovInfo API key at api.data.gov for US federal laws, regulations, and court opinions

@@ -77,6 +77,7 @@ pub struct ConfigState {
     pub arxiv_offline_path: String,
     pub iacr_eprint_offline_path: String,
     pub openalex_offline_path: String,
+    pub local_corpus_path: String,
     pub cache_path: String,
     /// Inline status message for cache clear operation.
     pub cache_clear_status: Option<String>,
@@ -107,6 +108,7 @@ impl Default for ConfigState {
             ("GovInfo".to_string(), true),
             ("Standards".to_string(), true),
             ("Open Library".to_string(), true),
+            ("Local Corpus".to_string(), true),
             // PatentsView disabled - API key grants suspended
         ];
 
@@ -141,6 +143,7 @@ impl Default for ConfigState {
             arxiv_offline_path: String::new(),
             iacr_eprint_offline_path: String::new(),
             openalex_offline_path: String::new(),
+            local_corpus_path: String::new(),
             cache_path: String::new(),
             cache_clear_status: None,
             num_workers: 4,

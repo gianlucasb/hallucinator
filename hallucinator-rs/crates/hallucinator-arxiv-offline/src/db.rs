@@ -69,6 +69,22 @@ pub fn create_schema(conn: &Connection) -> Result<(), ArxivError> {
     Ok(())
 }
 
+/// Create a session-local (temp-schema) `fts5vocab` table exposing
+/// per-term document frequency for `titles_fts`, so query-time code can
+/// pick the most *selective* words for an OR-fallback query instead of
+/// arbitrary extraction order. Mirrors `hallucinator_dblp::db::ensure_vocab_table`.
+///
+/// 'row' mode reports one row per term with a `doc` column (number of rows
+/// containing the term at least once). `temp.` keeps this out of the
+/// on-disk schema — it's rebuilt per connection, not persisted.
+pub fn ensure_vocab_table(conn: &Connection) -> Result<(), ArxivError> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS temp.titles_vocab \
+         USING fts5vocab('main', 'titles_fts', 'row');",
+    )?;
+    Ok(())
+}
+
 /// Record or update a single arXiv paper. Replaces an existing row for
 /// the same `arxiv_id` (used by incremental refreshes when an
 /// already-harvested paper got a new version).
@@ -265,7 +281,24 @@ pub fn search_by_title_hydrated(
     query: &str,
     limit: usize,
 ) -> Result<Vec<ArxivRecord>, ArxivError> {
-    let sanitized = sanitize_fts_query(query);
+    for fts_query in candidate_queries(conn, query) {
+        let records = search_by_title_hydrated_one(conn, &fts_query, limit)?;
+        if !records.is_empty() {
+            return Ok(records);
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// Run a single already-built FTS5 MATCH query and hydrate the results.
+/// Factored out of [`search_by_title_hydrated`] so the 3-tier fallback in
+/// [`candidate_queries`] can retry with a looser query when the first
+/// attempt surfaces nothing.
+fn search_by_title_hydrated_one(
+    conn: &Connection,
+    sanitized: &str,
+    limit: usize,
+) -> Result<Vec<ArxivRecord>, ArxivError> {
     if sanitized.is_empty() {
         return Ok(Vec::new());
     }
@@ -393,10 +426,22 @@ pub fn search_by_title(
     query: &str,
     limit: usize,
 ) -> Result<Vec<String>, ArxivError> {
-    // Sanitize FTS5 query: strip syntax chars that could otherwise be
-    // interpreted as operators (double quotes, parentheses, etc.) so
-    // arbitrary user titles don't cause parse errors.
-    let sanitized = sanitize_fts_query(query);
+    for fts_query in candidate_queries(conn, query) {
+        let ids = search_by_title_one(conn, &fts_query, limit)?;
+        if !ids.is_empty() {
+            return Ok(ids);
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// Run a single already-built FTS5 MATCH query. See
+/// [`search_by_title_hydrated_one`] — same factoring, for the ID-only path.
+fn search_by_title_one(
+    conn: &Connection,
+    sanitized: &str,
+    limit: usize,
+) -> Result<Vec<String>, ArxivError> {
     if sanitized.is_empty() {
         return Ok(Vec::new());
     }
@@ -482,6 +527,107 @@ fn sanitize_fts_query(q: &str) -> String {
         .split_whitespace()
         .collect::<Vec<&str>>()
         .join(" ")
+}
+
+/// Words that carry no distinguishing signal for FTS5 candidate retrieval
+/// (English function words). Same list used by `hallucinator-acl` /
+/// `hallucinator-local-corpus` / `hallucinator-dblp`.
+static STOP_WORDS: once_cell::sync::Lazy<std::collections::HashSet<&'static str>> =
+    once_cell::sync::Lazy::new(|| {
+        [
+            "the", "and", "for", "with", "from", "that", "this", "have", "are", "was", "were",
+            "been", "being", "has", "had", "does", "did", "will", "would", "could", "should",
+            "may", "might", "must", "shall", "can", "not", "but", "its", "our", "their", "your",
+            "into", "over", "under", "about", "between", "through", "during", "before", "after",
+            "above", "below", "each", "every", "both", "few", "more", "most", "other", "some",
+            "such", "only", "than", "too", "very",
+        ]
+        .into_iter()
+        .collect()
+    });
+
+/// Extract meaningful query words for FTS5 MATCH (4+ chars, no stop words).
+///
+/// Reuses [`sanitize_fts_query`]'s character-level sanitization — hyphens
+/// and all other non-alphanumerics already become spaces there, which is
+/// what keeps a hyphenated title safe from FTS5's `-` NOT/column-filter
+/// operator and makes it tokenize the same way the index does — then
+/// filters down to the words that actually distinguish this title from
+/// others, the same way `hallucinator-acl` / `hallucinator-dblp` do.
+fn get_query_words(title: &str) -> Vec<String> {
+    sanitize_fts_query(title)
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .filter(|w| w.len() >= 4 && !STOP_WORDS.contains(w.as_str()))
+        .collect()
+}
+
+/// Build the ordered list of FTS5 MATCH queries to try for `title`:
+/// (1) all meaningful words AND-joined (most precise), (2) top-3 words
+/// AND-joined, (3) OR-join of the up to 4 most selective (rarest) words.
+/// Each is tried in order by the caller until one yields ≥1 candidate.
+///
+/// Mirrors `hallucinator_dblp::query::query_fts_with_authors`'s 3-tier
+/// fallback. An AND-only query (what this crate did before) returned zero
+/// candidates for the vast majority of a ~1000-reference real-world
+/// sample even when the cited paper was genuinely indexed — any dropped
+/// subtitle, paraphrase, or reworded word broke the whole match. OR
+/// widens *candidate retrieval*, not acceptance: the caller still applies
+/// its own fuzzy-similarity threshold to whatever comes back.
+fn candidate_queries(conn: &Connection, title: &str) -> Vec<String> {
+    let words = get_query_words(title);
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut queries = vec![words.join(" ")];
+
+    if words.len() > 3 {
+        queries.push(words[..3].join(" "));
+    }
+
+    if words.len() >= 2 {
+        let take = words.len().min(4);
+        let or_words = select_or_fallback_words(conn, &words, take);
+        queries.push(or_words.join(" OR "));
+    }
+
+    queries
+}
+
+/// Pick the `take` most selective (lowest document-frequency) words from
+/// `words` for the OR-fallback query. Falls back to extraction order when
+/// frequency data isn't available (`ensure_vocab_table` failed on this
+/// connection). See `hallucinator_dblp::query::select_or_fallback_words`.
+fn select_or_fallback_words(conn: &Connection, words: &[String], take: usize) -> Vec<String> {
+    let freqs = term_doc_frequencies(conn, words);
+    if freqs.is_empty() {
+        return words[..take].to_vec();
+    }
+    let mut ranked: Vec<&String> = words.iter().collect();
+    ranked.sort_by_key(|w| freqs.get(w.as_str()).copied().unwrap_or(0));
+    ranked.into_iter().take(take).cloned().collect()
+}
+
+/// Look up FTS5 document frequency (`fts5vocab` 'row' mode's `doc` column)
+/// for each of `words`, via the session-local vocab table
+/// [`ensure_vocab_table`] creates. Returns an empty map if that table
+/// doesn't exist on this connection.
+fn term_doc_frequencies(
+    conn: &Connection,
+    words: &[String],
+) -> std::collections::HashMap<String, i64> {
+    let mut freqs = std::collections::HashMap::new();
+    let Ok(mut stmt) = conn.prepare_cached("SELECT doc FROM temp.titles_vocab WHERE term = ?1")
+    else {
+        return freqs;
+    };
+    for w in words {
+        if let Ok(doc) = stmt.query_row(params![w], |row| row.get::<_, i64>(0)) {
+            freqs.insert(w.clone(), doc);
+        }
+    }
+    freqs
 }
 
 #[cfg(test)]
@@ -708,6 +854,72 @@ mod tests {
         for h in &hits {
             assert_eq!(h.authors, vec![format!("author-{}", h.id)]);
         }
+    }
+
+    #[test]
+    fn or_fallback_finds_when_one_citation_word_mismatches_db() {
+        // The OR fallback exists to handle citations where one of the
+        // meaningful query words isn't present in the DB title verbatim
+        // (typo, singular/plural drift, paraphrase). AND requires every
+        // word, so a single mismatch drops the whole candidate; OR still
+        // finds it via the other words, and the caller's own fuzzy-
+        // similarity gate then decides whether it's actually the right
+        // paper — this test only asserts *retrieval*, not acceptance.
+        //
+        // Here the citation says "Pattern" (singular) where the indexed
+        // title has "Patterns" (plural) — a one-character difference
+        // that breaks exact FTS5 token matching (AND requires the
+        // literal token "pattern", which the index doesn't have).
+        let conn = open_in_memory();
+        upsert_record(
+            &conn,
+            &ArxivRecord {
+                id: "2401.00001".into(),
+                title: "Attention Patterns Deep Transformer Networks For Sequence Classification"
+                    .into(),
+                authors: vec!["A. Researcher".into()],
+                categories: None,
+                doi: None,
+                license: None,
+                versions: vec![],
+            },
+        )
+        .unwrap();
+
+        let hits = search_by_title_hydrated(
+            &conn,
+            "Attention Pattern Deep Transformer Networks For Sequence Classification",
+            5,
+        )
+        .unwrap();
+        assert!(
+            !hits.is_empty(),
+            "OR fallback should retrieve a candidate when one citation word is absent from the DB title"
+        );
+        assert_eq!(hits[0].id, "2401.00001");
+    }
+
+    #[test]
+    fn candidate_queries_escalates_through_all_three_tiers() {
+        // Unit-level check on the query-string builder itself (independent
+        // of any DB content): a long, stopword-free title should produce
+        // exactly 3 candidate queries — full AND, top-3 AND, OR-of-4.
+        let conn = open_in_memory();
+        let queries = candidate_queries(
+            &conn,
+            "Attention Patterns Deep Transformer Networks For Sequence Classification",
+        );
+        assert_eq!(
+            queries.len(),
+            3,
+            "expected all 3 fallback tiers: {queries:?}"
+        );
+        // Tier 1: every meaningful word ("for" is filtered as a stop word).
+        assert_eq!(queries[0].split(' ').count(), 7);
+        // Tier 2: exactly the first 3 words, space-joined (implicit AND).
+        assert_eq!(queries[1], "attention patterns deep");
+        // Tier 3: OR-joined.
+        assert!(queries[2].contains(" OR "));
     }
 
     #[test]

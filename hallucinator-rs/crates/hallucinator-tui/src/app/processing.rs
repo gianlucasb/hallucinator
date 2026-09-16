@@ -289,6 +289,14 @@ impl App {
                 ))
             },
             openalex_offline_db: None, // Populated from main.rs
+            local_corpus_path: if self.config_state.local_corpus_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(
+                    &self.config_state.local_corpus_path,
+                ))
+            },
+            local_corpus_db: None, // Populated from main.rs
             num_workers: self.config_state.num_workers,
             max_rate_limit_retries: self.config_state.max_rate_limit_retries,
             rate_limiters: std::sync::Arc::new(hallucinator_core::RateLimiters::new(
@@ -325,7 +333,7 @@ impl App {
     /// (one per tick) so the UI can show progress. JSON result files are loaded
     /// and their papers added as already-complete entries.
     pub fn add_files_from_picker(&mut self) {
-        let new_files: Vec<PathBuf> = self.file_picker.selected.drain(..).collect();
+        let new_files: Vec<PathBuf> = std::mem::take(&mut self.file_picker.selected);
         if new_files.is_empty() {
             return;
         }

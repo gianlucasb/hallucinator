@@ -1,0 +1,21 @@
+[package]
+name = "hallucinator-local-corpus"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-or-later OR MIT"
+description = "Offline SQLite corpus of manually-verified and not-yet-indexed papers (marked-safe references, recent conference proceedings)"
+
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+rusqlite.workspace = true
+reqwest.workspace = true
+flate2.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+thiserror.workspace = true
+rapidfuzz.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+scraper.workspace = true

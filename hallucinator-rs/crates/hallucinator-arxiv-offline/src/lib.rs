@@ -105,6 +105,12 @@ fn open_and_verify(path: &Path) -> Result<Connection, ArxivError> {
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -64000;",
     )?;
     let _ = conn.pragma_update(None, "mmap_size", 268_435_456i64);
+
+    // Non-fatal: powers term-frequency-aware OR-fallback word selection in
+    // `db::candidate_queries`. If this fails (exotic sqlite build), that
+    // code degrades to extraction-order word selection.
+    let _ = db::ensure_vocab_table(&conn);
+
     Ok(conn)
 }
 

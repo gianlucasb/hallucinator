@@ -1,6 +1,9 @@
-use crate::authors::{db_has_complete_authors, validate_authors_with_source};
+use crate::authors::{
+    db_allows_empty_found_authors, db_has_complete_authors, has_real_authors,
+    validate_authors_with_source,
+};
 use crate::db::DatabaseBackend;
-use crate::rate_limit;
+use crate::rate_limit::{self, ArxivIdContext, DoiContext};
 use crate::{Config, DbResult, DbStatus, MismatchKind, Status};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -23,6 +26,7 @@ pub struct DbSearchResult {
 /// This is a convenience wrapper that calls [`query_local_databases`] followed by
 /// [`query_remote_databases`]. For the pool's split architecture, use those
 /// functions directly.
+#[allow(clippy::too_many_arguments)]
 pub async fn query_all_databases(
     title: &str,
     ref_authors: &[String],
@@ -31,6 +35,8 @@ pub async fn query_all_databases(
     longer_timeout: bool,
     only_dbs: Option<&[String]>,
     on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
+    doi: Option<&str>,
+    arxiv_id: Option<&str>,
 ) -> DbSearchResult {
     let local_result = query_local_databases(
         title,
@@ -40,6 +46,8 @@ pub async fn query_all_databases(
         longer_timeout,
         only_dbs,
         on_db_complete,
+        doi,
+        arxiv_id,
     )
     .await;
 
@@ -56,6 +64,8 @@ pub async fn query_all_databases(
         only_dbs,
         on_db_complete,
         local_result,
+        doi,
+        arxiv_id,
     )
     .await
 }
@@ -64,6 +74,16 @@ pub async fn query_all_databases(
 ///
 /// Returns immediately (<1ms). If a local DB matches, the result has
 /// `status == Verified` and remaining DBs are marked Skipped.
+///
+/// `doi` / `arxiv_id` — the reference's extracted identifiers, if any —
+/// let a local backend that implements `query_doi` / `query_arxiv_id`
+/// (currently just the offline arXiv backend) try that fast, precise
+/// lookup before falling back to fuzzy title search. Without these, a
+/// citation whose extracted title differs from the indexed one just
+/// enough to break FTS candidate retrieval (e.g. a hyphen difference the
+/// tokenizer treats as a word boundary) would report NotFound despite
+/// the paper being in the offline index under that exact ID.
+#[allow(clippy::too_many_arguments)]
 pub async fn query_local_databases(
     title: &str,
     ref_authors: &[String],
@@ -72,8 +92,18 @@ pub async fn query_local_databases(
     longer_timeout: bool,
     only_dbs: Option<&[String]>,
     on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
+    doi: Option<&str>,
+    arxiv_id: Option<&str>,
 ) -> DbSearchResult {
     let timeout = compute_timeout(config, longer_timeout);
+    let doi_ctx = doi.map(|doi| DoiContext {
+        doi,
+        authors: ref_authors,
+    });
+    let arxiv_id_ctx = arxiv_id.map(|arxiv_id| ArxivIdContext {
+        arxiv_id,
+        authors: ref_authors,
+    });
 
     let all_databases: Vec<Arc<dyn DatabaseBackend>> = build_database_list(config, only_dbs)
         .into_iter()
@@ -116,6 +146,8 @@ pub async fn query_local_databases(
             &rate_limiters,
             max_retries,
             cache,
+            doi_ctx.as_ref(),
+            arxiv_id_ctx.as_ref(),
         )
         .await;
         let elapsed = rl_result.elapsed;
@@ -181,6 +213,8 @@ pub async fn query_remote_databases(
     only_dbs: Option<&[String]>,
     on_db_complete: Option<&(dyn Fn(DbResult) + Send + Sync)>,
     local_result: DbSearchResult,
+    doi: Option<&str>,
+    arxiv_id: Option<&str>,
 ) -> DbSearchResult {
     let check_openalex_authors = config.check_openalex_authors;
     let timeout = compute_timeout(config, longer_timeout);
@@ -277,6 +311,9 @@ pub async fn query_remote_databases(
     // Spawn only cache-miss DBs concurrently
     let mut join_set = tokio::task::JoinSet::new();
 
+    let doi = doi.map(str::to_string);
+    let arxiv_id = arxiv_id.map(str::to_string);
+
     for db in cache_miss_dbs {
         let db = Arc::clone(db);
         let title = title.to_string();
@@ -284,9 +321,19 @@ pub async fn query_remote_databases(
         let ref_authors = ref_authors.to_vec();
         let rate_limiters = rate_limiters.clone();
         let cache = cache.clone();
+        let doi = doi.clone();
+        let arxiv_id = arxiv_id.clone();
 
         join_set.spawn(async move {
             let name = db.name().to_string();
+            let doi_ctx = doi.as_deref().map(|doi| DoiContext {
+                doi,
+                authors: &ref_authors,
+            });
+            let arxiv_id_ctx = arxiv_id.as_deref().map(|arxiv_id| ArxivIdContext {
+                arxiv_id,
+                authors: &ref_authors,
+            });
             let rl_result = rate_limit::query_with_retry_with_authors(
                 db.as_ref(),
                 &title,
@@ -296,6 +343,8 @@ pub async fn query_remote_databases(
                 &rate_limiters,
                 max_retries,
                 cache.as_deref(),
+                doi_ctx.as_ref(),
+                arxiv_id_ctx.as_ref(),
             )
             .await;
             (name, rl_result.result, ref_authors, rl_result.elapsed)
@@ -383,6 +432,21 @@ fn empty_result() -> DbSearchResult {
 /// more likely than a genuine author mismatch.
 const SHORT_TITLE_WORD_THRESHOLD: usize = 6;
 
+/// Threshold (in normalized alnum characters) a title must ALSO fall under
+/// to be considered "short" — see [`SHORT_TITLE_WORD_THRESHOLD`].
+///
+/// Whitespace-token count alone misclassifies compound/hyphenated titles:
+/// `"WaNet: Imperceptible warping-based backdoor attack"` is only 5 tokens
+/// (`split_whitespace` treats `"warping-based"` as one) but is a highly
+/// specific, 44-character title, nothing like the ambiguous single-word
+/// titles (`"Gemma"`, `"Sentience"`, `"Interactions"`) this suppression was
+/// designed for. Confirmed as a real bug: a reference citing WaNet's real
+/// title under fabricated authors was silently reported as generic
+/// `NotFound` instead of the far more actionable `AuthorMismatch`, because
+/// the mismatch got suppressed here. Requiring both signals to agree fixes
+/// that case while still suppressing genuinely short/generic titles.
+const SHORT_TITLE_CHAR_THRESHOLD: usize = 25;
+
 /// Process a single DB query result. Returns `Some(verified_result)` on match,
 /// `None` to continue checking other DBs.
 #[allow(clippy::too_many_arguments)]
@@ -404,15 +468,17 @@ fn process_query_result(
             let paper_url = qr.paper_url.clone();
             let retraction = qr.retraction.clone();
 
-            // Some databases legitimately return a title match with no authors:
-            //   - Web Search (SearxNG) never provides author data.
-            //   - DBLP sometimes stores authorless records for handbook chapters
-            //     and anonymised/organisational entries (e.g. `journals/ccr/X12`).
-            // In both cases we accept the title-only verification rather than
+            // Some databases legitimately return a title match with no authors
+            // (Web Search never provides any; DBLP and Standards sometimes/
+            // always omit them — see `db_allows_empty_found_authors`). In
+            // that case we accept the title-only verification rather than
             // forcing an AuthorMismatch that would mask a real match.
             let skip_author_check =
-                (name == "Web Search" || name == "DBLP") && found_authors.is_empty();
-            if ref_authors.is_empty()
+                db_allows_empty_found_authors(&name) && found_authors.is_empty();
+            // A reference author list made entirely of placeholders
+            // ("Anonymous", "___") carries nothing to compare — see
+            // `has_real_authors`.
+            if !has_real_authors(ref_authors)
                 || skip_author_check
                 || validate_authors_with_source(
                     ref_authors,
@@ -459,7 +525,11 @@ fn process_query_result(
                 // For short/ambiguous titles, suppress author mismatch — a title-only
                 // match on a short title is unreliable (likely a different paper with
                 // the same common title like "Gemma", "Sentience", "Interactions").
-                let is_short_title = title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD;
+                // Both signals must agree — see `SHORT_TITLE_CHAR_THRESHOLD` for why
+                // word count alone isn't enough.
+                let is_short_title = title.split_whitespace().count() < SHORT_TITLE_WORD_THRESHOLD
+                    && crate::matching::normalize_title(title).chars().count()
+                        < SHORT_TITLE_CHAR_THRESHOLD;
 
                 // Also suppress mismatch when there is zero surname overlap
                 // from fuzzy-matching databases. This prevents false mismatches
@@ -634,6 +704,17 @@ pub(crate) fn build_database_list(
             databases.push(Box::new(acl::AclAnthology));
         }
     }
+    // Local Corpus (offline only — no online counterpart; a hand-curated
+    // index of not-yet-indexed-elsewhere papers, not something to query
+    // over the network). Only registers when the user has built a corpus
+    // via the `import-*` CLI subcommands and passed `--local-corpus`.
+    if should_include("Local Corpus")
+        && let Some(ref db) = config.local_corpus_db
+    {
+        databases.push(Box::new(local_corpus::LocalCorpus {
+            db: std::sync::Arc::clone(db),
+        }));
+    }
     if should_include("Europe PMC") {
         databases.push(Box::new(europe_pmc::EuropePmc));
     }
@@ -782,8 +863,18 @@ mod tests {
     async fn empty_db_list_returns_not_found() {
         let config = config_all_disabled();
         let client = reqwest::Client::new();
-        let result =
-            query_all_databases("Some Title", &[], &config, &client, false, None, None).await;
+        let result = query_all_databases(
+            "Some Title",
+            &[],
+            &config,
+            &client,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         assert_eq!(result.status, Status::NotFound);
         assert!(result.db_results.is_empty());
     }
@@ -1002,6 +1093,84 @@ mod tests {
             first_mismatch.is_none(),
             "Short title should suppress author mismatch, got: {:?}",
             first_mismatch.as_ref().map(|m| &m.status)
+        );
+    }
+
+    #[tokio::test]
+    async fn compound_hyphenated_title_mismatch_not_suppressed() {
+        // Regression test: `"WaNet: Imperceptible warping-based backdoor
+        // attack"` is only 5 whitespace tokens (`split_whitespace` treats
+        // "warping-based" as one) but is a highly specific, 44-character
+        // title — nothing like the single generic words ("Gemma",
+        // "Sentience") the short-title suppression exists for. Confirmed
+        // live against a real NDSS submission: a reference citing WaNet's
+        // real title under fabricated authors was reported as generic
+        // NotFound instead of the far more actionable AuthorMismatch,
+        // because word-count-only short-title detection suppressed it.
+        let mock: Arc<dyn DatabaseBackend> = Arc::new(MockDb::new(
+            "TestDB",
+            MockResponse::Found {
+                title: "WaNet: Imperceptible warping-based backdoor attack".into(),
+                authors: vec!["Anh Nguyen".into(), "Anh Tran".into()],
+                url: None,
+            },
+        ));
+
+        let config = config_all_disabled();
+        let client = reqwest::Client::new();
+        let timeout = Duration::from_secs(config.db_timeout_secs);
+        let rate_limiters = config.rate_limiters.clone();
+
+        let title = "WaNet: Imperceptible warping-based backdoor attack";
+        let ref_authors_owned: Vec<String> = vec!["Z. Wang".into()];
+        let db = mock;
+        let rate_limiters_clone = rate_limiters.clone();
+        let ref_authors_clone = ref_authors_owned.clone();
+
+        let mut join_set = tokio::task::JoinSet::new();
+        join_set.spawn(async move {
+            let name = db.name().to_string();
+            let rl_result = crate::rate_limit::query_with_retry(
+                db.as_ref(),
+                title,
+                &client,
+                timeout,
+                &rate_limiters_clone,
+                config.max_rate_limit_retries,
+                None,
+            )
+            .await;
+            (name, rl_result.result, ref_authors_clone, rl_result.elapsed)
+        });
+
+        let mut failed_dbs = Vec::new();
+        let mut db_results: Vec<DbResult> = Vec::new();
+        let mut first_mismatch: Option<DbSearchResult> = None;
+
+        while let Some(result) = join_set.join_next().await {
+            let (name, query_result, ref_authors, elapsed) = result.unwrap();
+            assert!(
+                process_query_result(
+                    name,
+                    query_result,
+                    elapsed,
+                    title,
+                    &ref_authors,
+                    false,
+                    None,
+                    &mut db_results,
+                    &mut failed_dbs,
+                    &mut first_mismatch,
+                )
+                .is_none(),
+                "an author mismatch should never verify"
+            );
+        }
+
+        assert_eq!(
+            first_mismatch.map(|m| m.status),
+            Some(Status::Mismatch(MismatchKind::AUTHOR)),
+            "a distinctive 5-word title should not be treated as short/ambiguous"
         );
     }
 

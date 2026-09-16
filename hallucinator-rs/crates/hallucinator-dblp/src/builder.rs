@@ -24,6 +24,33 @@ pub const DEFAULT_DBLP_URL: &str = "https://dblp.uni-trier.de/xml/dblp.xml.gz";
 /// Keeps WAL size reasonable while avoiding per-record fsync overhead.
 const COMMIT_INTERVAL: u64 = 50_000;
 
+/// Sanity floor for [`build`]'s downloaded record count. The real
+/// dblp.xml.gz has held several million records for years; this is set
+/// far enough below that to never reject a genuine (even badly
+/// truncated) download, while still catching a near-empty parse of
+/// something that wasn't the real file at all.
+const MIN_EXPECTED_RECORDS: u64 = 100_000;
+
+/// Reject a suspiciously small record count from [`build`]'s network
+/// download. A healthy dblp.xml.gz has held several million records for
+/// years; anything near-empty almost always means the download wasn't
+/// the real file at all — e.g. dblp.org serving an Anubis
+/// (<https://anubis.techaro.lol/>) bot-protection challenge page with a
+/// normal 200 status instead of the ~1 GB dump, which a plain HTTP
+/// client can silently "succeed" at fetching (see
+/// <https://github.com/gianlucasb/hallucinator/issues/326>).
+fn check_record_count_sane(records_parsed: u64) -> Result<(), DblpError> {
+    if records_parsed < MIN_EXPECTED_RECORDS {
+        return Err(DblpError::Parse(format!(
+            "only {records_parsed} record(s) parsed from the download — expected several \
+             million. dblp.org may be serving a bot-protection challenge page instead of \
+             the real dblp.xml.gz. Try downloading it manually in a browser and passing \
+             --from-file <path> instead."
+        )));
+    }
+    Ok(())
+}
+
 /// Build (or update) the offline DBLP database by downloading from dblp.org.
 ///
 /// Phase 1: Downloads `dblp.xml.gz` to a temporary file with progress reporting.
@@ -131,9 +158,17 @@ pub async fn build(
 
         db::begin_bulk_load(&conn)?;
 
-        parse_and_insert(&conn, &gz_path, |evt| {
+        let records_parsed = parse_and_insert(&conn, &gz_path, |evt| {
             let _ = progress_tx.blocking_send(evt);
         })?;
+
+        // Erroring out here — before any metadata gets written — is what
+        // turns a bad download into a loud failure instead of a database
+        // quietly replaced by an empty one under a fresh "last_updated"
+        // stamp. (The few records already committed by `parse_and_insert`
+        // itself aren't rolled back; the goal is surfacing the failure,
+        // not perfect atomicity on an already-rare failure path.)
+        check_record_count_sane(records_parsed)?;
 
         let _ = progress_tx.blocking_send(BuildProgress::RebuildingIndex);
         db::rebuild_fts_index(&conn)?;
@@ -232,11 +267,16 @@ impl<R: Read> Read for CountingReader<R> {
 /// All inserts run inside an explicit transaction (committed every `COMMIT_INTERVAL`
 /// records) so individual writes don't trigger per-statement fsync. ID resolution
 /// uses `RETURNING` for a single round-trip and a HashMap cache for repeats.
+///
+/// Returns the number of publication records parsed (not the DB's total row
+/// count — this run's count only, so a caller can tell a near-empty parse
+/// of a corrupt/truncated input apart from a healthy re-import of a file
+/// whose records already exist).
 fn parse_and_insert(
     conn: &Connection,
     gz_path: &Path,
     mut progress: impl FnMut(BuildProgress),
-) -> Result<(), DblpError> {
+) -> Result<u64, DblpError> {
     let file = File::open(gz_path)?;
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -346,7 +386,7 @@ fn parse_and_insert(
         bytes_total: file_size,
     });
 
-    Ok(())
+    Ok(records_inserted)
 }
 
 /// Unix timestamp as a string (seconds since epoch).
@@ -447,7 +487,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         db::init_database(&conn).unwrap();
 
-        parse_and_insert(&conn, &xml_gz_path, |_| {}).unwrap();
+        let records_parsed = parse_and_insert(&conn, &xml_gz_path, |_| {}).unwrap();
+        assert_eq!(records_parsed, 2);
 
         let (pubs, authors, rels) = db::get_counts(&conn).unwrap();
         assert_eq!(pubs, 2);
@@ -465,6 +506,35 @@ mod tests {
         let mut paper_authors = db::get_authors_for_publication(&conn, pub_id).unwrap();
         paper_authors.sort();
         assert_eq!(paper_authors, vec!["Ashish Vaswani", "Noam Shazeer"]);
+    }
+
+    // Regression (issue #326): dblp.org started serving an Anubis
+    // bot-protection challenge page with a normal 200 status instead of
+    // the real dblp.xml.gz, which `build()` was silently accepting as a
+    // successful (empty) rebuild — replacing a working database with an
+    // empty one under a fresh "last_updated" timestamp, no error at all.
+    #[test]
+    fn test_check_record_count_sane_rejects_near_empty_download() {
+        // The exact failure mode from the issue: a bot-protection
+        // challenge page parses as zero DBLP records.
+        assert!(check_record_count_sane(0).is_err());
+        // A badly truncated download (e.g. connection dropped
+        // mid-stream) shouldn't be accepted either.
+        assert!(check_record_count_sane(500).is_err());
+    }
+
+    #[test]
+    fn test_check_record_count_sane_error_message_is_actionable() {
+        let err = check_record_count_sane(0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bot-protection"), "message was: {msg}");
+        assert!(msg.contains("--from-file"), "message was: {msg}");
+    }
+
+    #[test]
+    fn test_check_record_count_sane_accepts_healthy_count() {
+        assert!(check_record_count_sane(MIN_EXPECTED_RECORDS).is_ok());
+        assert!(check_record_count_sane(9_000_000).is_ok());
     }
 
     #[test]

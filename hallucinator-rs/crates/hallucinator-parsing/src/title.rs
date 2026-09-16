@@ -3,7 +3,7 @@ use regex::Regex;
 use std::collections::HashSet;
 
 use crate::config::ParsingConfig;
-use crate::text_processing::fix_hyphenation;
+use crate::text_processing::{fix_hyphenation, is_single_uppercase_initial};
 
 /// Abbreviations that should NEVER be sentence boundaries (mid-title abbreviations).
 static MID_SENTENCE_ABBREVIATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
@@ -45,6 +45,26 @@ pub(crate) fn extract_title_from_reference_with_config(
     static DOI_LINE_BREAK: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(doi\.org/[^\s]+)\.\s*\n\s*(\d+)").unwrap());
     let ref_text = DOI_LINE_BREAK.replace_all(&ref_text, "$1.$2");
+
+    // Same fix for a bare (non-URL) "doi:10.xxxx/..." DOI whose trailing
+    // segment got wrapped across a PDF line — very common with IEEE/ACM-
+    // style journal citations ("doi:10.1109/TIT.1983.\n1056650"). Unlike
+    // the pattern above, the line break here has often already been
+    // collapsed to a plain space by an earlier pipeline stage (whitespace
+    // normalization runs before this function is even called, in
+    // `parse_single_reference`'s hyphenation-fixing step) by the time we
+    // see it, so this matches on any whitespace, not just a literal `\n`.
+    // Anchored to the end of the string (with an optional trailing period)
+    // so a genuine two-sentence citation — "...1983. 2020 was an eventful
+    // year." — is never glued into one number.
+    //
+    // Left unfixed, this dangling ". NNNNNNN" tail doesn't just corrupt
+    // the DOI — it derails every format-detection branch below into
+    // returning an empty title, even though the real title earlier in
+    // the string is perfectly well-formed.
+    static DOI_WRAP_TAIL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s]+\.)\s+(\d{1,9})\.?\s*$").unwrap());
+    let ref_text = DOI_WRAP_TAIL.replace_all(&ref_text, "$1$2");
 
     // Fix arXiv ID line breaks: arXiv IDs (NNNN.NNNNN) can split across
     // lines too — "arXiv:2412.02\n349" → "arXiv:2412.02349". Same
@@ -840,6 +860,20 @@ fn find_subtitle_end(text: &str) -> usize {
             Regex::new(r"\.\s*[Ii]n\s+").unwrap(),
             Regex::new(r"\.\s*(?:Proc|IEEE|ACM|USENIX|NDSS|CCS|AAAI|WWW|CHI|arXiv)").unwrap(),
             Regex::new(r",\s*[Ii]n\s+").unwrap(),
+            // "in Venue" with NO leading `.`/`,` at all — happens when the
+            // title itself ends in `?`/`!` (common for question-phrased
+            // titles) and the citation style drops the usual comma before
+            // "in" (`"...well?" in 2022 IEEE ...` rather than
+            // `"...well?," in 2022 IEEE ...`), so `text` (== `after_quote`,
+            // already trimmed) starts directly with "in". Requires an
+            // uppercase/digit next word (venue names/years) — the `regex`
+            // crate has no look-ahead, so that char is part of the match,
+            // but `m.start()` (what actually gets used below) is still
+            // the position of "in" either way, so this behaves the same
+            // as a lookahead would. A genuine subtitle that happens to
+            // start with lowercase "in" ("in the wild: a survey") isn't
+            // truncated, since "the" doesn't match `[A-Z0-9]`.
+            Regex::new(r"^[Ii]n\s+[A-Z0-9]").unwrap(),
             Regex::new(r"\.\s*\((?:19|20)\d{2}\)").unwrap(),
             Regex::new(r"[,.]\s*(?:19|20)\d{2}").unwrap(),
             Regex::new(r"\s+(?:19|20)\d{2}\.").unwrap(),
@@ -1191,27 +1225,35 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
 
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
-    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
+    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen.
+    // Every leading `[.?!]` below (rather than a literal `.`) matters: a
+    // title ending in a question or exclamation mark otherwise never
+    // matches, leaving the venue clause glued onto the title.
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         let j = r"[a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars
         vec![
-            Regex::new(r"\.\s*[Ii]n:\s+").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
-            Regex::new(&format!(r"\.\s*[A-Z]{}+\d+\s*\(\d+\)", j)).unwrap(),
-            Regex::new(&format!(r"\.\s*[A-Z]{}+\d+:\d+", j)).unwrap(),
-            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+", j)).unwrap(),
-            Regex::new(r"\.\s*https?://").unwrap(),
-            Regex::new(r"\.\s*URL\s+").unwrap(),
-            Regex::new(r"\.\s*Tech\.\s*rep\.").unwrap(),
-            Regex::new(r"\.\s*pp?\.?\s*\d+").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n:\s+").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z]").unwrap(),
+            // "In YEAR Venue" format: "! In 2012 Cybersecurity Summit" —
+            // the venue name itself isn't a recognized acronym, so the
+            // plain `[Ii]n\s+[A-Z]` pattern above (which needs a capital
+            // letter directly after "In ") never matches a year first.
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:19|20)\d{2}\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+\d+\s*\(\d+\)", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+\d+:\d+", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+,\s*\d+", j)).unwrap(),
+            Regex::new(r"[.?!]\s*https?://").unwrap(),
+            Regex::new(r"[.?!]\s*URL\s+").unwrap(),
+            Regex::new(r"[.?!]\s*Tech\.\s*rep\.").unwrap(),
+            Regex::new(r"[.?!]\s*pp?\.?\s*\d+").unwrap(),
             // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Journal after ? with volume:pages: "? JournalName, vol: pages"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
             // ". Journal Name (Year)" — e.g., ". Journal of Legal Analysis (2021)"
             Regex::new(
-                r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
+                r"[.?!]\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
             )
             .unwrap(),
         ]
@@ -1254,33 +1296,36 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
     let caps = RE.captures(ref_text)?;
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
-    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
+    // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen.
+    // Every leading `[.?!]` below (rather than a literal `.`) matters: a
+    // title ending in a question or exclamation mark otherwise never
+    // matches, leaving the venue clause glued onto the title.
     static END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         let j = r"[a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]"; // journal name chars
         vec![
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
             Regex::new(r"\s+doi:").unwrap(),
             // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Journal after ? with volume:issue pattern: "? JournalName, vol: pages"
             Regex::new(&format!(r"[?!]\s+[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
             // Period then journal + volume/issue: ". JournalName, vol(issue)"
-            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+,\s*\d+\s*\(", j)).unwrap(),
             // Period then journal + volume:pages: ". JournalName, vol: pages"
-            Regex::new(&format!(r"\.\s*[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}+,\s*\d+\s*:", j)).unwrap(),
             // Period then journal name + comma + volume (no parens/colon): ". JournalName, vol"
             // Catches "Foundations and Trends® in Human–Computer Interaction, 14(4–5)"
-            Regex::new(&format!(r"\.\s*[A-Z]{}{{10,}},\s*\d+", j)).unwrap(),
+            Regex::new(&format!(r"[.?!]\s*[A-Z]{}{{10,}},\s*\d+", j)).unwrap(),
             // ". Journal Name (Year)" — e.g., ". Journal of Legal Analysis (2021)"
             Regex::new(
-                r"\.\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
+                r"[.?!]\s*[A-Z][a-zA-Z\s&+\u{00AE}\u{2013}\u{2014}\-]{5,}\s*\((?:19|20)\d{2}\)",
             )
             .unwrap(),
             // ". https://" — URL after period
-            Regex::new(r"\.\s*https?://").unwrap(),
+            Regex::new(r"[.?!]\s*https?://").unwrap(),
             // ". Publisher, City" — publisher names after period
-            Regex::new(r"\.\s*(?:Routledge|Springer|Elsevier|Wiley|Cambridge|Oxford|Knopf|MIT\s+Press|Academic\s+Press|Prentice\s+Hall|McGraw-Hill|Sage|CRC\s+Press)\b").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Routledge|Springer|Elsevier|Wiley|Cambridge|Oxford|Knopf|MIT\s+Press|Academic\s+Press|Prentice\s+Hall|McGraw-Hill|Sage|CRC\s+Press)\b").unwrap(),
         ]
     });
 
@@ -1437,18 +1482,26 @@ fn try_arxiv_preprint(ref_text: &str) -> Option<(String, bool)> {
 }
 
 fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
+    // The leading `[.?!]` (rather than a literal `.`) matters: a title
+    // ending in a question or exclamation mark — a real, common shape
+    // ("How do fixes become bugs?", "Shoal++: ... fast and robust!") —
+    // otherwise never matches any of these patterns at all, since every
+    // one of them originally required a literal period immediately
+    // before "In {venue}". Left unfixed, the venue clause (and often an
+    // editor list ahead of it) gets glued onto the end of the title
+    // instead of being recognized as the boundary.
     static VENUE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
-            Regex::new(r"\.\s*[Ii]n:\s+(?:Proceedings|Workshop|Conference|Symposium|IFIP|IEEE|ACM)").unwrap(),
-            Regex::new(r"\.\s*[Ii]n:\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+(?:Proceedings|Workshop|Conference|Symposium|AAAI|IEEE|ACM|USENIX)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n:\s+(?:Proceedings|Workshop|Conference|Symposium|IFIP|IEEE|ACM)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n:\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:Proceedings|Workshop|Conference|Symposium|AAAI|IEEE|ACM|USENIX)").unwrap(),
             // Handle "In YEAR Venue" format: ". In 2017 USENIX Workshop"
-            Regex::new(r"\.\s*[Ii]n\s+(?:19|20)\d{2}\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS)").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z][a-z]+\s+(?:Conference|Workshop|Symposium)").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+(?:The\s+)?(?:\w+\s+)+(?:International\s+)?(?:Conference|Workshop|Symposium)").unwrap(),
-            Regex::new(r"\.\s*(?:NeurIPS|ICML|ICLR|CVPR|ICCV|ECCV|AAAI|IJCAI|CoRR|JMLR),").unwrap(),
-            Regex::new(r"\.\s*arXiv\s+preprint").unwrap(),
-            Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:19|20)\d{2}\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z][a-z]+\s+(?:Conference|Workshop|Symposium)").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+(?:The\s+)?(?:\w+\s+)+(?:International\s+)?(?:Conference|Workshop|Symposium)").unwrap(),
+            Regex::new(r"[.?!]\s*(?:NeurIPS|ICML|ICLR|CVPR|ICCV|ECCV|AAAI|IJCAI|CoRR|JMLR),").unwrap(),
+            Regex::new(r"[.?!]\s*arXiv\s+preprint").unwrap(),
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z]").unwrap(),
             Regex::new(r",\s*(?:19|20)\d{2}\.\s*(?:URL|$)").unwrap(),
             Regex::new(r",\s*(?:19|20)\d{2}\.\s*$").unwrap(),
         ]
@@ -1471,6 +1524,17 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
 
     for vp in VENUE_PATTERNS.iter() {
         if let Some(venue_match) = vp.find(ref_text) {
+            // A "?" or "!" right at the start of the match is itself part
+            // of the title (unlike a "." separator, which is pure
+            // punctuation and correctly excluded below) — include it so
+            // a title like "How do fixes become bugs?" keeps its
+            // question mark instead of losing it along with the venue
+            // clause that follows.
+            let content_end = match ref_text[venue_match.start()..].chars().next() {
+                Some(c @ ('?' | '!')) => venue_match.start() + c.len_utf8(),
+                _ => venue_match.start(),
+            };
+
             // Check if this match is actually an editor list, not a venue
             // Use floor_char_boundary to avoid slicing in the middle of a UTF-8 character
             let editor_check_end =
@@ -1479,7 +1543,7 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 // This is an editor list, not a regular venue.
                 // Extract the title from BEFORE the ". In editors" marker
                 // instead of skipping to other patterns which may match the year.
-                let before_editors = ref_text[..venue_match.start()].trim();
+                let before_editors = ref_text[..content_end].trim();
                 let parts = split_sentences_skip_initials(before_editors);
                 if parts.len() >= 2 {
                     let title = parts[1].trim();
@@ -1492,7 +1556,7 @@ fn try_venue_marker(ref_text: &str) -> Option<(String, bool)> {
                 continue; // If extraction failed, continue to next pattern
             }
 
-            let before_venue = ref_text[..venue_match.start()].trim();
+            let before_venue = ref_text[..content_end].trim();
 
             // First try: split into sentences
             let parts = split_sentences_skip_initials(before_venue);
@@ -1818,32 +1882,51 @@ fn try_author_particles(ref_text: &str) -> Option<(String, bool)> {
     let title_start = caps.get(1).unwrap().start();
     let title_text = &ref_text[title_start..];
 
-    // Find where title ends (venue/year markers)
+    // Find where title ends (venue/year markers). The leading `[.?!]`
+    // (rather than a literal `.`) matters: a title ending in a question
+    // or exclamation mark ("How do fixes become bugs?", "Shoal++: ...
+    // fast and robust!") otherwise never matches any of these patterns,
+    // since they originally required a literal period immediately
+    // before the venue clause — leaving the venue glued onto the title.
     static TITLE_END_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         vec![
-            Regex::new(r"\.\s+In\s+").unwrap(),
+            Regex::new(r"[.?!]\s+In\s+").unwrap(),
             Regex::new(r"\s+In\s+Proceedings").unwrap(),
-            Regex::new(r"\.\s+(?:Proc\.|Proceedings\s+of)").unwrap(),
-            Regex::new(r"\.\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS|EuroS&P)\b").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+\d{4}").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s*&\s*[A-Z][a-z]+)+").unwrap(),
-            Regex::new(r"\.\s+arXiv\s+preprint").unwrap(),
+            Regex::new(r"[.?!]\s+(?:Proc\.|Proceedings\s+of)").unwrap(),
+            Regex::new(r"[.?!]\s+(?:IEEE|ACM|USENIX|NDSS|CCS|AAAI|ICML|NeurIPS|EuroS&P)\b")
+                .unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+\d{4}").unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s*&\s*[A-Z][a-z]+)+").unwrap(),
+            Regex::new(r"[.?!]\s+arXiv\s+preprint").unwrap(),
             Regex::new(r",\s+(?:vol\.|pp\.|pages)\s").unwrap(),
             Regex::new(r",\s+\d{4}\.\s*$").unwrap(),
             Regex::new(r",\s+\d+\(\d+\)").unwrap(),
-            Regex::new(r"\.\s+(?:Springer|Elsevier|Wiley|Nature|Science|PLOS|Oxford|Cambridge)\b")
-                .unwrap(),
-            Regex::new(r"\.\s+(?:The\s+)?(?:Annals|Journal|Proceedings)\s+of\b").unwrap(),
-            Regex::new(r"\.\s+Journal\s+of\s+[A-Z]").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+,\s*\d").unwrap(),
-            Regex::new(r"\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+\d+[:(]").unwrap(),
+            Regex::new(
+                r"[.?!]\s+(?:Springer|Elsevier|Wiley|Nature|Science|PLOS|Oxford|Cambridge)\b",
+            )
+            .unwrap(),
+            Regex::new(r"[.?!]\s+(?:The\s+)?(?:Annals|Journal|Proceedings)\s+of\b").unwrap(),
+            Regex::new(r"[.?!]\s+Journal\s+of\s+[A-Z]").unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+,\s*\d").unwrap(),
+            Regex::new(r"[.?!]\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+\d+[:(]").unwrap(),
         ]
     });
 
     let mut title_end = title_text.len();
     for re in TITLE_END_PATTERNS.iter() {
         if let Some(m) = re.find(title_text) {
-            title_end = title_end.min(m.start());
+            // For patterns anchored on ? or !, keep the punctuation mark —
+            // it's part of the title, unlike a "." separator.
+            let candidate = if title_text
+                .as_bytes()
+                .get(m.start())
+                .is_some_and(|&b| b == b'?' || b == b'!')
+            {
+                m.start() + 1
+            } else {
+                m.start()
+            };
+            title_end = title_end.min(candidate);
         }
     }
 
@@ -2272,11 +2355,134 @@ fn try_fallback_sentence(ref_text: &str) -> Option<(String, bool)> {
     if potential_title.is_empty() {
         None
     } else {
-        Some((potential_title, false))
+        // As the last-resort fallback, `potential_title` is bounded only
+        // by `split_sentences_skip_initials`'s period-based splitting —
+        // a title ending in "?" or "!" (e.g. "How far are we?") has no
+        // period of its own to stop at, so the venue clause that follows
+        // ("In 35th IEEE/ACM International Conference...") stays glued
+        // on all the way to the next real period. Truncate at the first
+        // recognizable venue marker, same as the structurally-stronger
+        // paths above.
+        Some((
+            truncate_at_venue_marker(&potential_title).to_string(),
+            false,
+        ))
     }
 }
 
+/// Truncate `text` at the first recognizable venue/proceedings marker,
+/// treating `.`, `?`, or `!` as a valid boundary before it. A `?`/`!` is
+/// kept (it's part of the title itself, unlike a bare `.` separator).
+/// Deliberately conservative — only the highest-confidence markers, since
+/// callers use this on already low-signal text.
+fn truncate_at_venue_marker(text: &str) -> &str {
+    static PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+        vec![
+            Regex::new(r"[.?!]\s*[Ii]n\s+[A-Z0-9]").unwrap(),
+            Regex::new(r"[.?!]\s*(?:Proceedings|Proc\.|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR)\b")
+                .unwrap(),
+        ]
+    });
+
+    let mut end = text.len();
+    for re in PATTERNS.iter() {
+        if let Some(m) = re.find(text) {
+            let candidate = if text
+                .as_bytes()
+                .get(m.start())
+                .is_some_and(|&b| b == b'?' || b == b'!')
+            {
+                m.start() + 1
+            } else {
+                m.start()
+            };
+            end = end.min(candidate);
+        }
+    }
+    text[..end].trim_end_matches('.').trim()
+}
+
 // ───────────────── Sentence splitting ─────────────────
+
+/// Continuation check used only for the "2-3 letter name-prefix" case: a
+/// short Title-Case word like "Md." or a patronymic initial like "Yu.",
+/// immediately followed by more of that author's name. Matches a
+/// normal-order "First [Particle] Middle Last, and Next..." name with the
+/// comma directly touching the last name — e.g. "Md. Kabir Rahman
+/// Chowdhury, and Priya Wu." — which the general `AUTHOR_AFTER` patterns
+/// miss (they either require a space before that comma, or don't allow
+/// this many consecutive name words). Optional particle covers names like
+/// "Maarten van Steen,". Used by both [`split_sentences_skip_initials`]
+/// (title-boundary detection) and `authors::find_first_real_period`
+/// (author-boundary detection) — see the 2-3 letter check in each.
+///
+/// Deliberately NOT added to `AUTHOR_AFTER`, and deliberately not just
+/// "the next word starts with a capital letter": either would also match
+/// right after an ordinary short surname (e.g. "Wu." — a common East
+/// Asian surname), where this same syntactic shape is a real risk — a
+/// title beginning "Fair Systems Analysis, and Practical Deployment
+/// Considerations" would otherwise be mistaken for more authors, and a
+/// title starting with any capitalized word (nearly all of them) would
+/// make a genuine last author's period look like a name-prefix. Requiring
+/// the specific "2-4 capitalized words, comma, and, capital" shape (a
+/// title practically never starts this way) keeps that blast radius
+/// contained.
+///
+/// The comma before "and" is deliberately REQUIRED here (not optional):
+/// dropping it was tried and reverted — see [`MD_PREFIX_CONTINUATION`] for
+/// why a comma-free "X and Y" needs a narrower, name-specific check
+/// instead of widening this one.
+pub(crate) static NAME_PREFIX_CONTINUATION: Lazy<Regex> = Lazy::new(|| {
+    let sc =
+        r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}\u{2018}\u{2019}]";
+    let uc = r"[A-Z\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0100}-\u{0178}]";
+    let particle =
+        r"(?:van|von|de|del|della|di|da|le|la|den|der|ten|ter|dos|das|du|op|het|el|al|ben|ibn)";
+    Regex::new(&format!(
+        r"^{}{}+(?:\s+(?:{}\s+)?{}{}+){{1,3}}\s*,\s*and\s+{}",
+        uc, sc, particle, uc, sc, uc
+    ))
+    .unwrap()
+});
+
+/// Narrower cousin of [`NAME_PREFIX_CONTINUATION`], used ONLY when the
+/// 2-3 letter word immediately before the period is exactly "Md" (a South
+/// Asian first-name prefix, e.g. "Md. Kabir Rahman Chowdhury" or "Md.
+/// Imran Hossen and Xiali Hei").
+///
+/// "Md" is safe to treat much more permissively than the general 2-3
+/// letter case: unlike "Wu", "Yu", "Al", "Xu" and similar, it is
+/// essentially never itself a complete surname — it always prefixes more
+/// of the same author's name — so the comma-before-"and" requirement that
+/// protects the general case against swallowing a genuine short surname
+/// isn't needed here, and can be relaxed to also cover:
+///   - a bare "and" with no comma at all (a 2-author list has no Oxford
+///     comma) — "Md. Imran Hossen and Xiali Hei."
+///   - one or more *additional* full comma-separated names before the
+///     closing "and Lastauthor" — "Md. Mahmud Hossain, Maziar Fotouhi,
+///     and Ragib Hasan." — when the prefixed author isn't last in the
+///     list.
+///
+/// Widening the general check to cover these instead was tried first and
+/// reverted: it also matched a genuine short surname ("Wu.") followed by
+/// a real title with no Oxford comma ("Fair Systems Analysis and
+/// Practical Deployment Considerations"), breaking title extraction for
+/// that combination. Gating on the exact word "Md" avoids that ambiguity
+/// entirely: no title starts with the literal word "Md".
+pub(crate) static MD_PREFIX_CONTINUATION: Lazy<Regex> = Lazy::new(|| {
+    let sc =
+        r"[a-zA-Z\u{00A0}-\u{017F}\u{02B0}-\u{02FF}\u{0300}-\u{036F}'\-`\u{00B4}\u{2018}\u{2019}]";
+    let uc = r"[A-Z\u{00C0}-\u{00D6}\u{00D8}-\u{00DE}\u{0100}-\u{0178}]";
+    let particle =
+        r"(?:van|von|de|del|della|di|da|le|la|den|der|ten|ter|dos|das|du|op|het|el|al|ben|ibn)";
+    // {0}=uc, {1}=sc, {2}=particle (indexed so each can repeat without
+    // re-listing it in the format! args).
+    Regex::new(&format!(
+        r"^{0}{1}+(?:\s+(?:{2}\s+)?{0}{1}+){{1,3}}(?:\s*,\s*{0}{1}+(?:\s+(?:{2}\s+)?{0}{1}+){{0,2}})*\s*(?:,\s*)?and\s+{0}",
+        uc, sc, particle
+    ))
+    .unwrap()
+});
 
 /// Split text into sentences, but skip periods that are author initials
 /// (e.g., "M." "J.") or mid-sentence abbreviations (e.g., "vs.").
@@ -2401,16 +2607,23 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             .unwrap(),
             // Surname, Firstname [Middlenames...] I. (inverted format with middle names + initial)
             // Handles "Oliveira, Ana Flávia C. Moura" after split at "P."
+            // Optional particle before each middle/last name component so a
+            // Dutch/German/French particle (van, von, de, ...) inside the
+            // name — e.g. "Oliveira, Ana van Someren C. Moura" — doesn't
+            // break the match (every word here was previously required to
+            // start with an uppercase letter).
             Regex::new(&format!(
-                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+[A-Z]{}+)+\s+[A-Z]\.\s*[A-Z]",
-                sc, sc, sc
+                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+(?:{}\s+)?[A-Z]{}+)+\s+[A-Z]\.\s*[A-Z]",
+                sc, sc, particle, sc
             ))
             .unwrap(),
             // Surname, Firstname [Middle...] Lastname, (inverted format in comma-separated author list)
             // Handles "Mazurek, Aron Laszka," and "Klemmer, Stefan Albert Horstmann,"
+            // Optional particle before each middle/last name component —
+            // see comment on the pattern above for why.
             Regex::new(&format!(
-                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+[A-Z]{}+)+\s*,",
-                sc, sc, sc
+                r"^([A-Z]{}+)\s*,\s*[A-Z]{}+(?:\s+(?:{}\s+)?[A-Z]{}+)+\s*,",
+                sc, sc, particle, sc
             ))
             .unwrap(),
             // Surname, Firstname, (inverted format with single first name)
@@ -2418,9 +2631,11 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             Regex::new(&format!(r"^({}{}+)\s*,\s*{}{}{{2,}}\s*,", uc, sc, uc, sc)).unwrap(),
             // Surname, Firstname Lastname, and Firstname (inverted format with full names)
             // Handles "Gomez, Łukasz Kaiser, and Illia" after split at "N."
+            // Optional particle between the first and last name for the
+            // same reason as the patterns above.
             Regex::new(&format!(
-                r"^({}{}+)\s*,\s*{}{}+\s+{}{}+\s*,\s*and\s+{}",
-                uc, sc, uc, sc, uc, sc, uc
+                r"^({}{}+)\s*,\s*{}{}+\s+(?:{}\s+)?{}{}+\s*,\s*and\s+{}",
+                uc, sc, uc, sc, particle, uc, sc, uc
             ))
             .unwrap(),
             // Surname, et al (inverted format with et al)
@@ -2512,10 +2727,10 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
 
         let char_before = text.as_bytes()[pos - 1];
 
-        // Check if period follows a single capital letter (potential initial)
-        if char_before.is_ascii_uppercase()
-            && (pos == 1 || !text.as_bytes()[pos - 2].is_ascii_alphabetic())
-        {
+        // Check if period follows a single capital letter (potential initial).
+        // Unicode-aware so accented initials (Ö., É., Ł., Ø., Ñ., ...) are
+        // recognized too, not just ASCII A-Z.
+        if is_single_uppercase_initial(text, pos) {
             let after_period = &text[next_start..];
             let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
             if is_author {
@@ -2523,7 +2738,8 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             }
         }
 
-        // Check for multi-letter initials (2-3 chars like "Yu." in Russian/Chinese names)
+        // Check for multi-letter initials (2-3 chars like "Yu." in Russian/Chinese names,
+        // or "Md." — a common South Asian first-name prefix)
         // e.g., "A. Yu. Veretennikov" where "Yu." is a patronymic initial
         {
             let mut word_start = pos - 1;
@@ -2534,7 +2750,10 @@ pub(crate) fn split_sentences_skip_initials(text: &str) -> Vec<String> {
             // Short words (2-3 chars) starting with capital followed by surname
             if (2..=3).contains(&word_len) && text.as_bytes()[word_start].is_ascii_uppercase() {
                 let after_period = &text[next_start..];
-                let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period));
+                let is_author = AUTHOR_AFTER.iter().any(|re| re.is_match(after_period))
+                    || NAME_PREFIX_CONTINUATION.is_match(after_period)
+                    || (&text[word_start..pos] == "Md"
+                        && MD_PREFIX_CONTINUATION.is_match(after_period));
                 if is_author {
                     continue; // Skip — this is a multi-letter initial
                 }
@@ -2807,6 +3026,245 @@ mod tests {
         assert!(title.contains("Novel Approach"));
     }
 
+    // Regression: confirmed against real production citations. A title
+    // ending in "?" or "!" is a real, common shape — but every venue-
+    // boundary regex in the format-detection chain originally required
+    // a literal period immediately before "In {venue}" (or a venue/
+    // publisher name), since only "." was ever treated as a valid
+    // title-ending marker. Left unfixed, the venue clause (and often an
+    // editor list ahead of it) gets glued onto the end of the title
+    // instead of being recognized as the boundary. Each test below
+    // targets a different format-detection path.
+
+    #[test]
+    fn test_question_mark_title_via_venue_marker() {
+        // USENIX/ICML-style: "Authors. Title? In Venue."
+        let ref_text = "A. Author and B. Author. How do fixes become bugs? \
+            In 19th ACM SIGSOFT Symposium on the Foundations of Software Engineering.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(title, "How do fixes become bugs?");
+    }
+
+    // Regression: an author list containing a lowercase name particle
+    // (van/von/de/...) in the middle of a "First Particle Last" name broke
+    // every multi-word-name continuation pattern in `AUTHOR_AFTER` (they
+    // all required every name token to start uppercase), causing a
+    // spurious sentence split right before the true title and leaving the
+    // tail of the author list as the extracted "title".
+    #[test]
+    fn test_particle_name_in_author_list_not_mistaken_for_title() {
+        let ref_text = "Amara Osei, Brice Fontaine, Farid Haddad, Junko Watanabe, \
+            Daniel J. Kowalski, Martina Lindberg, David R. Sanchez, Maarten van Steen, \
+            and Andreas Berg. Systemname: A framework for evaluating something. \
+            In 27th Annual Some Symposium, 2020.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(title, "Systemname: A framework for evaluating something");
+    }
+
+    // Regression: a short Title-Case name-prefix like "Md." (a common South
+    // Asian first-name abbreviation) was treated the same as a full
+    // surname, so the sentence splitter cut the author list right after it
+    // instead of continuing through the rest of that author's name.
+    #[test]
+    fn test_name_prefix_initial_in_author_list_not_mistaken_for_title() {
+        let ref_text = "Ana Beltran, Farrukh Yu Nazari, Md. Kabir Rahman Chowdhury, \
+            and Priya Wu. Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024, pages 1-10.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression: an accented initial (Ö, É, Ł, Ø, Ñ, ...) wasn't
+    // recognized as an initial at all — an ASCII-only check inspected a
+    // raw UTF-8 continuation byte instead of the actual character — so the
+    // sentence splitter treated the period after it as a real boundary and
+    // returned the tail of the author list as the title.
+    #[test]
+    fn test_non_ascii_initial_in_author_list_not_mistaken_for_title() {
+        let ref_text = "Farid Chen, Selin Ö. Yilmaz, and Priya Wu. \
+            Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression guard: a title beginning with "CapWord CapWord CapWord,
+    // and CapWord..." has the exact same syntactic shape as the
+    // name-prefix-continuation fix above (e.g. "Md. Kabir Rahman
+    // Chowdhury, and Priya Wu."). It must NOT be mistaken for more
+    // authors just because it follows an ordinary (non-prefix) surname.
+    #[test]
+    fn test_title_starting_with_comma_and_not_mistaken_for_more_authors() {
+        let ref_text = "Jane Smith and John Miller. \
+            Fair Systems Analysis, and Practical Deployment Considerations. \
+            In Proceedings of Some Conference.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Fair Systems Analysis, and Practical Deployment Considerations"
+        );
+    }
+
+    #[test]
+    fn test_title_starting_with_comma_and_after_initials_not_mistaken_for_more_authors() {
+        let ref_text = "A. Author, B. Author, and C. Author. \
+            Deep Learning Systems, and Fairness Considerations in Practice. \
+            In Some Symposium.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Deep Learning Systems, and Fairness Considerations in Practice"
+        );
+    }
+
+    // Regression: "Md." at the start of a bare 2-author list with no
+    // Oxford comma ("Md. First Last and First2 Last2.") wasn't recognized
+    // as a name-prefix continuation, so the sentence splitter cut right
+    // after it and returned the rest of the author list as the title.
+    #[test]
+    fn test_md_prefix_two_author_no_comma_not_mistaken_for_title() {
+        let ref_text = "Md. Kabir Chen and Priya Wu. \
+            Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression: "Md." prefixing an author who isn't last in the list —
+    // one more full name appears before the closing ", and Lastauthor."
+    #[test]
+    fn test_md_prefix_not_last_in_list_not_mistaken_for_title() {
+        let ref_text = "Md. Kabir Rahman Chowdhury, Farid Haddad, and Priya Wu. \
+            Systemtitle: A framework for evaluating something important. \
+            In Some Conference, 2024.";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(
+            title,
+            "Systemtitle: A framework for evaluating something important"
+        );
+    }
+
+    // Regression guard: the permissive "Md" continuation must stay scoped
+    // to the exact word "Md" — a genuine short surname like "Wu" at the
+    // real end of the author list, followed by a real title with no
+    // Oxford comma, must not be swallowed as "more authors".
+    #[test]
+    fn test_short_surname_with_bare_and_title_not_mistaken_for_md_prefix() {
+        let ref_text = "Farid Chen and Priya Wu. \
+            Fair Systems Analysis and Practical Deployment Considerations. \
+            In Proceedings of Some Conference.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Fair Systems Analysis and Practical Deployment Considerations"
+        );
+    }
+
+    #[test]
+    fn test_exclamation_title_via_author_particles() {
+        // "and Surname." author-boundary path.
+        let ref_text = "A. Author. Shoal plus plus: robust and fast! \
+            In Symposium on Networked Systems Design and Implementation (NSDI).";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "Shoal plus plus: robust and fast!");
+    }
+
+    #[test]
+    fn test_multi_mark_title_keeps_internal_marks_and_stops_at_real_boundary() {
+        // A title can legitimately contain several "!"/"?" of its own —
+        // only the LAST one, right before "In {venue}", is the real
+        // boundary; the earlier ones must stay part of the title.
+        let ref_text = "A. Author, B. Author, and C. Author. Disaster strikes! \
+            Internet blackout! What is the fate of crisis mapping? \
+            In 22nd International Conference on Human-Computer Interaction.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Disaster strikes! Internet blackout! What is the fate of crisis mapping?"
+        );
+    }
+
+    #[test]
+    fn test_question_mark_title_before_editor_list() {
+        let ref_text = "A. Author, B. Author, and C. Author. \
+            How to use timed-release encryption on blockchains? \
+            In D. Editor, E. Editor, and F. Editor, editors, CCS, 2020.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "How to use timed-release encryption on blockchains?");
+    }
+
+    #[test]
+    fn test_exclamation_title_via_springer_year_with_in_year_venue() {
+        // Springer/Nature "(Year)" format, plus the "In YEAR Venue" shape
+        // where the venue name isn't a recognized acronym.
+        let ref_text = "Author, A. (2012). Cybersecurity: We need metrics! \
+            In 2012 Cybersecurity Summit (pp. 1-2). IEEE";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "Cybersecurity: We need metrics!");
+    }
+
+    #[test]
+    fn test_question_mark_title_via_fallback_sentence() {
+        let ref_text = "Some Author, Another Author, Third Author, Fourth Author, \
+            Fifth Author, Sixth Author, Seventh Author, and Eighth Author. \
+            Automated patch correctness assessment: How far are we? \
+            In 35th IEEE/ACM International Conference on Automated Software \
+            Engineering, ASE 2020, Melbourne, Australia, September 21-25, 2020, \
+            pages 968-980. IEEE, 2020";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(
+            title,
+            "Automated patch correctness assessment: How far are we?"
+        );
+    }
+
+    #[test]
+    fn test_bare_doi_wrapped_across_line_does_not_blank_the_title() {
+        // Regression: confirmed against real production citations. A bare
+        // (non-URL) "doi:10.xxxx/..." DOI whose trailing segment got
+        // wrapped across a PDF line — collapsed to a plain space by the
+        // time whitespace normalization runs, e.g.
+        // "doi:10.1109/TFOO.2020. 1234567" instead of
+        // "doi:10.1109/TFOO.2020.1234567" — was derailing every format-
+        // detection branch into returning an empty title, even though
+        // the real title earlier in the string was perfectly
+        // well-formed. This affected a substantial fraction of IEEE
+        // Trans.-style journal citations (year embedded as a DOI segment,
+        // e.g. ".2020.") in one real corpus.
+        let ref_text = "A. Author and B. Author. A perfectly ordinary title here. \
+            IEEE Transactions on Testing, 12(4):100-110, 2020. \
+            doi:10.1109/TFOO.2020. 1234567";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(!from_quotes);
+        assert_eq!(title, "A perfectly ordinary title here");
+    }
+
+    #[test]
+    fn test_bare_doi_wrap_fix_does_not_glue_unrelated_trailing_sentence() {
+        // The end-of-string anchor must not fire when there's real
+        // content after the trailing digits.
+        let ref_text = "A. Author. A perfectly ordinary title here. \
+            IEEE Transactions on Testing, 12(4):100-110, 2020. \
+            doi:10.1109/TFOO.2020.1234567. Retrieved 2021 via IEEE Xplore";
+        let (title, _) = extract_title_from_reference(ref_text);
+        assert_eq!(title, "A perfectly ordinary title here");
+    }
+
     #[test]
     fn test_clean_title_trailing_venue() {
         let title = "My Great Paper. In Proceedings of USENIX Security";
@@ -3000,6 +3458,30 @@ mod tests {
             cleaned.contains("With what effects?"),
             "Title should end with question mark: {}",
             cleaned,
+        );
+    }
+
+    #[test]
+    fn test_venue_directly_after_question_mark_quote_no_comma() {
+        // Regression test: found via a real NDSS submission whose citation
+        // to a genuinely-indexed arXiv paper was reported NotFound because
+        // the venue name leaked into the extracted title. The title ends
+        // in "?" and the citation style drops the usual comma before "in"
+        // (`"...well?" in 2022 IEEE ...` rather than `"...well?," in 2022
+        // IEEE ...`), so `after_quote` starts directly with "in" — none of
+        // the `.`/`,`-anchored END_PATTERNS in find_subtitle_end matched,
+        // so the whole venue name (and year, and page range) was kept as
+        // a bogus "subtitle".
+        let ref_text = "Y. Liu, C. Tantithamthavorn, L. Li, and Y. Liu, \u{201c}Explainable AI for Android malware detection: Towards understanding why the models perform so well?\u{201d} in 2022 IEEE 33rd International Symposium on Software Reliability Engineering, 2022, pp. 169\u{2013}180";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes);
+        assert_eq!(
+            title,
+            "Explainable AI for Android malware detection: Towards understanding why the models perform so well?"
+        );
+        assert!(
+            !title.contains("Symposium") && !title.contains("Reliability"),
+            "venue name leaked into title: {title}"
         );
     }
 
