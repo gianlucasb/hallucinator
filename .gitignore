@@ -219,3 +219,6 @@ test-data/
 
 # Windows artifacts
 nul
+
+# Local config with API keys
+hallucinator.toml
