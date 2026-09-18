@@ -109,6 +109,7 @@ API keys are optional but recommended. They improve coverage and reduce rate lim
 1. Go to https://openalex.org/settings/api
 2. Sign in with your email
 3. Copy your API key
+4. Use with `--openalex-key=YOUR_KEY`, set the `OPENALEX_KEY` env var, or add `openalex_key = "YOUR_KEY"` to your config file (see [hallucinator-rs/README.md](hallucinator-rs/README.md))
 
 ### Semantic Scholar (free, requires approval)
 1. Go to https://www.semanticscholar.org/product/api
