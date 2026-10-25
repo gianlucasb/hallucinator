@@ -75,6 +75,8 @@ hallucinator-cli check -o results.txt paper.pdf
 hallucinator-cli check references.bbl
 ```
 
+The CLI reads PDFs, `.bbl`, `.bib` and GROBID TEI XML. For a plain-text reference list (one reference per line or paragraph), use [`check_refs.py`](https://github.com/gianlucasb/hallucinator/blob/main/check_refs.py) from a source checkout with a release build of the CLI: `./check_refs.py references.txt` runs each reference through `hallucinator-cli` and writes `references.summary.txt` with a verdict per reference.
+
 ## First Run: TUI
 
 Process multiple PDFs interactively:

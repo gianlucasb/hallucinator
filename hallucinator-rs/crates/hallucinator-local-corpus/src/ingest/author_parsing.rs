@@ -62,7 +62,7 @@ pub fn parse_names_maybe_with_affiliations(text: &str) -> Vec<String> {
         return parse_paren_grouped_names(text);
     }
     text.split([',', ';'])
-        .map(|s| strip_leading_separator(s))
+        .map(strip_leading_separator)
         .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("and"))
         .collect()
 }

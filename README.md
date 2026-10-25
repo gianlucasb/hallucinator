@@ -43,6 +43,11 @@ When the TUI is not suitable, there's a pure CLI available too:
 curl -sSf https://hallucinator.science/install-cli.sh | sh
 ```
 
+The CLI reads PDFs, `.bbl`, `.bib` and GROBID TEI XML. For a plain-text reference list (one reference per line or paragraph), `check_refs.py` in this repository routes each reference through a release build of the CLI and writes a `<name>.summary.txt` with a verdict per reference:
+```bash
+./check_refs.py references.txt
+```
+
 ## Python Bindings (Early Release)
 
 Pre-compiled wheels are available for Python 3.12 on Linux (x86_64), macOS (x86_64 + Apple Silicon), and Windows (x86_64). These provide Rust-native performance from Python — no Rust toolchain required.

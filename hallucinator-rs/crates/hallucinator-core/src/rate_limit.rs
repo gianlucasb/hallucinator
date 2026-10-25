@@ -101,7 +101,7 @@ impl AdaptiveDbLimiter {
         // Double factor, cap at 16x slowdown
         let _ = self
             .current_factor
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |f| {
                 Some((f * 2).min(16))
             });
 
