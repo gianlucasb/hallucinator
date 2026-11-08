@@ -166,13 +166,20 @@ pub fn print_progress(
 }
 
 /// Print the detailed hallucination/mismatch report for all problematic references.
+///
+/// `ref_numbers` runs parallel to `results`: `ref_numbers[i]` is the 1-based
+/// number of `results[i]` in the paper's reference list — the `[7]` a reader
+/// looks up in the PDF. Pass an empty slice when the numbers are unknown and
+/// the blocks are printed without them.
 pub fn print_hallucination_report(
     w: &mut dyn Write,
     results: &[ValidationResult],
+    ref_numbers: &[usize],
     searched_openalex: bool,
     color: ColorMode,
 ) -> std::io::Result<()> {
-    for result in results {
+    for (i, result) in results.iter().enumerate() {
+        let number = ref_numbers.get(i).copied();
         // Suppress the full "POTENTIAL HALLUCINATION" block for refs
         // whose NotFound outcome was demoted to "skipped" by the
         // `--url-match` gate. The ref is already accounted for in
@@ -185,18 +192,45 @@ pub fn print_hallucination_report(
         // Same reasoning as the summary: an unverifiable ref must not get
         // the "potential hallucination" write-up.
         if result.is_inconclusive() {
-            print_inconclusive_block(w, result, color)?;
+            print_inconclusive_block(w, result, number, color)?;
             continue;
         }
         match &result.status {
             Status::NotFound => {
-                print_not_found_block(w, result, searched_openalex, color)?;
+                print_not_found_block(w, result, number, searched_openalex, color)?;
             }
             Status::Mismatch(kind) => {
-                print_mismatch_block(w, result, *kind, color)?;
+                print_mismatch_block(w, result, number, *kind, color)?;
             }
             Status::Verified => {}
         }
+    }
+    Ok(())
+}
+
+/// Prefix `text` with the reference's list number, e.g. `[7] Some title`.
+/// Unchanged when the number is unknown.
+fn numbered(number: Option<usize>, text: &str) -> String {
+    match number {
+        Some(n) => format!("[{}] {}", n, text),
+        None => text.to_string(),
+    }
+}
+
+/// Print the `Reference: [N]` line of a hallucination block, naming the
+/// entry in the paper's reference list. Omitted when the number is unknown.
+fn print_reference_number(
+    w: &mut dyn Write,
+    number: Option<usize>,
+    color: ColorMode,
+) -> std::io::Result<()> {
+    let Some(n) = number else {
+        return Ok(());
+    };
+    if color.enabled() {
+        writeln!(w, "{} [{}]", "Reference:".bold(), n)?;
+    } else {
+        writeln!(w, "Reference: [{}]", n)?;
     }
     Ok(())
 }
@@ -208,9 +242,10 @@ pub fn print_hallucination_report(
 fn print_inconclusive_block(
     w: &mut dyn Write,
     result: &ValidationResult,
+    number: Option<usize>,
     color: ColorMode,
 ) -> std::io::Result<()> {
-    let header = format!("[?] INCONCLUSIVE: {}", result.title);
+    let header = format!("[?] INCONCLUSIVE: {}", numbered(number, &result.title));
     if color.enabled() {
         writeln!(w, "{}", header.yellow())?;
     } else {
@@ -232,6 +267,7 @@ fn print_inconclusive_block(
 fn print_not_found_block(
     w: &mut dyn Write,
     result: &ValidationResult,
+    number: Option<usize>,
     searched_openalex: bool,
     color: ColorMode,
 ) -> std::io::Result<()> {
@@ -248,6 +284,7 @@ fn print_not_found_block(
     }
     writeln!(w)?;
 
+    print_reference_number(w, number, color)?;
     if color.enabled() {
         writeln!(w, "{}:", "Title".bold())?;
         writeln!(w, "  {}", result.title.cyan())?;
@@ -288,6 +325,7 @@ fn print_not_found_block(
 fn print_mismatch_block(
     w: &mut dyn Write,
     result: &ValidationResult,
+    number: Option<usize>,
     kind: MismatchKind,
     color: ColorMode,
 ) -> std::io::Result<()> {
@@ -306,6 +344,7 @@ fn print_mismatch_block(
 
     let source = result.source.as_deref().unwrap_or("unknown");
 
+    print_reference_number(w, number, color)?;
     if color.enabled() {
         writeln!(w, "{}:", "Title".bold())?;
         writeln!(w, "  {}", result.title.cyan())?;
@@ -435,14 +474,18 @@ fn build_mismatch_status_message(
 }
 
 /// Print DOI-related issues.
+///
+/// `ref_numbers` is the same parallel slice as for `print_hallucination_report`.
 pub fn print_doi_issues(
     w: &mut dyn Write,
     results: &[ValidationResult],
+    ref_numbers: &[usize],
     color: ColorMode,
 ) -> std::io::Result<()> {
     let issues: Vec<_> = results
         .iter()
-        .filter(|r| r.doi_info.as_ref().is_some_and(|d| !d.valid))
+        .enumerate()
+        .filter(|(_, r)| r.doi_info.as_ref().is_some_and(|d| !d.valid))
         .collect();
 
     if issues.is_empty() {
@@ -465,9 +508,9 @@ pub fn print_doi_issues(
         writeln!(w, "{}", sep)?;
     }
 
-    for result in issues {
+    for (i, result) in issues {
         let doi_info = result.doi_info.as_ref().unwrap();
-        let short_title = truncate(&result.title, 70);
+        let short_title = numbered(ref_numbers.get(i).copied(), &truncate(&result.title, 70));
         writeln!(w)?;
         if color.enabled() {
             writeln!(w, "{} {}", "Reference:".bold(), short_title)?;
@@ -484,14 +527,18 @@ pub fn print_doi_issues(
 }
 
 /// Print retraction warnings.
+///
+/// `ref_numbers` is the same parallel slice as for `print_hallucination_report`.
 pub fn print_retraction_warnings(
     w: &mut dyn Write,
     results: &[ValidationResult],
+    ref_numbers: &[usize],
     color: ColorMode,
 ) -> std::io::Result<()> {
     let retracted: Vec<_> = results
         .iter()
-        .filter(|r| r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted))
+        .enumerate()
+        .filter(|(_, r)| r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted))
         .collect();
 
     if retracted.is_empty() {
@@ -510,9 +557,9 @@ pub fn print_retraction_warnings(
         writeln!(w, "{}", sep)?;
     }
 
-    for result in &retracted {
+    for (i, result) in retracted {
         let ri = result.retraction_info.as_ref().unwrap();
-        let short_title = truncate(&result.title, 70);
+        let short_title = numbered(ref_numbers.get(i).copied(), &truncate(&result.title, 70));
         writeln!(w)?;
         if color.enabled() {
             writeln!(w, "{} {}", "Reference:".bold(), short_title)?;
@@ -856,7 +903,7 @@ mod inconclusive_tests {
             &["CrossRef", "PubMed"],
         )];
         let mut buf: Vec<u8> = Vec::new();
-        print_hallucination_report(&mut buf, &results, false, ColorMode(false)).unwrap();
+        print_hallucination_report(&mut buf, &results, &[], false, ColorMode(false)).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("INCONCLUSIVE"), "{}", out);
         assert!(out.contains("CrossRef"), "must name what failed:\n{}", out);
@@ -866,5 +913,131 @@ mod inconclusive_tests {
             "must say plainly this is not a finding:\n{}",
             out
         );
+    }
+}
+
+#[cfg(test)]
+mod ref_number_tests {
+    //! The text report must name the entry in the paper's reference list
+    //! (`[7]`) for every flagged reference, so a reader can find it in the
+    //! PDF without matching titles by hand. The JSON export already carried
+    //! this as `original_number`; the text blocks did not.
+
+    use super::*;
+    use hallucinator_core::{DoiInfo, RetractionInfo};
+
+    fn result(title: &str, status: Status) -> ValidationResult {
+        ValidationResult {
+            title: title.to_string(),
+            raw_citation: String::new(),
+            ref_authors: vec![],
+            status,
+            source: None,
+            found_authors: vec![],
+            paper_url: None,
+            failed_dbs: vec![],
+            db_results: vec![],
+            doi_info: None,
+            arxiv_info: None,
+            retraction_info: None,
+            url_check_skipped: false,
+        }
+    }
+
+    fn report(results: &[ValidationResult], numbers: &[usize]) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        print_hallucination_report(&mut buf, results, numbers, false, ColorMode(false)).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn not_found_block_names_the_reference_number() {
+        let results = vec![
+            result("Real Paper", Status::Verified),
+            result("Fabricated Paper", Status::NotFound),
+        ];
+        let out = report(&results, &[3, 7]);
+        assert!(out.contains("Reference: [7]"), "{}", out);
+        assert!(
+            !out.contains("[3]"),
+            "verified refs print no block:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn mismatch_block_names_the_reference_number() {
+        let mut r = result(
+            "Misattributed Paper",
+            Status::Mismatch(MismatchKind::AUTHOR),
+        );
+        r.source = Some("CrossRef".to_string());
+        r.ref_authors = vec!["J. Doe".to_string()];
+        r.found_authors = vec!["A. Smith".to_string()];
+        let out = report(&[r], &[12]);
+        assert!(out.contains("Reference: [12]"), "{}", out);
+    }
+
+    #[test]
+    fn inconclusive_block_names_the_reference_number() {
+        let mut r = result("Unreachable Paper", Status::NotFound);
+        r.failed_dbs = vec!["CrossRef".to_string()];
+        let out = report(&[r], &[5]);
+        assert!(
+            out.contains("INCONCLUSIVE: [5] Unreachable Paper"),
+            "{}",
+            out
+        );
+    }
+
+    #[test]
+    fn numbers_follow_the_paper_not_the_position() {
+        // Skipped entries keep their slot in the reference list, so the
+        // third checked result can be reference [9]. The number printed
+        // must be the one the paper uses, not the position plus one.
+        let results = vec![
+            result("A", Status::Verified),
+            result("B", Status::Verified),
+            result("Fabricated Paper", Status::NotFound),
+        ];
+        let out = report(&results, &[1, 2, 9]);
+        assert!(out.contains("Reference: [9]"), "{}", out);
+        assert!(!out.contains("Reference: [3]"), "{}", out);
+    }
+
+    #[test]
+    fn unknown_numbers_are_omitted_not_invented() {
+        let results = vec![result("Fabricated Paper", Status::NotFound)];
+        let out = report(&results, &[]);
+        assert!(!out.contains("Reference:"), "{}", out);
+        assert!(out.contains("POTENTIAL HALLUCINATION DETECTED"), "{}", out);
+    }
+
+    #[test]
+    fn doi_issues_name_the_reference_number() {
+        let mut r = result("Paper With Bad DOI", Status::Verified);
+        r.doi_info = Some(DoiInfo {
+            doi: "10.1000/xyz".to_string(),
+            valid: false,
+            title: None,
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        print_doi_issues(&mut buf, &[r], &[4], ColorMode(false)).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("Reference: [4] Paper With Bad DOI"), "{}", out);
+    }
+
+    #[test]
+    fn retraction_warnings_name_the_reference_number() {
+        let mut r = result("Retracted Paper", Status::Verified);
+        r.retraction_info = Some(RetractionInfo {
+            is_retracted: true,
+            retraction_doi: None,
+            retraction_source: None,
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        print_retraction_warnings(&mut buf, &[r], &[6], ColorMode(false)).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("Reference: [6] Retracted Paper"), "{}", out);
     }
 }
