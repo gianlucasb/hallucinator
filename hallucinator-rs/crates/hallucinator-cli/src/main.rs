@@ -1264,11 +1264,27 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Saved reference metadata for --json export (captured before check_references consumes refs).
+/// Saved reference metadata for the text report's reference numbers and the
+/// --json export (captured before check_references consumes refs).
 struct RefMeta {
     original_number: usize,
     title: String,
     skip_reason: Option<String>,
+}
+
+/// Reference-list numbers (`[7]` in the paper) for each checked result, in
+/// result order, for the text report.
+///
+/// `check_references` returns one result per input reference in input
+/// order, so `results[i]` belongs to `ref_meta[i]` — the same correspondence
+/// `build_report_data` relies on for the JSON export. A cancelled run drops
+/// the unfinished results, which would shift every later number onto the
+/// wrong reference; in that case return no numbers rather than wrong ones.
+fn reference_numbers(ref_meta: &[RefMeta], result_count: usize) -> Vec<usize> {
+    if ref_meta.len() != result_count {
+        return Vec::new();
+    }
+    ref_meta.iter().map(|m| m.original_number).collect()
 }
 
 /// Build report data from CLI results for JSON export.
@@ -1936,7 +1952,8 @@ async fn check(
 
     let skip_stats = extraction.skip_stats.clone();
 
-    // Save ref metadata for --json export (before check_references consumes them)
+    // Save ref metadata (reference numbers for the report, --json export)
+    // before check_references consumes the refs.
     let ref_meta: Vec<RefMeta> = extraction
         .references
         .iter()
@@ -1954,10 +1971,17 @@ async fn check(
     // Print final report
     writeln!(writer)?;
 
-    output::print_hallucination_report(&mut writer, &results, openalex_key.is_some(), color)?;
+    let ref_numbers = reference_numbers(&ref_meta, results.len());
+    output::print_hallucination_report(
+        &mut writer,
+        &results,
+        &ref_numbers,
+        openalex_key.is_some(),
+        color,
+    )?;
 
-    output::print_doi_issues(&mut writer, &results, color)?;
-    output::print_retraction_warnings(&mut writer, &results, color)?;
+    output::print_doi_issues(&mut writer, &results, &ref_numbers, color)?;
+    output::print_retraction_warnings(&mut writer, &results, &ref_numbers, color)?;
     output::print_summary(&mut writer, &results, &skip_stats, color)?;
 
     // --json export
@@ -2092,7 +2116,7 @@ async fn run_archive_check(
                 let skip_stats = extraction.skip_stats.clone();
                 let config_clone = Arc::clone(&config);
 
-                // Save ref metadata for --json export
+                // Save ref metadata (reference numbers for the report, --json export)
                 let ref_meta: Vec<RefMeta> = extraction
                     .references
                     .iter()
@@ -2116,9 +2140,16 @@ async fn run_archive_check(
                 writeln!(writer)?;
                 // Use the first openalex key for the report (openalex_key is in config)
                 let has_openalex = config_clone.openalex_key.is_some();
-                output::print_hallucination_report(&mut writer, &results, has_openalex, color)?;
-                output::print_doi_issues(&mut writer, &results, color)?;
-                output::print_retraction_warnings(&mut writer, &results, color)?;
+                let ref_numbers = reference_numbers(&ref_meta, results.len());
+                output::print_hallucination_report(
+                    &mut writer,
+                    &results,
+                    &ref_numbers,
+                    has_openalex,
+                    color,
+                )?;
+                output::print_doi_issues(&mut writer, &results, &ref_numbers, color)?;
+                output::print_retraction_warnings(&mut writer, &results, &ref_numbers, color)?;
                 output::print_summary(&mut writer, &results, &skip_stats, color)?;
                 writeln!(writer)?;
 
